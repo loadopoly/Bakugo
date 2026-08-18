@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.0.0] - 2026-08-18
 
 ### Added
+- **Comprehensive Card Grading & Subgrade Predictions (`cardcenter.grading`)**:
+  - `CardGradePrediction` dataclass providing predicted overall grades (e.g. `PSA 10 Gem Mint`, `BGS 9.5 Gem Mint`), condition tier classification, and 4-subgrade breakdown (Centering, Corners, Edges, Surface).
+  - `predict_overall_grade` & `predict_all_grades` computing grade probability distributions and confidence scores across PSA, BGS, CGC, SGC, and ACE.
+  - CLI and Web/AR payloads displaying prominent predicted overall grades alongside centering ceilings.
+
 - **Semantic Versioning Engine (`cardcenter.versioning`)**:
   - `SemVer` class implementing full SemVer 2.0.0 parsing, comparison, and compatibility checks.
   - `VersionInfo` reporting detailed environment, platform architecture, and dependency versions.

@@ -51,7 +51,7 @@ import cv2
 import numpy as np
 
 from .centering import measure_centering
-from .grading import available_graders, grade_band
+from .grading import available_graders, grade_band, predict_overall_grade
 from .serve import LENS_FOV, _parse_multipart
 from .triage import Route, triage
 from .types import CaptureSpec, DetectionError, resolve_holder
@@ -186,6 +186,23 @@ def analyse(image_bytes: bytes, holder: str, lens: str) -> dict:
             "bands": {
                 g: (b.best if b.is_single else f"{b.worst}\u2013{b.best}")
                 for g, b in bands.items()
+            },
+            "predicted_grades": {
+                g: {
+                    "grade": p.grade_label,
+                    "condition": p.condition_name,
+                    "score": p.grade_score,
+                    "subgrades": {
+                        "centering": p.centering_subgrade,
+                        "corners": p.estimated_corners,
+                        "edges": p.estimated_edges,
+                        "surface": p.estimated_surface,
+                    },
+                }
+                for g, p in {
+                    name: predict_overall_grade(w, quality=res.quality, grader=name)
+                    for name in bands.keys()
+                }.items()
             },
             "warnings": list(res.quality.warnings),
             "overlay": overlay,

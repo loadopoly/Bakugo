@@ -12,7 +12,14 @@ import numpy as np
 
 from . import __version__
 from .centering import measure_centering
-from .grading import all_grade_bands, available_graders, caveat_text, grade_band
+from .grading import (
+    all_grade_bands,
+    available_graders,
+    caveat_text,
+    grade_band,
+    predict_all_grades,
+    predict_overall_grade,
+)
 from .render import save_annotated
 from .types import SLAB_PRESETS, CaptureSpec, CenteringResult, DetectionError
 
@@ -75,6 +82,25 @@ def _result_dict(res: CenteringResult, bands: dict) -> dict:
             }
             for name, b in bands.items()
         },
+        "predicted_grades": {
+            name: {
+                "grade": pred.grade_label,
+                "score": pred.grade_score,
+                "condition": pred.condition_name,
+                "subgrades": {
+                    "centering": pred.centering_subgrade,
+                    "corners": pred.estimated_corners,
+                    "edges": pred.estimated_edges,
+                    "surface": pred.estimated_surface,
+                },
+                "probabilities": pred.probabilities,
+                "confidence": pred.confidence,
+            }
+            for name, pred in {
+                g: predict_overall_grade(res.worst_ratio, quality=res.quality, grader=g)
+                for g in bands.keys()
+            }.items()
+        },
         "disclaimer": DISCLAIMER,
     }
 
@@ -107,6 +133,18 @@ def _print_human(res: CenteringResult, bands: dict, face: str) -> None:
 
     print()
     print("-" * 66)
+    print(f"  ESTIMATED CARD GRADES & SUBGRADES ({face.upper()})")
+    print("-" * 66)
+    from .grading import predict_overall_grade
+    for name in bands.keys():
+        pred = predict_overall_grade(res.worst_ratio, quality=res.quality, grader=name, face=face)
+        print(f"  {name:<5} -> {pred.grade_label:<8} ({pred.condition_name:<16})  [Confidence: {int(pred.confidence*100)}%]")
+        print(f"        Subgrades: Centering {pred.centering_subgrade:.1f} | Corners {pred.estimated_corners:.1f} | Edges {pred.estimated_edges:.1f} | Surface {pred.estimated_surface:.1f}")
+        prob_str = ", ".join(f"{g}: {int(p*100)}%" for g, p in sorted(pred.probabilities.items(), key=lambda kv: -kv[1]))
+        print(f"        Probabilities: {prob_str}")
+    print()
+
+    print("-" * 66)
     print(f"  GRADE CEILING FROM CENTERING ALONE ({face})")
     print("-" * 66)
     for name, b in bands.items():
@@ -115,6 +153,7 @@ def _print_human(res: CenteringResult, bands: dict, face: str) -> None:
         print(f"  {name:<5} {label}{conf}")
         print(f"        limited by {b.limited_by}")
     print()
+
 
     if res.quality.warnings:
         print("-" * 66)

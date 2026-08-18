@@ -155,3 +155,36 @@ def test_low_confidence_graders_are_flagged() -> None:
 def test_non_subgrade_graders_disclose_the_ceiling_caveat() -> None:
     text = caveat_text("PSA")
     assert "ceiling" in text.lower()
+
+
+def test_predict_overall_grade_gem_mint() -> None:
+    from cardcenter.grading import predict_overall_grade, CardGradePrediction
+    pred = predict_overall_grade(Measured(51.0, 0.2), grader="PSA", face="front")
+    assert isinstance(pred, CardGradePrediction)
+    assert pred.grade_score == 10.0
+    assert "10" in pred.grade_label
+    assert pred.condition_name == "Gem Mint"
+    assert pred.centering_subgrade == 10.0
+    assert pred.confidence >= 0.8
+    assert "10" in pred.probabilities
+    desc = pred.describe()
+    assert "ESTIMATED GRADE" in desc
+    assert "Gem Mint" in desc
+
+
+def test_predict_overall_grade_bgs_half_grades() -> None:
+    from cardcenter.grading import predict_overall_grade
+    pred = predict_overall_grade(Measured(53.0, 0.2), grader="BGS", face="front")
+    assert pred.grader == "BGS"
+    assert pred.grade_score in (9.5, 10.0)
+    assert pred.condition_name == "Gem Mint"
+
+
+def test_predict_all_grades() -> None:
+    from cardcenter.grading import predict_all_grades
+    preds = predict_all_grades(Measured(58.0, 0.3))
+    assert set(preds.keys()) == set(available_graders())
+    for g, p in preds.items():
+        assert p.grader == g
+        assert p.grade_score >= 1.0 and p.grade_score <= 10.0
+

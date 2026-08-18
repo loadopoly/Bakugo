@@ -31,7 +31,7 @@ import numpy as np
 
 from .capture import assess_frame
 from .centering import measure_centering
-from .grading import available_graders, grade_band
+from .grading import available_graders, grade_band, predict_overall_grade
 from .render import annotate
 from .types import SLAB_PRESETS, SLAB_STACKS, CaptureSpec, DetectionError, resolve_holder
 
@@ -124,6 +124,23 @@ def _measure_payload(image_bytes: bytes, holder: str, lens: str) -> dict:
                 "limited_by": b.limited_by,
             }
             for g, b in bands.items()
+        },
+        "predicted_grades": {
+            g: {
+                "grade": p.grade_label,
+                "score": p.grade_score,
+                "condition": p.condition_name,
+                "subgrades": {
+                    "centering": p.centering_subgrade,
+                    "corners": p.estimated_corners,
+                    "edges": p.estimated_edges,
+                    "surface": p.estimated_surface,
+                },
+            }
+            for g, p in {
+                name: predict_overall_grade(w, quality=result.quality, grader=name)
+                for name in bands.keys()
+            }.items()
         },
         "warnings": list(result.quality.warnings) + list(quality.guidance),
         "overlay": overlay_b64,

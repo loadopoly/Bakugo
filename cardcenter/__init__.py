@@ -12,7 +12,15 @@ __version__ = "2.0.0"
 
 from .centering import measure_centering
 from .connection import ConnectionManager, ConnectionSpec, EndpointHealth, SyncClient, SyncPayload, SyncResult
-from .grading import GradeBand, all_grade_bands, available_graders, grade_band
+from .grading import (
+    CardGradePrediction,
+    GradeBand,
+    all_grade_bands,
+    available_graders,
+    grade_band,
+    predict_all_grades,
+    predict_overall_grade,
+)
 from .types import (
     SLAB_PRESETS,
     BorderPair,
@@ -39,6 +47,9 @@ __all__ = [
     "all_grade_bands",
     "available_graders",
     "GradeBand",
+    "CardGradePrediction",
+    "predict_overall_grade",
+    "predict_all_grades",
     "CenteringResult",
     "BorderPair",
     "Measured",
