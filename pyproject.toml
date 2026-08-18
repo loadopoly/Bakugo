@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cardcenter"
+version = "1.9.0"
+description = "Trading card centering measurement and batch scanning, with honest error bars"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["trading-cards", "grading", "computer-vision", "metrology", "centering"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+
+[project.urls]
+Homepage = "https://github.com/PoodlesOfWar/Bakugo"
+Repository = "https://github.com/PoodlesOfWar/Bakugo.git"
+Documentation = "https://github.com/PoodlesOfWar/Bakugo#readme"
+"Bug Tracker" = "https://github.com/PoodlesOfWar/Bakugo/issues"
+
+
+# Runtime needs exactly two third-party packages. Everything else is stdlib,
+# which is what makes an Android install viable: on a phone every extra
+# dependency is another native build that can fail.
+#
+# On Termux, install these with `pkg install python-numpy opencv-python` rather
+# than pip -- there are no aarch64 wheels on PyPI for OpenCV and building it
+# from source on a phone does not finish.
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+]
+
+[project.optional-dependencies]
+# scipy and pillow are used only by the test suite (the Fermat ray trace and
+# the OCR font fixtures). They are not needed to run the tool.
+dev = ["pytest>=7.4", "scipy>=1.10", "pillow>=10.0"]
+
+[project.scripts]
+cardcenter = "cardcenter.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["cardcenter*"]
+
+[tool.setuptools.package-data]
+cardcenter = ["data/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

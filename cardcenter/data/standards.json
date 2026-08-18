@@ -1,0 +1,92 @@
+{
+  "_README": [
+    "Centering tolerances, as the percentage of the border budget allowed on the",
+    "wider side of the WORST axis. A value of 55 means '55/45 or better'.",
+    "",
+    "IMPORTANT: these numbers are NOT authoritative. Grading companies publish",
+    "centering guidance in loose prose, revise it without notice, and reserve",
+    "explicit grader discretion. Secondary sources contradict each other; PSA's",
+    "own historical standards were removed from its site. Rather than pick a",
+    "winner, every tier carries BOTH a 'strict' and a 'lenient' threshold",
+    "spanning the range that reputable sources actually claim. The tool reports",
+    "a grade band covering both, and tells you whether your uncertainty is",
+    "dominated by measurement error or by this standards ambiguity.",
+    "",
+    "Verify against the grader's current published standards before you spend",
+    "money on a submission. Update this file; do not edit the code.",
+    "",
+    "PSA's own published guidance additionally grants a 5% front-centering",
+    "leeway for cards grading NM 7 or better when eye appeal is good, which is",
+    "part of why the strict/lenient spread below is as wide as it is."
+  ],
+  "_schema_version": 1,
+  "_last_reviewed": "2026-08-06",
+  "graders": {
+    "PSA": {
+      "display_name": "PSA",
+      "subgrade_published": false,
+      "notes": "Centering folds into a single overall grade; it caps the grade but does not set it. Corners, edges and surface can pull the result below what centering alone allows. This tool measures ONLY centering, so it reports a ceiling, not a prediction.",
+      "confidence": "medium",
+      "tiers": [
+        {"grade": "10", "front_strict": 55.0, "front_lenient": 60.0, "back_strict": 75.0, "back_lenient": 75.0},
+        {"grade": "9",  "front_strict": 60.0, "front_lenient": 65.0, "back_strict": 90.0, "back_lenient": 90.0},
+        {"grade": "8",  "front_strict": 65.0, "front_lenient": 70.0, "back_strict": 90.0, "back_lenient": 90.0},
+        {"grade": "7",  "front_strict": 70.0, "front_lenient": 75.0, "back_strict": 90.0, "back_lenient": 90.0},
+        {"grade": "6",  "front_strict": 80.0, "front_lenient": 80.0, "back_strict": 90.0, "back_lenient": 90.0},
+        {"grade": "5",  "front_strict": 85.0, "front_lenient": 85.0, "back_strict": 90.0, "back_lenient": 95.0},
+        {"grade": "4",  "front_strict": 85.0, "front_lenient": 90.0, "back_strict": 95.0, "back_lenient": 95.0},
+        {"grade": "3",  "front_strict": 90.0, "front_lenient": 90.0, "back_strict": 95.0, "back_lenient": 100.0},
+        {"grade": "2",  "front_strict": 90.0, "front_lenient": 95.0, "back_strict": 100.0, "back_lenient": 100.0},
+        {"grade": "1",  "front_strict": 100.0, "front_lenient": 100.0, "back_strict": 100.0, "back_lenient": 100.0}
+      ]
+    },
+    "BGS": {
+      "display_name": "BGS (centering sub-grade)",
+      "subgrade_published": true,
+      "notes": "BGS prints the centering sub-grade on the slab, so this is the one grader where a centering-only tool maps onto a number the market actually sees. Reported empirical work on graded slabs suggests the practical 10/9.5 boundary sits near 52/48 on both front axes, tighter than the published 55/45 language; the strict column reflects that.",
+      "confidence": "medium",
+      "tiers": [
+        {"grade": "10",  "front_strict": 51.0, "front_lenient": 55.0, "back_strict": 55.0, "back_lenient": 60.0},
+        {"grade": "9.5", "front_strict": 55.0, "front_lenient": 60.0, "back_strict": 60.0, "back_lenient": 65.0},
+        {"grade": "9",   "front_strict": 60.0, "front_lenient": 65.0, "back_strict": 65.0, "back_lenient": 70.0},
+        {"grade": "8.5", "front_strict": 65.0, "front_lenient": 70.0, "back_strict": 70.0, "back_lenient": 75.0},
+        {"grade": "8",   "front_strict": 70.0, "front_lenient": 75.0, "back_strict": 75.0, "back_lenient": 80.0},
+        {"grade": "7.5", "front_strict": 75.0, "front_lenient": 80.0, "back_strict": 80.0, "back_lenient": 85.0},
+        {"grade": "7",   "front_strict": 80.0, "front_lenient": 85.0, "back_strict": 85.0, "back_lenient": 90.0},
+        {"grade": "6",   "front_strict": 85.0, "front_lenient": 90.0, "back_strict": 90.0, "back_lenient": 95.0},
+        {"grade": "5",   "front_strict": 90.0, "front_lenient": 95.0, "back_strict": 95.0, "back_lenient": 100.0},
+        {"grade": "4",   "front_strict": 100.0, "front_lenient": 100.0, "back_strict": 100.0, "back_lenient": 100.0}
+      ]
+    },
+    "CGC": {
+      "display_name": "CGC",
+      "subgrade_published": true,
+      "notes": "Sourcing here is materially weaker than for PSA or BGS. Secondary sources describe CGC as closely mirroring BGS rather than publishing its own distinct centering table, so these values are inherited from BGS with widened bands. Treat CGC output as indicative only.",
+      "confidence": "low",
+      "tiers": [
+        {"grade": "10",  "front_strict": 51.0, "front_lenient": 55.0, "back_strict": 55.0, "back_lenient": 60.0},
+        {"grade": "9.5", "front_strict": 55.0, "front_lenient": 60.0, "back_strict": 60.0, "back_lenient": 65.0},
+        {"grade": "9",   "front_strict": 60.0, "front_lenient": 65.0, "back_strict": 65.0, "back_lenient": 70.0},
+        {"grade": "8.5", "front_strict": 65.0, "front_lenient": 70.0, "back_strict": 70.0, "back_lenient": 75.0},
+        {"grade": "8",   "front_strict": 70.0, "front_lenient": 75.0, "back_strict": 75.0, "back_lenient": 80.0},
+        {"grade": "7",   "front_strict": 80.0, "front_lenient": 85.0, "back_strict": 85.0, "back_lenient": 90.0},
+        {"grade": "6",   "front_strict": 100.0, "front_lenient": 100.0, "back_strict": 100.0, "back_lenient": 100.0}
+      ]
+    },
+    "SGC": {
+      "display_name": "SGC",
+      "subgrade_published": false,
+      "notes": "Sourcing is weak. SGC is generally described as sitting between PSA and BGS in strictness and as notably more forgiving on vintage. These values are interpolated, not published. Treat SGC output as indicative only.",
+      "confidence": "low",
+      "tiers": [
+        {"grade": "10",  "front_strict": 53.0, "front_lenient": 57.0, "back_strict": 65.0, "back_lenient": 75.0},
+        {"grade": "9.5", "front_strict": 57.0, "front_lenient": 60.0, "back_strict": 70.0, "back_lenient": 80.0},
+        {"grade": "9",   "front_strict": 60.0, "front_lenient": 65.0, "back_strict": 80.0, "back_lenient": 90.0},
+        {"grade": "8",   "front_strict": 68.0, "front_lenient": 72.0, "back_strict": 90.0, "back_lenient": 90.0},
+        {"grade": "7",   "front_strict": 75.0, "front_lenient": 80.0, "back_strict": 90.0, "back_lenient": 95.0},
+        {"grade": "6",   "front_strict": 85.0, "front_lenient": 90.0, "back_strict": 95.0, "back_lenient": 100.0},
+        {"grade": "5",   "front_strict": 100.0, "front_lenient": 100.0, "back_strict": 100.0, "back_lenient": 100.0}
+      ]
+    }
+  }
+}
