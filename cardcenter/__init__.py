@@ -8,7 +8,7 @@ grade. Centering sets a ceiling; the other three attributes decide where under
 that ceiling a card actually lands.
 """
 
-__version__ = "1.9.0"
+__version__ = "2.0.0"
 
 from .centering import measure_centering
 from .connection import ConnectionManager, ConnectionSpec, EndpointHealth, SyncClient, SyncPayload, SyncResult
