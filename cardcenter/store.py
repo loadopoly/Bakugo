@@ -128,6 +128,7 @@ class ScanStore:
             (time.time(),),
         )
         self.conn.commit()
+        self._ensure_sync_columns()
 
 
     def close(self) -> None:
@@ -169,8 +170,13 @@ class ScanStore:
             source=source,
             created_at=time.time(),
         )
-        d = asdict(rec)
-        d["refraction_applied"] = int(d["refraction_applied"])
+        return self.add_scan_record(asdict(rec))
+
+    def add_scan_record(self, rec: dict) -> int:
+        """Insert a scan from a mapping (CLI, serve, or web measure payload)."""
+        d = dict(rec)
+        d.setdefault("created_at", time.time())
+        d["refraction_applied"] = int(bool(d.get("refraction_applied")))
         cols = ", ".join(d)
         marks = ", ".join("?" for _ in d)
         cur = self.conn.execute(
@@ -178,6 +184,69 @@ class ScanStore:
         )
         self.conn.commit()
         return int(cur.lastrowid)
+
+    def add_scan_from_measure(self, payload: dict, source: str = "measure") -> int:
+        """Persist a successful ``_measure_payload`` / CLI result dict."""
+        borders = payload.get("borders") or {}
+        return self.add_scan_record(
+            {
+                "card_key": payload.get("card_key") or "unidentified",
+                "holder": payload.get("holder") or "raw",
+                "worst_ratio_pct": float(payload.get("ratio") or payload.get("worst_ratio_pct") or 0),
+                "worst_ratio_sigma": float(
+                    payload.get("worst_ratio_sigma")
+                    or ((payload.get("ratio_hi") or 0) - (payload.get("ratio_lo") or 0)) / 3.92
+                    or 0
+                ),
+                "worst_axis": payload.get("axis") or payload.get("worst_axis") or "",
+                "h_ratio_pct": float(payload.get("h_ratio_pct") or payload.get("ratio") or 0),
+                "v_ratio_pct": float(payload.get("v_ratio_pct") or payload.get("ratio") or 0),
+                "left_mm": borders.get("left"),
+                "right_mm": borders.get("right"),
+                "top_mm": borders.get("top"),
+                "bottom_mm": borders.get("bottom"),
+                "px_per_mm": payload.get("px_per_mm"),
+                "inner_confidence": payload.get("inner_confidence"),
+                "refraction_applied": int(bool(payload.get("refraction"))),
+                "warnings": " | ".join(payload.get("warnings") or []),
+                "phash": int(payload.get("phash") or 0),
+                "source": source,
+            }
+        )
+
+    def get_scan(self, scan_id: int) -> Optional[dict]:
+        row = self.conn.execute("SELECT * FROM scans WHERE id = ?", (scan_id,)).fetchone()
+        return dict(row) if row else None
+
+    def labels_for_scan(self, scan_id: int) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM labels WHERE scan_id = ? ORDER BY id", (scan_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def unsynced_scans(self) -> list[dict]:
+        self._ensure_sync_columns()
+        rows = self.conn.execute(
+            "SELECT * FROM scans WHERE COALESCE(synced_at, 0) = 0 ORDER BY id"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def mark_synced(self, scan_id: int, when: Optional[float] = None) -> None:
+        self._ensure_sync_columns()
+        self.conn.execute(
+            "UPDATE scans SET synced_at = ? WHERE id = ?",
+            (when if when is not None else time.time(), scan_id),
+        )
+        self.conn.commit()
+
+    def _ensure_sync_columns(self) -> None:
+        cols = {
+            r[1]
+            for r in self.conn.execute("PRAGMA table_info(scans)").fetchall()
+        }
+        if "synced_at" not in cols:
+            self.conn.execute("ALTER TABLE scans ADD COLUMN synced_at REAL DEFAULT 0.0")
+            self.conn.commit()
 
     def add_label(
         self,

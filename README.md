@@ -47,6 +47,18 @@ better photograph would not narrow it by a millimetre.
 
 ---
 
+## On the web
+
+The live app is **Bakugo** at [loadopoly.com/bakugo](https://www.loadopoly.com/bakugo/).
+It runs the same `cardcenter` engine in the browser (Pyodide). Use **Live AR**
+at a messy counter — glare, case glass, clutter — and still-photo Measure when
+you have a clean frame. Photos stay on the device. Measurements are saved
+locally and may sync metadata to the Loadopoly-OCR Supabase project when
+`CARDCENTER_SUPABASE_URL` / `CARDCENTER_SUPABASE_ANON_KEY` (or the Pages
+`config.json`) are set. Photos are not uploaded.
+
+---
+
 ## Run it on an Android phone
 
 No APK and no build. The measurement code is Python, NumPy and OpenCV; packaging
@@ -443,6 +455,13 @@ you pass `acknowledge_contamination=True`, which is then stamped into the
 manifest so a model trained on crowd votes can never later be described as
 having been trained on grades. `circularity_report()` states plainly what
 fraction of the pool is independent.
+
+Those certified rows are what expand grade prediction. `GradeOutcomeModel`
+is a Dirichlet-multinomial over issued grades, stratified by grader and
+centering-ratio band. Import / `--sync-url` / `--ingest-grades` rebuild it
+from the certified export; with zero observations `predict_overall_grade`
+is identical to the published-table heuristic. The model's own predictions
+are never written back as labels.
 
 Marketplace confirmations are still worth collecting — as sentiment, as a
 prioritisation signal for which cards to actually send in, and as evaluation

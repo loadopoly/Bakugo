@@ -363,6 +363,13 @@ class ConnectionManager:
                 labels_imported += 1
 
         store.conn.commit()
+        # Rebuild the grade-outcome model from whatever certified labels
+        # now sit in the store. Rebuild, not increment: re-importing the
+        # same payload must not double-count, and votes never reach observe.
+        from .learning import LearningStore, ingest_certified_labels
+
+        with LearningStore(store.path) as learning_store:
+            ingest_certified_labels(store, learning_store)
         return (scans_imported, labels_imported, quarantined)
 
     def sync(

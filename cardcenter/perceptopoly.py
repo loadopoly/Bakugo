@@ -52,6 +52,7 @@ import numpy as np
 
 from .centering import measure_centering
 from .grading import available_graders, grade_band, predict_overall_grade
+from .learning import maybe_load_grade_model
 from .serve import LENS_FOV, _parse_multipart
 from .triage import Route, triage
 from .types import CaptureSpec, DetectionError, resolve_holder
@@ -198,9 +199,13 @@ def analyse(image_bytes: bytes, holder: str, lens: str) -> dict:
                         "edges": p.estimated_edges,
                         "surface": p.estimated_surface,
                     },
+                    "used_learned": p.used_learned,
+                    "n_observations": p.n_observations,
                 }
                 for g, p in {
-                    name: predict_overall_grade(w, quality=res.quality, grader=name)
+                    name: predict_overall_grade(
+                        w, quality=res.quality, grader=name, model=maybe_load_grade_model()
+                    )
                     for name in bands.keys()
                 }.items()
             },

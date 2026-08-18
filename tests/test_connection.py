@@ -14,6 +14,7 @@ from cardcenter.connection import (
     SyncResult,
     compute_scan_hash,
 )
+from cardcenter.learning import LearningStore
 from cardcenter.store import LabelKind, ScanStore
 
 
@@ -178,6 +179,73 @@ def test_export_import_roundtrip(tmp_path) -> None:
         assert quar == 0
         assert dst_store.scan_count() == 1
         assert dst_store.label_counts()[LabelKind.CERTIFIED.value] == 1
+
+    with LearningStore(dst_db) as learned:
+        model = learned.load_grade_model()
+    assert model.observations() == 1
+    assert model.bin_counts("PSA", 50.0).get("10") == 1
+
+
+def test_import_expands_grade_model_without_training_on_votes(tmp_path) -> None:
+    db_path = str(tmp_path / "hub.db")
+    mgr = ConnectionManager()
+    payload = SyncPayload(
+        schema_version="cardcenter/2",
+        engine_version=__version__,
+        exported_at=time.time(),
+        client_id="peer-scanner",
+        scans=[
+            {
+                "id": 1,
+                "card_key": "sv01-mew",
+                "holder": "raw",
+                "worst_ratio_pct": 51.0,
+                "worst_ratio_sigma": 0.5,
+                "worst_axis": "horizontal",
+                "h_ratio_pct": 51.0,
+                "v_ratio_pct": 50.0,
+                "px_per_mm": 10.0,
+                "inner_confidence": 0.95,
+                "refraction_applied": 0,
+                "warnings": "",
+                "phash": 42,
+                "created_at": time.time(),
+            }
+        ],
+        labels=[
+            {
+                "scan_id": 1,
+                "grader": "PSA",
+                "grade": "10",
+                "kind": LabelKind.CERTIFIED.value,
+                "cert_number": "99887766",
+            },
+            {
+                "scan_id": 1,
+                "grader": "BGS",
+                "grade": "9.5",
+                "kind": LabelKind.MARKETPLACE_VOTE.value,
+                "cert_number": None,
+            },
+        ],
+    )
+    with ScanStore(db_path) as store:
+        mgr.import_payload(store, payload, strict_provenance=True)
+        training = store.export_training_set()
+        assert len(training["examples"]) == 1
+        assert training["examples"][0]["kind"] == LabelKind.CERTIFIED.value
+
+    with LearningStore(db_path) as learned:
+        model = learned.load_grade_model()
+    assert model.observations() == 1
+    assert model.observations("PSA") == 1
+    assert model.observations("BGS") == 0
+
+    # Re-import must rebuild, not double-count.
+    with ScanStore(db_path) as store:
+        mgr.import_payload(store, payload, strict_provenance=True)
+    with LearningStore(db_path) as learned:
+        assert learned.load_grade_model().observations() == 1
 
 
 def test_endpoint_health_object() -> None:

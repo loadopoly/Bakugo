@@ -8,9 +8,10 @@ grade. Centering sets a ceiling; the other three attributes decide where under
 that ceiling a card actually lands.
 """
 
-__version__ = "2.0.0"
+__version__ = "2.2.0"
 
 from .centering import measure_centering
+from .cloud import CloudConfig, CloudResult, resolve_config, sync_scan_id, sync_store, upsert_scan
 from .connection import ConnectionManager, ConnectionSpec, EndpointHealth, SyncClient, SyncPayload, SyncResult
 from .grading import (
     CardGradePrediction,
@@ -20,6 +21,12 @@ from .grading import (
     grade_band,
     predict_all_grades,
     predict_overall_grade,
+)
+from .learning import (
+    GradeOutcomeModel,
+    LearningStore,
+    ingest_certified_labels,
+    maybe_load_grade_model,
 )
 from .types import (
     SLAB_PRESETS,
@@ -39,6 +46,7 @@ from .versioning import (
     check_for_updates,
     get_engine_capabilities,
     get_version_info,
+    migrate_database,
 )
 
 __all__ = [
@@ -50,6 +58,10 @@ __all__ = [
     "CardGradePrediction",
     "predict_overall_grade",
     "predict_all_grades",
+    "GradeOutcomeModel",
+    "LearningStore",
+    "ingest_certified_labels",
+    "maybe_load_grade_model",
     "CenteringResult",
     "BorderPair",
     "Measured",
@@ -71,6 +83,12 @@ __all__ = [
     "EndpointHealth",
     "SyncPayload",
     "SyncResult",
+    "CloudConfig",
+    "CloudResult",
+    "resolve_config",
+    "upsert_scan",
+    "sync_scan_id",
+    "sync_store",
     "__version__",
 ]
 

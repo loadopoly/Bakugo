@@ -17,13 +17,19 @@ import pytest
 from cardcenter.information import (
     ChannelConditions,
     SensorModel,
+    apply_rhythm_to_channel,
     audit_measurement,
     cramer_rao_edge_px,
     fisher_information_edge,
+    measure_coherence,
+    modulate,
     quantum_floor_px,
+    relational_gradient,
     shot_noise_consistency,
     shot_noise_fisher_edge,
+    temporal_spatial_rhythm,
     variance_budget,
+    weyl_centroid,
 )
 from cardcenter.photogrammetry import (
     BANK_CARD,
@@ -87,6 +93,88 @@ def test_near_the_limit_says_better_code_will_not_help() -> None:
     a = audit_measurement(BASE, bound * 1.2, 3.5, 2.5, 10.0)
     assert a.efficiency > 0.5
     assert any("Better code will not help" in x for x in a.advice)
+
+
+# ---------------------------------------------------------------------------
+# QUIPU temporal-spatial overlay (pixel-space form)
+# ---------------------------------------------------------------------------
+
+UNIFORM = {
+    "vision": 0.8,
+    "touch": 0.8,
+    "smell": 0.8,
+    "body": 0.8,
+    "brain": 0.8,
+    "perception": 0.8,
+}
+ONE_HOT = {
+    "vision": 1.0,
+    "touch": 0.0,
+    "smell": 0.0,
+    "body": 0.0,
+    "brain": 0.0,
+    "perception": 0.0,
+}
+
+
+def test_uniform_high_activity_is_coherent() -> None:
+    assert measure_coherence(UNIFORM) > 0.7
+
+
+def test_one_hot_activity_is_incoherent() -> None:
+    assert measure_coherence(ONE_HOT) < 0.15
+
+
+def test_boost_is_clamped_and_period_is_reciprocal() -> None:
+    r = modulate(UNIFORM)
+    assert 0.5 <= float(r["boost"]) <= 1.5
+    assert float(r["period_factor"]) == pytest.approx(1.0 / float(r["boost"]), abs=5e-4)
+    assert float(r["lr_factor"]) == pytest.approx(float(r["boost"]), abs=5e-4)
+
+
+def test_weyl_is_on_the_circle_and_empty_is_zero() -> None:
+    weyl = weyl_centroid(UNIFORM)
+    assert 0.0 <= weyl <= 2.0 * math.pi
+    assert weyl_centroid({}) == 0.0
+
+
+def test_boost_does_not_change_single_shot_fisher() -> None:
+    rhythm = temporal_spatial_rhythm(BASE)
+    assert rhythm.boost != 1.0 or rhythm.effective_rows == BASE.rows
+    assert fisher_information_edge(BASE) == pytest.approx(
+        fisher_information_edge(BASE), rel=0.0
+    )
+    fused = apply_rhythm_to_channel(BASE, rhythm)
+    if abs(rhythm.boost - 1.0) > 1e-9:
+        assert fisher_information_edge(fused) != pytest.approx(
+            fisher_information_edge(BASE), rel=1e-9
+        )
+
+
+def test_fused_crb_moves_as_one_over_sqrt_effective_rows() -> None:
+    rhythm = temporal_spatial_rhythm(BASE, efficiency=0.8, frame_chi2_dof=1.0)
+    fused = apply_rhythm_to_channel(BASE, rhythm)
+    raw = cramer_rao_edge_px(BASE)
+    washed = cramer_rao_edge_px(fused)
+    expected = raw * math.sqrt(BASE.rows / fused.rows)
+    assert washed == pytest.approx(expected, rel=1e-6)
+
+
+def test_audit_attaches_rhythm_on_both_regimes() -> None:
+    specimen = audit_measurement(BASE, 0.43, 3.5, 2.5, 10.0)
+    assert specimen.rhythm is not None
+    assert specimen.fused_bound_px is not None
+    bound = specimen.bound_ratio_pp
+    near = audit_measurement(BASE, bound * 1.2, 3.5, 2.5, 10.0)
+    assert near.rhythm is not None
+    assert near.fused_bound_px is not None
+    assert 0.5 <= near.rhythm.boost <= 1.5
+
+
+def test_relational_gradient_uses_smell_complement_as_decay() -> None:
+    high_blur = {"touch": 0.0, "smell": 0.0, "vision": 0.5, "body": 0.5, "brain": 0.5, "perception": 0.5}
+    sharp = {"touch": 0.0, "smell": 1.0, "vision": 0.5, "body": 0.5, "brain": 0.5, "perception": 0.5}
+    assert relational_gradient(high_blur) > relational_gradient(sharp)
 
 
 # ---------------------------------------------------------------------------

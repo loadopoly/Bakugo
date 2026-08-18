@@ -29,9 +29,12 @@ from typing import Optional
 import cv2
 import numpy as np
 
+import os
+
 from .capture import assess_frame
 from .centering import measure_centering
 from .grading import available_graders, grade_band, predict_overall_grade
+from .learning import maybe_load_grade_model
 from .render import annotate
 from .types import SLAB_PRESETS, SLAB_STACKS, CaptureSpec, DetectionError, resolve_holder
 
@@ -116,6 +119,7 @@ def _measure_payload(image_bytes: bytes, holder: str, lens: str) -> dict:
             "bottom": round(result.vertical.high_mm.value, 2),
         },
         "px_per_mm": round(result.px_per_mm, 1),
+        "inner_confidence": round(result.quality.inner_confidence, 3),
         "holder": result.slab.name,
         "refraction": result.quality.refraction_applied,
         "bands": {
@@ -136,15 +140,54 @@ def _measure_payload(image_bytes: bytes, holder: str, lens: str) -> dict:
                     "edges": p.estimated_edges,
                     "surface": p.estimated_surface,
                 },
+                "used_learned": p.used_learned,
+                "n_observations": p.n_observations,
             }
             for g, p in {
-                name: predict_overall_grade(w, quality=result.quality, grader=name)
+                name: predict_overall_grade(
+                    w, quality=result.quality, grader=name, model=maybe_load_grade_model()
+                )
                 for name in bands.keys()
             }.items()
         },
         "warnings": list(result.quality.warnings) + list(quality.guidance),
         "overlay": overlay_b64,
     }
+
+
+def persist_measure(payload: dict, source: str = "serve", *, cloud: bool = True) -> dict:
+    """Write a successful measure locally, then best-effort cloud upsert.
+
+    Failures here never fail the measurement. Local ScanStore is source of
+    truth; Supabase is a mirror of metadata only (no photo). Pyodide skips
+    the urllib hop — the Pages app posts metadata from JavaScript instead.
+    """
+    extra: dict = {}
+    db = os.environ.get("CARDCENTER_DB")
+    if not db or not payload.get("ok"):
+        return extra
+    if cloud and sys.platform == "emscripten":
+        cloud = False
+    try:
+        from .store import ScanStore
+
+        with ScanStore(db) as store:
+            scan_id = store.add_scan_from_measure(payload, source=source)
+            extra["scan_id"] = scan_id
+            extra["scan_count"] = store.scan_count()
+            extra["saved_local"] = True
+            if not cloud:
+                extra["cloud"] = {"ok": True, "skipped": True, "table": "bakugo_scans"}
+                return extra
+            try:
+                from .cloud import sync_scan_id
+
+                extra["cloud"] = sync_scan_id(store, scan_id).to_dict()
+            except Exception as exc:  # pragma: no cover - never fail measure
+                extra["cloud"] = {"ok": False, "error": str(exc)}
+    except Exception as exc:  # pragma: no cover - never fail measure
+        extra["persist_error"] = str(exc)
+    return extra
 
 
 PAGE = """<!DOCTYPE html>
@@ -424,6 +467,8 @@ class Handler(BaseHTTPRequestHandler):
                 fields.get("holder", b"raw").decode(),
                 fields.get("lens", b"main").decode(),
             )
+            if payload.get("ok"):
+                payload.update(persist_measure(payload, source="serve"))
         except DetectionError as exc:
             payload = {"ok": False, "error": str(exc)}
         except Exception as exc:  # pragma: no cover - surfaced to the phone
@@ -444,6 +489,8 @@ def local_ip() -> str:
 
 
 def serve(host: str = "127.0.0.1", port: int = 8765) -> None:
+    if not os.environ.get("CARDCENTER_DB"):
+        os.environ["CARDCENTER_DB"] = "cardcenter.db"
     httpd = ThreadingHTTPServer((host, port), Handler)
     print()
     print("  cardcenter is running.")
@@ -452,6 +499,7 @@ def serve(host: str = "127.0.0.1", port: int = 8765) -> None:
     if host != "127.0.0.1":
         print(f"    on your wifi  : http://{local_ip()}:{port}")
     print()
+    print(f"  scans saved to  : {os.environ['CARDCENTER_DB']}")
     print("  Open that in Chrome. Ctrl+C here to stop.")
     print()
     try:

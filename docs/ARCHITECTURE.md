@@ -70,7 +70,9 @@
 ### C. Versioning, Provenance & Connection
 * **`cardcenter.versioning`**: SemVer 2.0.0 parser, runtime capability matrix, forward SQLite schema migrations, and upstream GitHub release checker (`https://github.com/PoodlesOfWar/Bakugo`).
 * **`cardcenter.connection`**: Client-server sync protocol, deterministic SHA-256 integrity hashing, and the **Contamination Firewall** ensuring only cert-verified grades train models.
-* **`cardcenter.store`**: Provenance-preserving SQLite store tracking scans, certified labels, self-reported tags, and marketplace sentiment.
+* **`cardcenter.store`**: Provenance-preserving SQLite store tracking scans, certified labels, self-reported tags, and marketplace sentiment. Local source of truth; `synced_at` marks a successful cloud mirror.
+* **`cardcenter.cloud`**: Optional metadata upsert to the same Supabase *project* as Loadopoly-OCR (`bakugo_scans` / `bakugo_labels`). Anon key only. Photos stay local. Not OCR documents — dedicated tables keep the contamination firewall.
+* **`cardcenter.learning`**: Closed-form conjugate learners (OCR confusion, encounter prior, Almgren-Chriss impact, **issued-grade outcomes**). Grade predictions expand only from certified labels; identity reduction keeps the published-table heuristic when the model is empty.
 
 ### D. Financial & Catalog Intelligence
 * **`cardcenter.catalog`**: Scryfall & Pokémon TCG API integration, ORB visual feature matching, and resolution-gated collector number OCR.
@@ -86,3 +88,4 @@ A key architectural principle in Bakugo is preventing circular model contaminati
 1. **Certified Ground Truth**: Labels issued by PSA, BGS, or CGC on a physical slab must include a verifiable `cert_number`. Only these labels are exported for model training by default.
 2. **Self-Reported & Crowd Votes**: Stored separately with clear provenance; excluded from training exports unless explicit contamination flags are stamped into audit manifests.
 3. **Sync Protocol Verification**: `ConnectionManager` automatically inspects incoming sync bundles and quarantines any certified label missing a certification identifier.
+4. **Grade-outcome expansion**: After a successful import, `ingest_certified_labels` rebuilds `GradeOutcomeModel` from the certified export only. Marketplace votes, self-reports, and this system's own predictions never reach `observe`. Ratio bands do not pool: off-centre 8s cannot pull a gem-centred card.

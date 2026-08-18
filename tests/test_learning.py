@@ -19,11 +19,15 @@ from cardcenter.learning import (
     ConfusionModel,
     EncounterPrior,
     Fill,
+    GradeOutcomeModel,
     ImpactEstimator,
     LearningStore,
     band_for,
+    ingest_certified_labels,
     learning_report,
+    maybe_load_grade_model,
     posterior_decode,
+    ratio_band_for,
 )
 from cardcenter.ocr import levenshtein
 
@@ -297,3 +301,149 @@ def test_report_always_states_the_circularity_rule() -> None:
     r = learning_report(ConfusionModel(), EncounterPrior(), ImpactEstimator())
     assert "ONLY from verified observations" in r
     assert "never fed back" in r or "is ever fed back" in r
+
+
+# --------------------------------------------------------------------------
+# Grade-outcome model -- expand as certified labels arrive
+# --------------------------------------------------------------------------
+
+
+def _cert(
+    grade: str,
+    ratio: float,
+    *,
+    grader: str = "PSA",
+    cert: str = "11111111",
+    kind: str = "certified",
+    confidence: float = 0.9,
+) -> dict:
+    return {
+        "kind": kind,
+        "cert_number": cert,
+        "grader": grader,
+        "grade": grade,
+        "worst_ratio_pct": ratio,
+        "inner_confidence": confidence,
+    }
+
+
+def test_untrained_grade_model_is_unused() -> None:
+    from cardcenter.grading import predict_overall_grade
+    from cardcenter.types import Measured
+
+    ratio = Measured(51.0, 0.2)
+    baseline = predict_overall_grade(ratio, grader="PSA")
+    empty = predict_overall_grade(ratio, grader="PSA", model=GradeOutcomeModel())
+    assert empty.grade_score == baseline.grade_score
+    assert empty.probabilities == baseline.probabilities
+    assert empty.confidence == baseline.confidence
+    assert empty.used_learned is False
+    assert empty.n_observations == 0
+    assert not baseline.used_learned
+
+
+def test_grade_observe_rejects_non_certified_and_uncerted() -> None:
+    model = GradeOutcomeModel()
+    assert not model.observe(_cert("10", 51.0, kind="model_predicted"))
+    assert not model.observe(_cert("10", 51.0, kind="marketplace_vote"))
+    assert not model.observe(_cert("10", 51.0, kind="self_reported"))
+    missing = _cert("10", 51.0)
+    missing["cert_number"] = ""
+    assert not model.observe(missing)
+    assert model.observations() == 0
+
+
+def test_certified_labels_shift_the_prediction_toward_issued_grades() -> None:
+    from cardcenter.grading import predict_overall_grade
+    from cardcenter.types import Measured
+
+    ratio = Measured(51.0, 0.2)
+    baseline = predict_overall_grade(ratio, grader="PSA")
+    model = GradeOutcomeModel()
+    for i in range(40):
+        model.observe(_cert("8", 51.0, cert=f"8{i:06d}"))
+    trained = predict_overall_grade(ratio, grader="PSA", model=model)
+    assert trained.used_learned
+    assert trained.n_observations == 40
+    assert trained.grade_score < baseline.grade_score
+    assert trained.probabilities["8"] > baseline.probabilities.get("8", 0.0)
+
+
+def test_more_labels_shrink_posterior_variance() -> None:
+    few, many = GradeOutcomeModel(), GradeOutcomeModel()
+    for i in range(6):
+        few.observe(_cert("8" if i % 2 else "9", 51.0, cert=f"f{i}"))
+    for i in range(80):
+        many.observe(_cert("8" if i % 2 else "9", 51.0, cert=f"m{i}"))
+    vf = few.posterior_variance("PSA", 51.0)
+    vm = many.posterior_variance("PSA", 51.0)
+    assert vf is not None and vm is not None
+    assert vm < vf
+
+
+def test_ratio_bands_do_not_leak() -> None:
+    from cardcenter.grading import predict_overall_grade
+    from cardcenter.types import Measured
+
+    model = GradeOutcomeModel()
+    for i in range(40):
+        model.observe(_cert("8", 72.0, cert=f"off{i}"))
+    gem = predict_overall_grade(Measured(51.0, 0.2), grader="PSA", model=model)
+    off = predict_overall_grade(Measured(72.0, 0.2), grader="PSA", model=model)
+    assert not gem.used_learned
+    assert gem.n_observations == 0
+    assert off.used_learned
+    assert off.n_observations == 40
+    assert ratio_band_for(51.0) != ratio_band_for(72.0)
+
+
+def test_learned_prediction_never_exceeds_published_ceiling() -> None:
+    from cardcenter.grading import grade_band, predict_overall_grade
+    from cardcenter.learning import parse_issued_grade
+    from cardcenter.types import Measured
+
+    ratio = Measured(72.0, 0.2)
+    ceiling = parse_issued_grade(grade_band(ratio, "PSA", "front").worst)
+    model = GradeOutcomeModel()
+    for i in range(50):
+        model.observe(_cert("10", 72.0, cert=f"gem{i}"))
+    pred = predict_overall_grade(ratio, grader="PSA", model=model)
+    assert pred.used_learned
+    assert ceiling is not None
+    assert pred.grade_score <= ceiling
+
+
+def test_ingest_rebuilds_instead_of_double_counting(tmp_path) -> None:
+    from cardcenter.store import LabelKind, ScanStore
+    from tests.test_connection import _dummy_result
+
+    db = str(tmp_path / "grades.db")
+    with ScanStore(db) as scans, LearningStore(db) as learned:
+        sid = scans.add_scan("charizard", _dummy_result())
+        scans.add_label(sid, "PSA", "10", LabelKind.CERTIFIED, cert_number="99887766")
+        first = ingest_certified_labels(scans, learned)
+        second = ingest_certified_labels(scans, learned)
+    assert first.observations() == 1
+    assert second.observations() == 1
+
+
+def test_grade_model_round_trips_through_the_store(tmp_path) -> None:
+    model = GradeOutcomeModel()
+    model.observe(_cert("10", 51.0, cert="22222222"))
+    path = str(tmp_path / "learn.db")
+    with LearningStore(path) as store:
+        store.save_grade_model(model)
+    with LearningStore(path) as store:
+        loaded = store.load_grade_model()
+    assert loaded.observations() == 1
+    assert loaded.bin_counts("PSA", 51.0)["10"] == 1
+    assert maybe_load_grade_model(path).observations() == 1
+    assert maybe_load_grade_model(str(tmp_path / "missing.db")).observations() == 0
+
+
+def test_report_mentions_published_table_when_untrained() -> None:
+    r = learning_report(
+        ConfusionModel(), EncounterPrior(), ImpactEstimator(), GradeOutcomeModel()
+    )
+    assert "published-table heuristic" in r
+    assert "0 certified" in r or "0 certified label" in r

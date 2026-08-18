@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -20,6 +21,7 @@ from .grading import (
     predict_all_grades,
     predict_overall_grade,
 )
+from .learning import GradeOutcomeModel, maybe_load_grade_model
 from .render import save_annotated
 from .types import SLAB_PRESETS, CaptureSpec, CenteringResult, DetectionError
 
@@ -33,7 +35,7 @@ DISCLAIMER = (
 )
 
 
-def _result_dict(res: CenteringResult, bands: dict) -> dict:
+def _result_dict(res: CenteringResult, bands: dict, model: Optional[GradeOutcomeModel] = None) -> dict:
     def pair(p):
         rp = p.ratio_pct
         lo, hi = rp.interval()
@@ -95,9 +97,13 @@ def _result_dict(res: CenteringResult, bands: dict) -> dict:
                 },
                 "probabilities": pred.probabilities,
                 "confidence": pred.confidence,
+                "used_learned": pred.used_learned,
+                "n_observations": pred.n_observations,
             }
             for name, pred in {
-                g: predict_overall_grade(res.worst_ratio, quality=res.quality, grader=g)
+                g: predict_overall_grade(
+                    res.worst_ratio, quality=res.quality, grader=g, model=model
+                )
                 for g in bands.keys()
             }.items()
         },
@@ -105,7 +111,12 @@ def _result_dict(res: CenteringResult, bands: dict) -> dict:
     }
 
 
-def _print_human(res: CenteringResult, bands: dict, face: str) -> None:
+def _print_human(
+    res: CenteringResult,
+    bands: dict,
+    face: str,
+    model: Optional[GradeOutcomeModel] = None,
+) -> None:
     print()
     print("=" * 66)
     print("  CENTERING MEASUREMENT")
@@ -137,8 +148,13 @@ def _print_human(res: CenteringResult, bands: dict, face: str) -> None:
     print("-" * 66)
     from .grading import predict_overall_grade
     for name in bands.keys():
-        pred = predict_overall_grade(res.worst_ratio, quality=res.quality, grader=name, face=face)
-        print(f"  {name:<5} -> {pred.grade_label:<8} ({pred.condition_name:<16})  [Confidence: {int(pred.confidence*100)}%]")
+        pred = predict_overall_grade(
+            res.worst_ratio, quality=res.quality, grader=name, face=face, model=model
+        )
+        learned = (
+            f"  [learned from {pred.n_observations} certs]" if pred.used_learned else ""
+        )
+        print(f"  {name:<5} -> {pred.grade_label:<8} ({pred.condition_name:<16})  [Confidence: {int(pred.confidence*100)}%]{learned}")
         print(f"        Subgrades: Centering {pred.centering_subgrade:.1f} | Corners {pred.estimated_corners:.1f} | Edges {pred.estimated_edges:.1f} | Surface {pred.estimated_surface:.1f}")
         prob_str = ", ".join(f"{g}: {int(p*100)}%" for g, p in sorted(pred.probabilities.items(), key=lambda kv: -kv[1]))
         print(f"        Probabilities: {prob_str}")
@@ -239,6 +255,8 @@ def _run_scan(args, video: bool) -> int:
             print(f"    card {c.card_id:<3} {reasons[0][:80] if reasons else 'no usable frame'}")
 
     if args.db:
+        from .cloud import sync_store
+
         with ScanStore(args.db) as st:
             n = 0
             for c in report.measured():
@@ -258,6 +276,13 @@ def _run_scan(args, video: bool) -> int:
             print(f"  recorded {n} scan(s) in {args.db}")
             print("  no grade labels were written. Labels must come from a grader,")
             print("  with a cert number, or they cannot train anything.")
+            cloud = sync_store(st)
+            if cloud.skipped:
+                print("  cloud mirror skipped (set CARDCENTER_SUPABASE_URL + ANON_KEY).")
+            elif cloud.ok:
+                print(f"  cloud mirror wrote {cloud.count} scan(s) to Loadopoly-OCR Supabase.")
+            else:
+                print(f"  cloud mirror failed: {cloud.error}")
 
     print()
     print("-" * 70)
@@ -313,6 +338,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="also listen on the local network, so another device can reach it")
     p.add_argument("--circularity", action="store_true",
                    help="report how much of the label pool is independent")
+    p.add_argument(
+        "--ingest-grades",
+        action="store_true",
+        help="rebuild the grade-outcome model from certified labels in --db",
+    )
     p.add_argument("--no-quality-gate", action="store_true",
                    help="measure every detection, even blurred or glared ones")
     p.add_argument("--face", default="front", choices=["front", "back"])
@@ -338,6 +368,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--check-updates", action="store_true", help="check upstream GitHub repository for updates")
     p.add_argument("--check-health", metavar="URL", help="check health and latency of a remote cardcenter endpoint")
     p.add_argument("--sync-url", metavar="URL", help="synchronize local database with a remote endpoint")
+    p.add_argument(
+        "--sync-cloud",
+        action="store_true",
+        help="push unsynced local scans to the Loadopoly-OCR Supabase project",
+    )
     p.add_argument("--auth-token", metavar="TOKEN", help="bearer authentication token for remote sync")
     p.add_argument("--migrate-db", metavar="PATH", help="migrate SQLite database to the latest schema version")
     p.add_argument("--info", action="store_true", help="show detailed build, runtime, and schema version info")
@@ -381,6 +416,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.serve:
         from .serve import serve
 
+        if args.db:
+            import os
+
+            os.environ["CARDCENTER_DB"] = args.db
         serve(host="0.0.0.0" if args.lan else "127.0.0.1", port=args.port)
         return 0
 
@@ -394,6 +433,24 @@ def main(argv: list[str] | None = None) -> int:
             print()
             print(st.circularity_report())
             print()
+        return 0
+
+    if args.ingest_grades:
+        if not args.db:
+            print("error: --ingest-grades needs --db", file=sys.stderr)
+            return 2
+        from .learning import LearningStore, ingest_certified_labels
+        from .store import ScanStore
+
+        with ScanStore(args.db) as scans, LearningStore(args.db) as learned:
+            model = ingest_certified_labels(scans, learned)
+        print()
+        print(
+            f"  ingested {model.observations()} certified grade label(s) "
+            f"into {args.db}"
+        )
+        print("  only CERTIFIED rows with a cert number were used.")
+        print()
         return 0
 
     if args.info:
@@ -436,6 +493,27 @@ def main(argv: list[str] | None = None) -> int:
         print()
         return 0 if health.is_healthy() else 1
 
+    if args.sync_cloud:
+        if not args.db:
+            print("error: --sync-cloud requires --db <PATH>", file=sys.stderr)
+            return 2
+        from .cloud import sync_store
+        from .store import ScanStore
+
+        with ScanStore(args.db) as store:
+            print(f"\nMirroring {args.db} to Loadopoly-OCR Supabase...")
+            result = sync_store(store)
+            if result.skipped:
+                print("  skipped: set CARDCENTER_SUPABASE_URL and CARDCENTER_SUPABASE_ANON_KEY.")
+                print()
+                return 2
+            if result.ok:
+                print(f"  wrote {result.count} scan(s). Photos were not uploaded.")
+                print()
+                return 0
+            print(f"  failed: {result.error}", file=sys.stderr)
+            return 1
+
     if args.sync_url:
         if not args.db:
             print("error: --sync-url requires --db <PATH> to specify local store", file=sys.stderr)
@@ -449,6 +527,11 @@ def main(argv: list[str] | None = None) -> int:
             sync_res = mgr.sync(store, spec)
             print()
             print(sync_res.describe())
+            from .learning import LearningStore
+
+            with LearningStore(args.db) as learned:
+                n = learned.load_grade_model().observations()
+            print(f"  Grade model now holds {n} certified observation(s).")
             print()
             return 0 if sync_res.success else 1
 
@@ -512,17 +595,36 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 2
 
+    model = maybe_load_grade_model(args.db)
+
     if not args.quiet:
-        _print_human(res, bands, args.face)
+        _print_human(res, bands, args.face, model=model)
 
     if args.json:
         with open(args.json, "w", encoding="utf-8") as fh:
-            json.dump(_result_dict(res, bands), fh, indent=2)
+            json.dump(_result_dict(res, bands, model=model), fh, indent=2)
         print(f"  wrote {args.json}")
 
     if args.overlay:
         save_annotated(args.overlay, res, bands)
         print(f"  wrote {args.overlay}")
+
+    if args.db:
+        from .cloud import sync_scan_id
+        from .store import ScanStore
+
+        with ScanStore(args.db) as store:
+            scan_id = store.add_scan(
+                args.card_key, res, source=str(path),
+            )
+            print(f"  recorded scan {scan_id} in {args.db}")
+            cloud = sync_scan_id(store, scan_id)
+            if cloud.skipped:
+                print("  cloud mirror skipped (set CARDCENTER_SUPABASE_URL + ANON_KEY).")
+            elif cloud.ok:
+                print("  cloud mirror wrote this scan to Loadopoly-OCR Supabase.")
+            else:
+                print(f"  cloud mirror failed: {cloud.error}")
 
     return 0
 

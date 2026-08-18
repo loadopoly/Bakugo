@@ -85,3 +85,18 @@ During synchronization:
 1. Any incoming label marked as `certified` that lacks a valid `cert_number` is **quarantined** and rejected from the certified label pool.
 2. Self-reported, crowd votes, and model predictions are safely imported with their explicit `kind` tag but excluded from training manifests.
 3. Training exports (`store.export_training_set()`) enforce strict ground-truth purity.
+4. After import, `ingest_certified_labels` rebuilds the grade-outcome model from that certified export. Re-importing the same payload does not double-count. `cardcenter --ingest-grades --db PATH` rebuilds from an existing store without a network hop.
+
+---
+
+## 5. Loadopoly-OCR Supabase mirror
+
+Local `ScanStore` remains the source of truth. `cardcenter.cloud` best-effort upserts measurement **metadata** (not photos) to `bakugo_scans` / `bakugo_labels` in the Loadopoly-OCR Supabase project.
+
+```bash
+export CARDCENTER_SUPABASE_URL=https://<project>.supabase.co
+export CARDCENTER_SUPABASE_ANON_KEY=<anon-key>
+cardcenter --sync-cloud --db shop_inventory.db
+```
+
+The Pages app loads the same pair from `config.json` (see `config.example.json`) or `window.__BAKUGO_SUPABASE__`. Offline rows queue in `localStorage` and flush when the network returns. Never put a service-role key in the browser or in `CARDCENTER_SUPABASE_ANON_KEY`.

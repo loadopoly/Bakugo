@@ -64,3 +64,12 @@ cardcenter --serve --lan --port 8765 --db central_vault.db
 # On Phone (Termux):
 cardcenter --sync-url http://<DESKTOP_LAN_IP>:8765 --db mobile_scans.db
 ```
+
+To mirror measurement metadata to the Loadopoly-OCR Supabase project (photos stay local):
+```bash
+export CARDCENTER_SUPABASE_URL=https://<project>.supabase.co
+export CARDCENTER_SUPABASE_ANON_KEY=<anon-key>
+cardcenter card.jpg --db mobile_scans.db
+# or later:
+cardcenter --sync-cloud --db mobile_scans.db
+```

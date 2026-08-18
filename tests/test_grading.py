@@ -187,4 +187,22 @@ def test_predict_all_grades() -> None:
     for g, p in preds.items():
         assert p.grader == g
         assert p.grade_score >= 1.0 and p.grade_score <= 10.0
+        assert p.used_learned is False
+
+
+def test_untrained_model_matches_heuristic_bit_for_bit() -> None:
+    from cardcenter.grading import predict_overall_grade
+    from cardcenter.learning import GradeOutcomeModel
+
+    ratio = Measured(51.0, 0.2)
+    a = predict_overall_grade(ratio, grader="PSA")
+    b = predict_overall_grade(ratio, grader="PSA", model=None)
+    c = predict_overall_grade(ratio, grader="PSA", model=GradeOutcomeModel())
+    for got in (b, c):
+        assert got.grade_score == a.grade_score
+        assert got.grade_label == a.grade_label
+        assert got.probabilities == a.probabilities
+        assert got.confidence == a.confidence
+        assert got.summary == a.summary
+        assert got.used_learned is False
 

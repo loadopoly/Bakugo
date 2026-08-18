@@ -91,9 +91,19 @@ cardcenter --migrate-db shop_inventory.db
 # Check remote hub health
 cardcenter --check-health http://192.168.1.50:8765
 
-# Bidirectional sync
+# Bidirectional sync (rebuilds the grade-outcome model from certified labels)
 cardcenter --sync-url http://192.168.1.50:8765 --db shop_inventory.db
+
+# Push unsynced local scans to the Loadopoly-OCR Supabase project (metadata only)
+cardcenter --sync-cloud --db shop_inventory.db
+
+# Rebuild the grade-outcome model from certified labels already in the store
+cardcenter --ingest-grades --db shop_inventory.db
 ```
+
+Single-image and `--serve` paths also write `--db` / `CARDCENTER_DB` after a successful measure, then best-effort upsert to `bakugo_scans` when the anon-key env vars are set. Photos are never uploaded.
+
+`--serve` and `--ar` load the same model from `--db` or the `CARDCENTER_DB` environment variable. Measure and JSON output report `used_learned` / `n_observations` when certified labels have expanded the heuristic.
 
 ---
 

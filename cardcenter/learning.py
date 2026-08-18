@@ -28,14 +28,15 @@ NOT WORTH TAKING: rADAM ITSELF
 
 rADAM is a sound piece of work for its problem -- a high-dimensional, non-convex
 surface where no closed form exists and you need momentum, noise injection and
-rectification to make progress. That is not the problem here. The three things
+rectification to make progress. That is not the problem here. The four things
 this system needs to learn are:
 
     character confusion       Dirichlet-multinomial   exact conjugate posterior
     which printings appear    Dirichlet               exact conjugate posterior
     Almgren-Chriss eta,gamma  Normal-inverse-gamma    exact conjugate posterior
+    issued grade | centering  Dirichlet-multinomial   exact conjugate posterior
 
-All three have closed-form posteriors. Running a stochastic optimizer over them
+All four have closed-form posteriors. Running a stochastic optimizer over them
 would converge more slowly, add noise to an exact answer, and -- decisively --
 throw away the posterior VARIANCE. The variance is the most important output
 here: a liquidation schedule computed from an eta estimated to +/-300% is not a
@@ -77,15 +78,21 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import re
 import sqlite3
 import time
 from dataclasses import dataclass, field
-from typing import Iterable, Mapping, Optional, Sequence
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Iterable, Mapping, Optional, Sequence
 
 import numpy as np
 
 from .catalog import MIN_PX_TO_READ, CatalogEntry
 from .execution import ImpactParameters
+
+if TYPE_CHECKING:
+    from .store import ScanStore
 
 # Resolution bands for the confusion model. Confusion is strongly
 # scale-dependent, so a single pooled matrix would average a clean 30px read
@@ -499,6 +506,259 @@ class ImpactEstimator:
 
 
 # ---------------------------------------------------------------------------
+# Certified grade outcomes -- expand predictions as labels arrive
+# ---------------------------------------------------------------------------
+
+# Ratio bands for the grade-outcome model. Issued grades are strongly
+# centering-dependent, so a single pooled Dirichlet would average gem-mint
+# cards together with off-centre ones and describe neither. Bands sit on the
+# published PSA/BGS threshold neighbourhoods (55/45, 60/40, 65/35, 70/30).
+GRADE_RATIO_BINS: tuple[tuple[float, float, str], ...] = (
+    (50.0, 52.0, "gem"),
+    (52.0, 55.0, "mint"),
+    (55.0, 58.0, "nm_plus"),
+    (58.0, 62.0, "nm"),
+    (62.0, 70.0, "ex"),
+    (70.0, float("inf"), "played"),
+)
+
+# Dirichlet prior strength for blending the published-table heuristic with
+# certified counts. Chosen so a handful of labels move the posterior only
+# slightly, and a few dozen dominate. With zero counts the blend is unused
+# and predict_overall_grade is identical to the heuristic.
+GRADE_PRIOR_STRENGTH = 8.0
+
+_GRADE_NUMBER = re.compile(r"(\d+(?:\.\d+)?)")
+
+
+def ratio_band_for(ratio: float) -> str:
+    r = max(50.0, float(ratio))
+    for lo, hi, name in GRADE_RATIO_BINS:
+        if lo <= r < hi:
+            return name
+    return GRADE_RATIO_BINS[-1][2]
+
+
+def quality_band_for(inner_confidence: float) -> str:
+    return "clean" if float(inner_confidence) >= 0.75 else "soft"
+
+
+def parse_issued_grade(label: Any) -> Optional[float]:
+    """Extract a 1–10 grade number from a label such as ``10`` or ``PSA 9.5``."""
+    if label is None:
+        return None
+    match = _GRADE_NUMBER.search(str(label).strip())
+    if not match:
+        return None
+    value = float(match.group(1))
+    if value < 1.0 or value > 10.0:
+        return None
+    return value
+
+
+def _grade_key(score: float) -> str:
+    return str(int(score)) if float(score).is_integer() else str(score)
+
+
+@dataclass
+class GradeOutcomeModel:
+    """P(issued grade | measured ratio, quality), per grader.
+
+    Dirichlet-multinomial over discrete grade labels, stratified by grader,
+    centering-ratio band, and detection-quality band. The update is a single
+    increment; there is no optimizer and no learning rate.
+
+    IDENTITY REDUCTION. With zero certified observations this model is unused.
+    ``predict_overall_grade(..., model=GradeOutcomeModel())`` is then identical
+    to the published-table heuristic it wraps. Evidence moves the prediction
+    only in proportion to certified labels in the matching ratio band, and
+    never above the published centering ceiling.
+
+    CIRCULARITY. ``observe`` accepts only certified rows that carry a cert
+    number. Marketplace votes, self-reports, and this system's own predictions
+    are refused. There is no path that feeds a decode back in.
+    """
+
+    # counts[grader][ratio_band][quality_band][grade_key] = n
+    counts: dict[str, dict[str, dict[str, dict[str, int]]]] = field(
+        default_factory=dict
+    )
+
+    def observe(self, example: Mapping[str, Any]) -> bool:
+        """Record one CERTIFIED training row. Returns True if accepted."""
+        kind = str(example.get("kind") or "").strip().lower()
+        if kind and kind != "certified":
+            return False
+        cert = example.get("cert_number")
+        if cert is None or str(cert).strip() == "":
+            return False
+        grader = str(example.get("grader") or "").strip()
+        if not grader:
+            return False
+        score = parse_issued_grade(example.get("grade"))
+        if score is None:
+            return False
+        try:
+            ratio = float(example.get("worst_ratio_pct"))
+        except (TypeError, ValueError):
+            return False
+        try:
+            confidence = float(example.get("inner_confidence", 0.9))
+        except (TypeError, ValueError):
+            confidence = 0.9
+
+        band = ratio_band_for(ratio)
+        quality = quality_band_for(confidence)
+        key = _grade_key(score)
+        table = (
+            self.counts.setdefault(grader, {})
+            .setdefault(band, {})
+            .setdefault(quality, {})
+        )
+        table[key] = table.get(key, 0) + 1
+        return True
+
+    def observe_many(self, examples: Iterable[Mapping[str, Any]]) -> int:
+        accepted = 0
+        for example in examples:
+            if self.observe(example):
+                accepted += 1
+        return accepted
+
+    def observations(self, grader: Optional[str] = None) -> int:
+        graders = [grader] if grader else list(self.counts)
+        total = 0
+        for name in graders:
+            for band in self.counts.get(name, {}).values():
+                for quality in band.values():
+                    total += sum(quality.values())
+        return total
+
+    def bin_counts(
+        self,
+        grader: str,
+        ratio: float,
+        inner_confidence: float = 0.9,
+    ) -> dict[str, int]:
+        """Certified counts for this grader in the matching ratio band.
+
+        Prefers the quality-matched cell; if that cell is empty, pools the
+        other quality band at the same ratio. Does not pool across ratio
+        bands -- a stack of off-centre 8s must not pull a gem-centred card.
+        """
+        bands = self.counts.get(grader, {})
+        ratio_name = ratio_band_for(ratio)
+        quality_name = quality_band_for(inner_confidence)
+        specific = dict(bands.get(ratio_name, {}).get(quality_name, {}))
+        if sum(specific.values()) > 0:
+            return specific
+        pooled: dict[str, int] = {}
+        for quality in bands.get(ratio_name, {}).values():
+            for key, n in quality.items():
+                pooled[key] = pooled.get(key, 0) + n
+        return pooled
+
+    def posterior(
+        self,
+        grader: str,
+        ratio: float,
+        inner_confidence: float = 0.9,
+        heuristic: Optional[Mapping[str, float]] = None,
+    ) -> dict[str, float]:
+        """Posterior-mean P(grade | features).
+
+        When ``heuristic`` is supplied it is the Dirichlet prior, so zero
+        counts reproduce the heuristic exactly. When it is omitted and the
+        bin is empty, the result is empty -- the caller should keep the
+        published-table prediction.
+        """
+        counts = self.bin_counts(grader, ratio, inner_confidence)
+        n = sum(counts.values())
+        prior = {str(k): float(v) for k, v in (heuristic or {}).items() if v > 0}
+        if not prior and n == 0:
+            return {}
+        keys = set(prior) | set(counts)
+        if not keys:
+            return {}
+        if prior:
+            prior_mass = sum(prior.values())
+            alphas = {
+                k: GRADE_PRIOR_STRENGTH * (prior.get(k, 0.0) / prior_mass)
+                for k in keys
+            }
+        else:
+            # Uninformative fallback used only when the caller wants the
+            # empirical distribution with no heuristic prior.
+            alphas = {k: 1.0 for k in keys}
+        total = sum(alphas.values()) + n
+        return {k: (alphas[k] + counts.get(k, 0)) / total for k in keys}
+
+    def posterior_variance(
+        self,
+        grader: str,
+        ratio: float,
+        inner_confidence: float = 0.9,
+    ) -> Optional[float]:
+        """Variance of the issued-grade number under the empirical posterior."""
+        counts = self.bin_counts(grader, ratio, inner_confidence)
+        n = sum(counts.values())
+        if n == 0:
+            return None
+        mean = 0.0
+        parsed: dict[str, float] = {}
+        for key, weight in counts.items():
+            score = parse_issued_grade(key)
+            if score is None:
+                continue
+            parsed[key] = score
+            mean += score * weight
+        mean /= n
+        pop_var = 0.0
+        for key, weight in counts.items():
+            score = parsed.get(key)
+            if score is None:
+                continue
+            pop_var += weight * (score - mean) ** 2
+        pop_var /= n
+        # Variance of the mean, not of the mix: more labels in the same
+        # band must shrink this, or "more evidence" cannot raise confidence.
+        return pop_var / n
+
+
+def ingest_certified_labels(
+    scan_store: "ScanStore",
+    learning_store: "LearningStore",
+) -> GradeOutcomeModel:
+    """Rebuild the grade-outcome model from certified labels and persist it.
+
+    Rebuild, not increment: re-importing the same payload must not double-count.
+    ``export_training_set`` already refuses non-certified rows, so votes and
+    model predictions never reach ``observe``.
+    """
+    payload = scan_store.export_training_set()
+    model = GradeOutcomeModel()
+    model.observe_many(payload["examples"])
+    learning_store.save_grade_model(model)
+    return model
+
+
+def maybe_load_grade_model(path: Optional[str] = None) -> GradeOutcomeModel:
+    """Load a persisted grade model, or return an empty (identity) one.
+
+    ``path`` wins; otherwise ``CARDCENTER_DB`` is consulted. Missing files
+    produce a fresh model so callers can always pass the result into
+    ``predict_overall_grade`` without a presence check.
+    """
+    candidate = path or os.environ.get("CARDCENTER_DB")
+    if not candidate:
+        return GradeOutcomeModel()
+    if not Path(candidate).is_file():
+        return GradeOutcomeModel()
+    with LearningStore(candidate) as store:
+        return store.load_grade_model()
+
+
+# ---------------------------------------------------------------------------
 # Persistence
 # ---------------------------------------------------------------------------
 
@@ -573,6 +833,15 @@ class LearningStore:
         est.n = int(raw["n"])
         return est
 
+    def save_grade_model(self, model: GradeOutcomeModel) -> None:
+        self._put("grade:outcome", {"counts": model.counts})
+
+    def load_grade_model(self) -> GradeOutcomeModel:
+        raw = self._get("grade:outcome")
+        if not raw:
+            return GradeOutcomeModel()
+        return GradeOutcomeModel(counts=raw.get("counts", {}))
+
     def _put(self, key: str, value: dict) -> None:
         self.conn.execute(
             "INSERT INTO learning_state (key, value, updated_at) VALUES (?,?,?) "
@@ -590,7 +859,10 @@ class LearningStore:
 
 
 def learning_report(
-    confusion: ConfusionModel, prior: EncounterPrior, estimator: ImpactEstimator
+    confusion: ConfusionModel,
+    prior: EncounterPrior,
+    estimator: ImpactEstimator,
+    grades: Optional[GradeOutcomeModel] = None,
 ) -> str:
     lines = ["LEARNED STATE", ""]
     lines.append("OCR confusion model:")
@@ -630,6 +902,21 @@ def learning_report(
             f"Impact model: gamma {u['gamma']:.4g} +/- {u['gamma_sd']:.2g}, "
             f"eta {u['eta']:.4g} +/- {u['eta_sd']:.2g}, from {int(u['n_fills'])} fills"
         )
+
+    lines.append("")
+    grades = grades or GradeOutcomeModel()
+    n_grades = grades.observations()
+    lines.append(f"Grade outcome model: {n_grades} certified label(s)")
+    if n_grades == 0:
+        lines.append(
+            "  no certified grades recorded; predictions are identical to the "
+            "published-table heuristic"
+        )
+    else:
+        for grader in sorted(grades.counts):
+            n = grades.observations(grader)
+            lines.append(f"  {grader:<5} {n:5d} certified observation(s)")
+
     lines.append("")
     lines.append(
         "All of the above updates ONLY from verified observations. No decode "

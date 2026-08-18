@@ -32,6 +32,7 @@ from typing import Optional
 import cv2
 import numpy as np
 
+from .information import ChannelConditions, temporal_spatial_rhythm
 from .types import Measured
 
 # Below this, the rectified card has too few pixels per millimetre for the
@@ -220,6 +221,7 @@ class LiveSession:
     frames_seen: int = 0
     frames_used: int = 0
     last_guidance: tuple[str, ...] = ()
+    last_channel: Optional[ChannelConditions] = None
 
     def observe(self, result, quality: FrameQuality) -> None:
         self.frames_seen += 1
@@ -229,6 +231,26 @@ class LiveSession:
         self.frames_used += 1
         self.horizontal.add(result.horizontal.ratio_pct)
         self.vertical.add(result.vertical.ratio_pct)
+        channel = getattr(result, "channel", None)
+        if isinstance(channel, ChannelConditions):
+            self.last_channel = channel
+
+    @property
+    def rhythm_boost(self) -> Optional[float]:
+        """QUIPU wash factor for this session, or None before a channel exists.
+
+        Multi-frame chi2/dof fills the perception slot so disagreeing frames
+        pull boost below 1 and refuse the naive 1/sqrt(N) credit.
+        """
+        if self.last_channel is None:
+            return None
+        chi2 = max(
+            [x for x in (self.horizontal.consistency, self.vertical.consistency) if x],
+            default=None,
+        )
+        return temporal_spatial_rhythm(
+            self.last_channel, frame_chi2_dof=chi2
+        ).boost
 
     @property
     def worst_ratio(self) -> Optional[Measured]:

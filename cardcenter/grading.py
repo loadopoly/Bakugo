@@ -22,9 +22,12 @@ import math
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
 
 from .types import Measured
+
+if TYPE_CHECKING:
+    from .learning import GradeOutcomeModel
 
 Face = Literal["front", "back"]
 _DATA = Path(__file__).parent / "data" / "standards.json"
@@ -216,6 +219,8 @@ class CardGradePrediction:
     probabilities: dict[str, float]
     confidence: float
     summary: str
+    used_learned: bool = False
+    n_observations: int = 0
 
     def describe(self) -> str:
         lines = [
@@ -229,7 +234,25 @@ class CardGradePrediction:
             f"  Centering Ceiling  : {self.grade_ceiling.best if self.grade_ceiling.is_single else f'{self.grade_ceiling.worst}-{self.grade_ceiling.best}'}",
             f"  Notes              : {self.summary}",
         ]
+        if self.used_learned:
+            lines.append(
+                f"  Learned            : {self.n_observations} certified "
+                f"{self.grader} observation(s) in this ratio band"
+            )
         return "\n".join(lines)
+
+
+def _snap_grade(score: float, grader: str) -> float:
+    score = max(1.0, min(10.0, float(score)))
+    if grader == "PSA":
+        return float(round(score)) if score >= 9.5 else float(math.floor(score))
+    return round(score * 2) / 2.0
+
+
+def _ceiling_score(band: GradeBand) -> Optional[float]:
+    from .learning import parse_issued_grade
+
+    return parse_issued_grade(band.worst) or parse_issued_grade(band.best)
 
 
 def predict_overall_grade(
@@ -238,11 +261,18 @@ def predict_overall_grade(
     geometry: Optional[Any] = None,
     grader: str = "PSA",
     face: Face = "front",
+    model: Optional["GradeOutcomeModel"] = None,
 ) -> CardGradePrediction:
     """Compute estimated overall grade, condition name, and 4-subgrade breakdown.
-    
+
     Synthesizes the physical centering ratio with edge sharpness profiles,
     corner line-fit residuals, and cut squareness.
+
+    IDENTITY REDUCTION. With ``model is None`` or a model that has no certified
+    observations in this ratio band, the result is the published-table
+    heuristic. Certified labels move the overall grade and its probabilities
+    only; they never raise the published centering ceiling, and they never
+    train on this function's own output.
     """
     band = grade_band(ratio, grader=grader, face=face)
     
@@ -344,6 +374,63 @@ def predict_overall_grade(
         f"centering and image quality assessment."
     )
     conf = max(0.5, min(0.95, 1.0 - (ratio.sigma / 10.0)))
+    used_learned = False
+    n_obs = 0
+
+    if model is not None:
+        bin_counts = model.bin_counts(grader, ratio.value, inner_conf)
+        n_obs = sum(bin_counts.values())
+        if n_obs > 0:
+            from .learning import parse_issued_grade
+
+            blended = model.posterior(
+                grader, ratio.value, inner_conf, heuristic=probs
+            )
+            if blended:
+                ceiling = _ceiling_score(band)
+                if ceiling is not None:
+                    blended = {
+                        k: v
+                        for k, v in blended.items()
+                        if (parse_issued_grade(k) or 0.0) <= ceiling + 1e-9
+                    }
+                    total = sum(blended.values())
+                    if total > 0:
+                        blended = {k: v / total for k, v in blended.items()}
+                if blended:
+                    probs = blended
+                    expected = 0.0
+                    mass = 0.0
+                    for key, weight in blended.items():
+                        score = parse_issued_grade(key)
+                        if score is None:
+                            continue
+                        expected += score * weight
+                        mass += weight
+                    if mass > 0:
+                        final_score = _snap_grade(expected / mass, grader)
+                        if ceiling is not None:
+                            final_score = min(final_score, ceiling)
+                        cond_name = CONDITION_NAMES.get(final_score, "Authentic")
+                        grade_label = (
+                            f"{grader} {int(final_score) if final_score.is_integer() else final_score}"
+                        )
+                    used_learned = True
+                    # More certified mass shrinks uncertainty; residual
+                    # variance in the bin keeps confidence honest.
+                    shrink = n_obs / (n_obs + 8.0)
+                    var = model.posterior_variance(grader, ratio.value, inner_conf)
+                    spread = 0.0 if var is None else min(1.0, math.sqrt(var) / 4.0)
+                    conf = max(
+                        0.5,
+                        min(0.97, conf * (1.0 - 0.25 * spread) + 0.12 * shrink),
+                    )
+                    summary = (
+                        f"Predicted {grade_label} ({cond_name}) from {n_obs} "
+                        f"certified {grader} label(s) at "
+                        f"{ratio.value:.1f}/{100 - ratio.value:.1f} centering, "
+                        f"blended with the published-table heuristic."
+                    )
 
     return CardGradePrediction(
         grader=grader,
@@ -358,6 +445,8 @@ def predict_overall_grade(
         probabilities=probs,
         confidence=round(conf, 2),
         summary=summary,
+        used_learned=used_learned,
+        n_observations=n_obs,
     )
 
 
@@ -366,10 +455,13 @@ def predict_all_grades(
     quality: Optional[Any] = None,
     geometry: Optional[Any] = None,
     face: Face = "front",
+    model: Optional["GradeOutcomeModel"] = None,
 ) -> dict[str, CardGradePrediction]:
     """Predict grades across all supported grading houses (PSA, BGS, CGC, SGC)."""
     return {
-        g: predict_overall_grade(ratio, quality=quality, geometry=geometry, grader=g, face=face)
+        g: predict_overall_grade(
+            ratio, quality=quality, geometry=geometry, grader=g, face=face, model=model
+        )
         for g in available_graders()
     }
 

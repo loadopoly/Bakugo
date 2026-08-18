@@ -66,13 +66,32 @@ Three concrete uses, in order of importance.
 The bound assumes independent noise between rows, which glare and JPEG blocking
 violate; correlated noise makes the true bound WORSE, so this remains a valid
 floor rather than an optimistic one.
+
+TEMPORAL-SPATIAL INTERACTIONS (from QUIPU)
+------------------------------------------
+QUIPU's ``temporal_spatiality`` layer coordinates cross-sense activity as a
+rhythm: coherence of the joint vector, a relational gradient that washes
+acceleration back down, a 1-D Weyl coordinate at the 7-D torus centroid, and a
+boost in ``[0.5, 1.5]``. Those interactions belong on this channel because the
+imaging chain is already a lossy, multi-sample process -- rows along an edge,
+and frames of the same card -- whose independence is exactly what the CRB
+assumes and what glare / JPEG / handshake violate.
+
+Mapped honestly, not theatrically:
+
+  * coherence / Weyl diagnose whether the channel observables (SNR, blur,
+    coverage, shot-ratio, efficiency, multi-frame consistency) are aligned.
+  * the synaptic wash (``boost < 1``) discounts independent-sample credit so
+    correlated or disagreeing observations cannot claim ``1/sqrt(N)``.
+  * ``boost > 1`` is reported as a cadence / fusion-confidence signal. It is
+    never allowed to invent Fisher information or beat the single-shot CRB.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, replace
+from typing import Mapping, Optional, Sequence
 
 import cv2
 import numpy as np
@@ -94,6 +113,263 @@ class ChannelConditions:
     @property
     def snr(self) -> float:
         return self.contrast / max(self.noise_sigma, 1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Temporal-spatial overlay (QUIPU temporal_spatiality, pixel-space form)
+# ---------------------------------------------------------------------------
+#
+# The six sense slots are filled from observables this module already
+# measures. Weights match QUIPU exactly so a rhythm computed here is
+# numerically comparable to one computed there.
+#
+#   vision     -- contrast / (contrast + noise)          edge visibility
+#   touch      -- 1 / (1 + shot_ratio)                   photon corroboration
+#   smell      -- 1 / (1 + extra blur above 0.4 px)      decay / wash
+#   body       -- rows / (rows + 200)                    coverage / mass
+#   brain      -- audit efficiency, else 0               estimator honesty
+#   perception -- 1 / (1 + chi2/dof - 1)                 multi-frame agreement
+#
+# Boost never multiplies Fisher information. It only scales the *effective*
+# independent-row count used when fusing repeated observations of the same
+# edge -- the same job QUIPU's period_factor does for cadence.
+
+_SENSE_WEIGHTS: dict[str, float] = {
+    "vision": 0.22,
+    "touch": 0.22,
+    "smell": 0.18,
+    "body": 0.12,
+    "brain": 0.12,
+    "perception": 0.14,
+}
+
+_TORUS_DIMS = 7
+_BOOST_MIN = 0.5
+_BOOST_MAX = 1.5
+_BOOST_NEUTRAL = 1.0
+_BODY_ROW_SCALE = 200.0
+_SMELL_PSF_FLOOR = 0.4
+
+
+@dataclass(frozen=True)
+class TemporalSpatialRhythm:
+    """QUIPU rhythm scalars, computed from pixel-space channel observables."""
+
+    coherence: float
+    gradient: float
+    weyl: float
+    boost: float
+    period_factor: float
+    lr_factor: float
+    signals: dict[str, float]
+    effective_rows: float
+
+    def describe(self) -> str:
+        return (
+            f"temporal-spatial rhythm : coherence {self.coherence:.3f}, "
+            f"gradient {self.gradient:.3f}, weyl {self.weyl:.3f} rad, "
+            f"boost {self.boost:.3f} (period {self.period_factor:.3f}, "
+            f"lr {self.lr_factor:.3f}), effective rows {self.effective_rows:.1f}"
+        )
+
+
+def measure_coherence(signals: Mapping[str, float]) -> float:
+    """Joint activity times (1 - normalised dispersion), in ``[0, 1]``.
+
+    Port of QUIPU ``temporal_spatiality.measure_coherence``. High only when
+    every sense is active *and* they agree; one saturated channel with the
+    rest silent scores near zero.
+    """
+    senses = list(_SENSE_WEIGHTS.keys())
+    activities = [max(0.0, min(1.0, float(signals.get(s, 0.0)))) for s in senses]
+    weights = [_SENSE_WEIGHTS[s] for s in senses]
+    mean_a = sum(a * w for a, w in zip(activities, weights))
+    if mean_a <= 0.0:
+        return 0.0
+    var = sum(w * (a - mean_a) ** 2 for a, w in zip(activities, weights))
+    norm_disp = min(1.0, math.sqrt(var) / max(mean_a, 1e-9))
+    return max(0.0, min(1.0, mean_a * (1.0 - norm_disp)))
+
+
+def relational_gradient(
+    signals: Mapping[str, float], decay: Optional[float] = None
+) -> float:
+    """Synaptic-wash damper: (touch + decay + spread) / 3, in ``[0, 1]``.
+
+    Port of QUIPU ``temporal_spatiality.relational_gradient``. ``decay`` is
+    the smell-mass complement; when omitted it is ``1 - smell``, which is
+    the honest reading of extra blur as stale / washed signal.
+    """
+    touch = max(0.0, min(1.0, float(signals.get("touch", 0.0))))
+    if decay is None:
+        decay = 1.0 - max(0.0, min(1.0, float(signals.get("smell", 0.0))))
+    decay = max(0.0, min(1.0, float(decay)))
+    activities = [max(0.0, min(1.0, float(signals.get(s, 0.0)))) for s in _SENSE_WEIGHTS]
+    spread = (max(activities) - min(activities)) if activities else 0.0
+    return max(0.0, min(1.0, (touch + decay + spread) / 3.0))
+
+
+def weyl_centroid(signals: Mapping[str, float], torus_dims: int = _TORUS_DIMS) -> float:
+    """Circular mean of sense angles on the first n of ``torus_dims``, in ``[0, 2π]``.
+
+    Port of QUIPU ``temporal_spatiality.weyl_centroid``. Senses sit on evenly
+    spaced torus angles; activity weights the phasor. Empty activity returns 0.
+    """
+    dims = max(1, int(torus_dims))
+    sx = 0.0
+    sy = 0.0
+    for i, sense in enumerate(_SENSE_WEIGHTS):
+        theta = 2.0 * math.pi * (i / dims)
+        a = max(0.0, min(1.0, float(signals.get(sense, 0.0))))
+        sx += a * math.cos(theta)
+        sy += a * math.sin(theta)
+    if sx == 0.0 and sy == 0.0:
+        return 0.0
+    mean_angle = math.atan2(sy, sx)
+    if mean_angle < 0.0:
+        mean_angle += 2.0 * math.pi
+    return mean_angle
+
+
+def modulate(
+    signals: Mapping[str, float],
+    *,
+    decay: Optional[float] = None,
+    potential: float = 0.0,
+) -> dict[str, object]:
+    """Combine coherence, wash, and Weyl into the QUIPU rhythm dict.
+
+    ``boost = clamp(1 + (coherence - gradient) * 0.5, 0.5, 1.5)``, with the
+    recursive-strengthening floor ``1 + 0.25 * potential`` when potential
+    is supplied. ``period_factor = 1 / boost``, ``lr_factor = boost``.
+    """
+    coh = measure_coherence(signals)
+    grad = relational_gradient(signals, decay=decay)
+    weyl = weyl_centroid(signals)
+    raw_boost = _BOOST_NEUTRAL + (coh - grad) * 0.5
+    floor = _BOOST_NEUTRAL + 0.25 * max(0.0, min(1.0, float(potential)))
+    raw_boost = max(raw_boost, floor)
+    boost = max(_BOOST_MIN, min(_BOOST_MAX, raw_boost))
+    return {
+        "coherence": round(coh, 4),
+        "gradient": round(grad, 4),
+        "weyl": round(weyl, 4),
+        "boost": round(boost, 4),
+        "period_factor": round(1.0 / boost, 4),
+        "lr_factor": round(boost, 4),
+        "signals": {
+            k: round(max(0.0, min(1.0, float(signals.get(k, 0.0)))), 4)
+            for k in _SENSE_WEIGHTS
+        },
+    }
+
+
+def channel_sense_signals(
+    c: ChannelConditions,
+    *,
+    efficiency: Optional[float] = None,
+    shot_ratio: Optional[float] = None,
+    frame_chi2_dof: Optional[float] = None,
+) -> dict[str, float]:
+    """Project a measured imaging channel onto the six QUIPU sense slots."""
+    vision = c.contrast / (c.contrast + max(c.noise_sigma, 1e-9))
+    if shot_ratio is None:
+        touch = min(1.0, c.snr / (c.snr + 25.0))
+    else:
+        touch = 1.0 / (1.0 + max(0.0, float(shot_ratio)))
+    smell = 1.0 / (1.0 + max(0.0, c.psf_sigma_px - _SMELL_PSF_FLOOR))
+    body = float(max(1, c.rows)) / (float(max(1, c.rows)) + _BODY_ROW_SCALE)
+    brain = 0.0 if efficiency is None else max(0.0, min(1.0, float(efficiency)))
+    if frame_chi2_dof is None:
+        perception = 0.0
+    else:
+        perception = 1.0 / (1.0 + max(0.0, float(frame_chi2_dof) - 1.0))
+    return {
+        "vision": max(0.0, min(1.0, vision)),
+        "touch": max(0.0, min(1.0, touch)),
+        "smell": max(0.0, min(1.0, smell)),
+        "body": max(0.0, min(1.0, body)),
+        "brain": brain,
+        "perception": max(0.0, min(1.0, perception)),
+    }
+
+
+def temporal_spatial_rhythm(
+    c: ChannelConditions,
+    *,
+    efficiency: Optional[float] = None,
+    shot_ratio: Optional[float] = None,
+    frame_chi2_dof: Optional[float] = None,
+    potential: float = 0.0,
+) -> TemporalSpatialRhythm:
+    """Rhythm for one measured channel, plus the wash-adjusted row count.
+
+    ``effective_rows = rows * boost``. Because boost is at most 1.5 this
+    never more than modestly credits extra independence, and because it
+    bottoms at 0.5 a washed / disagreeing channel cannot claim the full
+    ``1/sqrt(N)`` the CRB would otherwise grant.
+    """
+    signals = channel_sense_signals(
+        c,
+        efficiency=efficiency,
+        shot_ratio=shot_ratio,
+        frame_chi2_dof=frame_chi2_dof,
+    )
+    decay = 1.0 - signals["smell"]
+    rhythm = modulate(signals, decay=decay, potential=potential)
+    boost = float(rhythm["boost"])
+    return TemporalSpatialRhythm(
+        coherence=float(rhythm["coherence"]),
+        gradient=float(rhythm["gradient"]),
+        weyl=float(rhythm["weyl"]),
+        boost=boost,
+        period_factor=float(rhythm["period_factor"]),
+        lr_factor=float(rhythm["lr_factor"]),
+        signals=dict(rhythm["signals"]),  # type: ignore[arg-type]
+        effective_rows=float(max(1, c.rows)) * boost,
+    )
+
+
+def apply_rhythm_to_channel(
+    c: ChannelConditions, rhythm: TemporalSpatialRhythm
+) -> ChannelConditions:
+    """Return a copy whose ``rows`` are the wash-adjusted effective count.
+
+    Used only for *fusion* bounds (multi-frame / multi-row credit). The
+    single-shot CRB still uses the raw measured channel.
+    """
+    return replace(c, rows=max(1, int(round(rhythm.effective_rows))))
+
+
+def fuse_channel_conditions(
+    channels: Sequence[ChannelConditions],
+) -> Optional[ChannelConditions]:
+    """Inverse-variance blend of repeated channel measurements of one edge.
+
+    Contrast, noise and blur are combined with weights ``rows / noise^2``.
+    The fused row count is the sum -- independence is then discounted by
+    :func:`temporal_spatial_rhythm` via ``effective_rows``, not here.
+    """
+    usable = [c for c in channels if c.noise_sigma > 0 and c.rows > 0]
+    if not usable:
+        return None
+    weights = [float(c.rows) / (c.noise_sigma**2) for c in usable]
+    wsum = sum(weights)
+    if wsum <= 0:
+        return None
+
+    def _wavg(getter) -> float:
+        return sum(getter(c) * w for c, w in zip(usable, weights)) / wsum
+
+    return ChannelConditions(
+        contrast=_wavg(lambda c: c.contrast),
+        noise_sigma=math.sqrt(
+            sum((c.noise_sigma**2) * w for c, w in zip(usable, weights)) / wsum
+        ),
+        psf_sigma_px=_wavg(lambda c: c.psf_sigma_px),
+        pixel_pitch_px=_wavg(lambda c: c.pixel_pitch_px),
+        rows=sum(max(1, c.rows) for c in usable),
+    )
 
 
 def fisher_information_edge(c: ChannelConditions) -> float:
@@ -231,6 +507,8 @@ class InformationAudit:
     physically_possible: bool
     channel: ChannelConditions
     advice: tuple[str, ...]
+    rhythm: Optional[TemporalSpatialRhythm] = None
+    fused_bound_px: Optional[float] = None
 
     def describe(self) -> str:
         lines = [
@@ -249,6 +527,13 @@ class InformationAudit:
             lines.append(
                 f"  efficiency {self.efficiency * 100:.0f}% of the theoretical limit"
             )
+        if self.rhythm is not None:
+            lines.append(f"  {self.rhythm.describe()}")
+            if self.fused_bound_px is not None and math.isfinite(self.fused_bound_px):
+                lines.append(
+                    f"  wash-adjusted fusion floor : {self.fused_bound_px:.3f} px "
+                    f"(effective rows {self.rhythm.effective_rows:.1f})"
+                )
         for a in self.advice:
             lines.append(f"  -> {a}")
         return "\n".join(lines)
@@ -260,6 +545,10 @@ def audit_measurement(
     border_a_mm: float,
     border_b_mm: float,
     px_per_mm: float,
+    *,
+    shot_ratio: Optional[float] = None,
+    frame_chi2_dof: Optional[float] = None,
+    potential: float = 0.0,
 ) -> InformationAudit:
     """Compare a reported uncertainty against what the physics allows."""
     bound_px = cramer_rao_edge_px(channel)
@@ -271,6 +560,15 @@ def audit_measurement(
         if reported_ratio_sigma_pp > 0
         else 0.0
     )
+
+    rhythm = temporal_spatial_rhythm(
+        channel,
+        efficiency=efficiency,
+        shot_ratio=shot_ratio,
+        frame_chi2_dof=frame_chi2_dof,
+        potential=potential,
+    )
+    fused_bound_px = cramer_rao_edge_px(apply_rhythm_to_channel(channel, rhythm))
 
     advice: list[str] = []
     regime = "photon-limited"
@@ -305,6 +603,19 @@ def audit_measurement(
             "or the algorithm. More light will not narrow this."
         )
 
+    if rhythm.boost < 0.85:
+        advice.append(
+            f"temporal-spatial wash is active (boost {rhythm.boost:.2f}, "
+            f"coherence {rhythm.coherence:.2f} vs gradient {rhythm.gradient:.2f}); "
+            "do not credit the full 1/sqrt(N) from extra rows or frames"
+        )
+    elif rhythm.coherence > 0.6 and rhythm.boost > 1.05:
+        advice.append(
+            f"channel observables are coherent (weyl {rhythm.weyl:.2f} rad, "
+            f"boost {rhythm.boost:.2f}); extra frames can tighten the fusion "
+            "bound, but not the single-shot CRB"
+        )
+
     # Capture advice is only actionable when photons are actually the binding
     # constraint. Telling someone to add light when they are specimen-limited is
     # advice that cannot work.
@@ -317,6 +628,8 @@ def audit_measurement(
             physically_possible=possible,
             channel=channel,
             advice=tuple(advice),
+            rhythm=rhythm,
+            fused_bound_px=fused_bound_px,
         )
 
     # Rank the capture fixes by their actual exponents in the bound.
@@ -346,10 +659,19 @@ def audit_measurement(
         physically_possible=possible,
         channel=channel,
         advice=tuple(advice),
+        rhythm=rhythm,
+        fused_bound_px=fused_bound_px,
     )
 
 
-def audit_result(result, side: Optional[str] = None) -> InformationAudit:
+def audit_result(
+    result,
+    side: Optional[str] = None,
+    *,
+    shot_ratio: Optional[float] = None,
+    frame_chi2_dof: Optional[float] = None,
+    potential: float = 0.0,
+) -> InformationAudit:
     """Audit a CenteringResult against the channel in its own rectified image."""
     if result.rectified is None:
         raise ValueError("audit needs the rectified image; measure with keep_rectified=True")
@@ -363,6 +685,9 @@ def audit_result(result, side: Optional[str] = None) -> InformationAudit:
         pair.low_mm.value,
         pair.high_mm.value,
         result.px_per_mm,
+        shot_ratio=shot_ratio,
+        frame_chi2_dof=frame_chi2_dof,
+        potential=potential,
     )
 
 

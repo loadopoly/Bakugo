@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+## [2.2.0] - 2026-08-20
+
+### Changed
+- Public web app is **Bakugo** at `loadopoly.com/bakugo` (was `/cardcenter`). The Python package and wheel stay `cardcenter`. Old `/cardcenter/` URL redirects.
+- Photos stay on-device. Measurement metadata may sync to the Loadopoly-OCR Supabase project when configured.
+
+### Added
+- Live AR camera view in the Pages app: rear camera + `ARSession` guidance for glare, standoff, crop, and square-up, so a messy counter is usable without a clean still.
+- **Local + cloud persist**: every successful measure writes `ScanStore` (`CARDCENTER_DB` / browser sqlite). Optional metadata upsert to `bakugo_scans` / `bakugo_labels` in the same Supabase project as Loadopoly-OCR (`cardcenter.cloud`, CLI `--sync-cloud`). Anon key only; never a service-role key. Photos are not uploaded.
+- **QUIPU temporal-spatial overlay on the pixel-space lossy channel** (`cardcenter.information`): coherence, relational wash, 7-D Weyl centroid, and boost in `[0.5, 1.5]`. Boost scales effective independent-row count for multi-frame fusion only; the single-shot Cramér–Rao bound is unchanged. `audit_measurement` reports the rhythm and a wash-adjusted fusion floor. `LiveSession.rhythm_boost` consumes multi-frame χ²/dof so disagreeing frames refuse naive `1/√N` credit.
+
+### Security
+- Cloud writes reuse the contamination firewall: certified labels without a cert number never leave the device. Pages config is `config.json` (gitignored) or `window.__BAKUGO_SUPABASE__`; the committed file is `config.example.json`.
+
+---
+
+## [2.1.0] - 2026-08-19
+
+### Added
+- **Expandable grade-outcome model (`cardcenter.learning.GradeOutcomeModel`)**:
+  Dirichlet-multinomial posterior over issued grades, stratified by grader, centering-ratio band, and detection quality. Identity reduction: with zero certified observations, `predict_overall_grade` is identical to the published-table heuristic.
+- **Certified ingest path**: `ingest_certified_labels` rebuilds the model from `ScanStore.export_training_set()` (certified + cert number only). `ConnectionManager.import_payload` / `sync` persist the rebuilt model so predictions expand as labels arrive. Re-import does not double-count.
+- **CLI `--ingest-grades --db`**: rebuild the model from an existing store. Measure and JSON output now load `CARDCENTER_DB` / `--db` and report `used_learned` / `n_observations`.
+- Public exports: `GradeOutcomeModel`, `LearningStore`, `ingest_certified_labels`, `maybe_load_grade_model`.
+
+### Changed
+- `predict_overall_grade` / `predict_all_grades` accept an optional `model`. Certified mass blends with the heuristic prior (`GRADE_PRIOR_STRENGTH = 8`); the published centering ceiling is never raised. Subgrades stay heuristic.
+- Serve / Perceptopoly payloads include `used_learned` and `n_observations` when a persisted model is present.
+
+### Security
+- Circularity firewall unchanged: `observe` refuses `MODEL_PREDICTED`, `MARKETPLACE_VOTE`, `SELF_REPORTED`, and certified-without-cert. Training export remains certified-only.
+
+---
+
 ## [2.0.0] - 2026-08-18
 
 ### Added
