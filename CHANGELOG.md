@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-08-20
+
+### Added
+- Live fusion now consumes the QUIPU overlay: `measure_centering` attaches a `CenteringResult.channel`, `LiveSession.observe` stores it, and `worst_ratio` / `settled` / `status` inflate the PDG bar when `rhythm_boost < 1`. Boost above 1 remains a status signal and never tightens the live interval below the inverse-variance combination.
+- **QUIPU Observer client** (`cardcenter.quipu_client`): optional `CARDCENTER_QUIPU_URL` feed of structured observations and cached numeric priors. Collector-number OCR may break catalog ties only when a prior dominates by `QUIPU_TIE_DOMINANCE`; otherwise the reading stays ambiguous. `GET /quipu` reports whether the Observer is linked.
+- Docker image (`Dockerfile`, `docker-compose.yml`) serving `cardcenter --serve` on `:8765` with optional Observer URL.
+
+### Changed
+- `modulate` no longer pins boost at 1.0 when recursive-strengthening potential is zero, so a washed channel can refuse naive `1/sqrt(N)`.
+
 ## [2.2.0] - 2026-08-20
 
 ### Changed

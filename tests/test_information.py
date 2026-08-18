@@ -132,6 +132,13 @@ def test_boost_is_clamped_and_period_is_reciprocal() -> None:
     assert float(r["lr_factor"]) == pytest.approx(float(r["boost"]), abs=5e-4)
 
 
+def test_zero_potential_does_not_pin_boost_and_nonzero_lifts_floor() -> None:
+    washed = modulate(ONE_HOT)
+    assert float(washed["boost"]) < 1.0
+    lifted = modulate(ONE_HOT, potential=1.0)
+    assert float(lifted["boost"]) >= 1.25
+
+
 def test_weyl_is_on_the_circle_and_empty_is_zero() -> None:
     weyl = weyl_centroid(UNIFORM)
     assert 0.0 <= weyl <= 2.0 * math.pi
@@ -175,6 +182,22 @@ def test_relational_gradient_uses_smell_complement_as_decay() -> None:
     high_blur = {"touch": 0.0, "smell": 0.0, "vision": 0.5, "body": 0.5, "brain": 0.5, "perception": 0.5}
     sharp = {"touch": 0.0, "smell": 1.0, "vision": 0.5, "body": 0.5, "brain": 0.5, "perception": 0.5}
     assert relational_gradient(high_blur) > relational_gradient(sharp)
+
+
+def test_measure_centering_attaches_channel() -> None:
+    from cardcenter.centering import measure_centering
+    from cardcenter.synth import render_capture
+    from cardcenter.types import CaptureSpec
+
+    img, _gt, focal = render_capture(
+        left_mm=3.4, right_mm=2.6, top_mm=3.1, bottom_mm=2.9, tilt_deg=0.0
+    )
+    result = measure_centering(img, slab="raw", capture=CaptureSpec(focal_px=focal))
+    assert result.channel is not None
+    assert result.channel.rows >= 1
+    assert result.channel.contrast > 0
+    assert result.channel.noise_sigma > 0
+    assert result.rectified is not None
 
 
 # ---------------------------------------------------------------------------

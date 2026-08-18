@@ -448,6 +448,24 @@ class Handler(BaseHTTPRequestHandler):
                 json.dumps({"holders": holders, "version": __version__}).encode(),
                 "application/json",
             )
+        elif self.path == "/quipu":
+            # The Observer link: what Bakugo feeds up and receives back.
+            try:
+                from .quipu_client import enabled, guidance
+
+                payload = {"enabled": enabled()}
+                if enabled():
+                    g = guidance()
+                    payload["guidance"] = {
+                        "axis": g.get("axis"),
+                        "calibration": g.get("calibration"),
+                        "sources": g.get("sources"),
+                        "mesh": g.get("mesh"),
+                        "numeric_lexicon": (g.get("numeric_lexicon") or [])[:10],
+                    }
+            except Exception as exc:  # pragma: no cover - observer is optional
+                payload = {"enabled": False, "error": str(exc)}
+            self._send(200, json.dumps(payload).encode(), "application/json")
         else:
             self._send(404, b"not found", "text/plain")
 
@@ -469,6 +487,12 @@ class Handler(BaseHTTPRequestHandler):
             )
             if payload.get("ok"):
                 payload.update(persist_measure(payload, source="serve"))
+                try:
+                    from .quipu_client import observe_measure_async
+
+                    observe_measure_async(payload)
+                except Exception:  # pragma: no cover - observer is optional
+                    pass
         except DetectionError as exc:
             payload = {"ok": False, "error": str(exc)}
         except Exception as exc:  # pragma: no cover - surfaced to the phone

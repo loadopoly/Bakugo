@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from cardcenter.capture import RunningRatio, assess_frame
+from cardcenter.capture import LiveSession, RunningRatio, assess_frame, wash_combined_sigma
 from cardcenter.grading import grade_band
 from cardcenter.multicard import dhash, detect_cards_in_frame, hamming, scan_image
 from cardcenter.store import LabelKind, ScanStore
@@ -134,6 +134,86 @@ def test_running_ratio_ignores_zero_sigma() -> None:
     r.add(Measured(60.0, 0.0))
     assert len(r) == 0
     assert r.combined is None
+
+
+def test_wash_combined_sigma_only_inflates() -> None:
+    assert wash_combined_sigma(0.5, None) == 0.5
+    assert wash_combined_sigma(0.5, 1.0) == 0.5
+    assert wash_combined_sigma(0.5, 1.5) == 0.5
+    assert wash_combined_sigma(0.5, 0.25) == pytest.approx(0.5 / (0.5 ** 0.5))
+
+
+def test_live_session_wash_inflates_when_boost_below_one() -> None:
+    """A washed channel must refuse the PDG 1/sqrt(N) bar. Boost > 1 must not
+    invent a tighter live interval than the inverse-variance combination."""
+    from cardcenter.information import ChannelConditions
+
+    session = LiveSession()
+    for _ in range(4):
+        session.horizontal.add(Measured(60.0, 1.0))
+        session.vertical.add(Measured(50.0, 1.0))
+    session.frames_used = 4
+    session.frames_seen = 4
+
+    assert session.rhythm_boost is None
+    raw = session.worst_ratio
+    assert raw is not None
+    assert raw.sigma == pytest.approx(0.5, rel=0.02)
+
+    session.last_channel = ChannelConditions(
+        contrast=5.0, noise_sigma=20.0, psf_sigma_px=8.0, rows=10
+    )
+    boost = session.rhythm_boost
+    assert boost is not None and boost < 1.0
+    washed = session.worst_ratio
+    assert washed is not None
+    assert washed.sigma > raw.sigma
+    assert washed.sigma == pytest.approx(
+        raw.sigma / (max(boost, 0.5) ** 0.5), rel=1e-6
+    )
+    assert "channel wash" in session.status()
+
+    # Boost above 1 is a status signal only: it must never invent a
+    # tighter live bar than the PDG combination already reported.
+    session.last_channel = ChannelConditions(
+        contrast=80.0, noise_sigma=4.0, psf_sigma_px=1.2, rows=400
+    )
+    session.last_efficiency = 0.9
+    later = session.worst_ratio
+    assert later is not None
+    assert later.sigma >= raw.sigma - 1e-12
+    if session.rhythm_boost is not None and session.rhythm_boost >= 1.0:
+        assert later.sigma == pytest.approx(raw.sigma, rel=1e-6)
+
+
+def test_observe_stores_channel_from_result() -> None:
+    from cardcenter.information import ChannelConditions
+    from cardcenter.types import BorderPair, CenteringResult, DetectionQuality, SlabSpec
+
+    channel = ChannelConditions(80.0, 4.0, 1.2, 1.0, 400)
+    result = CenteringResult(
+        horizontal=BorderPair(
+            "horizontal", "left", "right", Measured(3.0, 0.05), Measured(3.0, 0.05)
+        ),
+        vertical=BorderPair(
+            "vertical", "top", "bottom", Measured(3.0, 0.05), Measured(3.0, 0.05)
+        ),
+        quality=DetectionQuality(0.5, 0.9, {}, [], False, 0.0),
+        px_per_mm=10.0,
+        corners_px=np.array([[0.0, 0.0], [100.0, 0.0], [100.0, 140.0], [0.0, 140.0]]),
+        inner_rect_mm=(3.0, 3.0, 60.5, 85.0),
+        slab=SlabSpec("raw", 0.0, 0.0, 1.0),
+        channel=channel,
+    )
+    from cardcenter.capture import FrameQuality
+
+    session = LiveSession()
+    session.observe(
+        result,
+        FrameQuality(80.0, 0.0, 0.0, 0.0, 10.0, 0.0, True, ()),
+    )
+    assert session.last_channel is channel
+    assert session.rhythm_boost is not None
 
 
 # --------------------------------------------------------------------------

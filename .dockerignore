@@ -1,0 +1,14 @@
+.git
+__pycache__
+**/__pycache__
+.pytest_cache
+build
+cardcenter.egg-info
+tests
+docs
+webapp
+*.png
+*.db
+install-termux.sh
+validate.py
+CHANGELOG.md

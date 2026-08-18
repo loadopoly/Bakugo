@@ -63,7 +63,8 @@
 
 ### B. Batch & Live Capture
 * **`cardcenter.multicard`**: Multi-card segmentation in single display case photos or video pan frames with halo rejection and spatial deduplication.
-* **`cardcenter.capture`**: `RunningRatio` inverse-variance accumulator with $\chi^2 / \text{dof}$ inflation for outlier protection across video frames.
+* **`cardcenter.information`**: Pixel-space Fisher / Cramér–Rao floor plus the QUIPU temporal-spatial rhythm. Boost scales effective independent-row count for fusion only; the single-shot CRB is unchanged.
+* **`cardcenter.capture`**: `RunningRatio` inverse-variance accumulator with $\chi^2 / \text{dof}$ inflation. `LiveSession` stores the last `ChannelConditions` and inflates the combined PDG bar when `rhythm_boost < 1`; boost above 1 is a status signal only.
 * **`cardcenter.ar` / `cardcenter.perceptopoly`**: Web-based Augmented Reality capture client with continuous tracking and caliper-grade scale calibration.
 * **`cardcenter.serve`**: Ultra-lightweight offline HTTP server running on standard library primitives, optimized for Android Termux.
 
@@ -73,6 +74,7 @@
 * **`cardcenter.store`**: Provenance-preserving SQLite store tracking scans, certified labels, self-reported tags, and marketplace sentiment. Local source of truth; `synced_at` marks a successful cloud mirror.
 * **`cardcenter.cloud`**: Optional metadata upsert to the same Supabase *project* as Loadopoly-OCR (`bakugo_scans` / `bakugo_labels`). Anon key only. Photos stay local. Not OCR documents — dedicated tables keep the contamination firewall.
 * **`cardcenter.learning`**: Closed-form conjugate learners (OCR confusion, encounter prior, Almgren-Chriss impact, **issued-grade outcomes**). Grade predictions expand only from certified labels; identity reduction keeps the published-table heuristic when the model is empty.
+* **`cardcenter.quipu_client`**: Optional Observer link (`CARDCENTER_QUIPU_URL`). Structured observations go up; numeric lexicon priors come down. Best-effort, stdlib-only, never required for a measurement.
 
 ### D. Financial & Catalog Intelligence
 * **`cardcenter.catalog`**: Scryfall & Pokémon TCG API integration, ORB visual feature matching, and resolution-gated collector number OCR.

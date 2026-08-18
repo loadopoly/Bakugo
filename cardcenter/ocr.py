@@ -57,6 +57,48 @@ from .catalog import FEATURE_SIZE_MM, MARGINAL_PX_TO_READ, MIN_PX_TO_READ, Catal
 MIN_ENGINE_CONFIDENCE = 40.0
 # Maximum edit distance allowed when snapping a reading to a catalog entry.
 MAX_SNAP_DISTANCE = 1
+# A QUIPU prior must be at least this many times the runner-up to break a tie.
+QUIPU_TIE_DOMINANCE = 2.0
+
+
+def _quipu_tie_break(tied: Sequence[str]) -> Optional[str]:
+    """Pick among tied catalog numbers using QUIPU cross-corpus priors.
+
+    Returns the dominant candidate, or None when the Observer is absent,
+    silent about these numbers, or not clearly decisive.
+    """
+    try:
+        from .quipu_client import enabled, number_priors
+
+        if not enabled():
+            return None
+        priors = number_priors()
+        if not priors:
+            return None
+        weighted = sorted(
+            ((priors.get(n.lower(), 0.0), n) for n in tied), reverse=True
+        )
+        best_w, best_n = weighted[0]
+        runner_w = weighted[1][0] if len(weighted) > 1 else 0.0
+        if best_w > 0.0 and best_w >= QUIPU_TIE_DOMINANCE * max(runner_w, 1e-9):
+            return best_n
+    except Exception:  # pragma: no cover - the Observer is always optional
+        pass
+    return None
+
+
+def _quipu_report(resolved: str, raw: str, corrected: bool) -> None:
+    """Feed a resolved reading back to the Observer (fire-and-forget)."""
+    try:
+        from .quipu_client import enabled, feedback_async, observe_async
+
+        if not enabled():
+            return
+        observe_async(f"collector number {resolved}")
+        if corrected:
+            feedback_async(expected=resolved, observed=raw)
+    except Exception:  # pragma: no cover - the Observer is always optional
+        pass
 
 
 class OcrUnavailable(RuntimeError):
@@ -314,21 +356,36 @@ def read_collector_number(
         )
 
     if len(tied) > 1:
-        warnings.append(
-            "the reading is equally close to several real printings, so it does "
-            "not disambiguate them"
-        )
-        return NumberResult(
-            reading=raw,
-            snapped_to=None,
-            candidates_considered=len(numbers),
-            px_per_mm=px_per_mm,
-            glyph_px=glyph_px,
-            gated_out=False,
-            ambiguous_matches=tied,
-            engine=reading.engine,
-            warnings=tuple(warnings),
-        )
+        # QUIPU Observer tie-break: the mesh's cross-corpus numeric priors
+        # (numbers seen by Loadopoly-OCR's unstructured scans and by prior
+        # Bakugo sessions) can separate printings the pixels alone cannot.
+        # The closed catalog vocabulary still bounds the answer; the prior
+        # only chooses AMONG real candidates, and only when it clearly
+        # dominates. Absent or flat priors leave the reading ambiguous.
+        quipu_pick = _quipu_tie_break(tied)
+        if quipu_pick is not None:
+            warnings.append(
+                f"reading '{raw}' tied between {', '.join(tied)}; resolved to "
+                f"'{quipu_pick}' by QUIPU cross-corpus prior. Verify before "
+                "trusting it on a high-value card."
+            )
+            tied = (quipu_pick,)
+        else:
+            warnings.append(
+                "the reading is equally close to several real printings, so it does "
+                "not disambiguate them"
+            )
+            return NumberResult(
+                reading=raw,
+                snapped_to=None,
+                candidates_considered=len(numbers),
+                px_per_mm=px_per_mm,
+                glyph_px=glyph_px,
+                gated_out=False,
+                ambiguous_matches=tied,
+                engine=reading.engine,
+                warnings=tuple(warnings),
+            )
 
     if best_distance > 0:
         warnings.append(
@@ -342,6 +399,8 @@ def read_collector_number(
             "accuracy here is high but not certain, and errors present as a "
             "confident wrong printing. Verify on anything valuable."
         )
+
+    _quipu_report(resolved=tied[0], raw=raw, corrected=best_distance > 0)
 
     return NumberResult(
         reading=raw,

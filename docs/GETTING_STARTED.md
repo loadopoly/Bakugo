@@ -73,3 +73,16 @@ cardcenter card.jpg --db mobile_scans.db
 # or later:
 cardcenter --sync-cloud --db mobile_scans.db
 ```
+
+To join the QUIPU Observer mesh (optional; measurements work without it):
+```bash
+export CARDCENTER_QUIPU_URL=http://<observer-host>:7100
+cardcenter --serve --lan --port 8765
+# GET /quipu reports enabled + cached guidance
+```
+
+Docker (Tesseract included; persist the SQLite store on `/data`):
+```bash
+docker compose up --build
+# optional: CARDCENTER_QUIPU_URL=http://host.docker.internal:7100
+```

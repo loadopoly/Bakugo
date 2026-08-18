@@ -32,8 +32,21 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from .information import ChannelConditions, temporal_spatial_rhythm
+from .information import ChannelConditions, cramer_rao_ratio_pp, temporal_spatial_rhythm
 from .types import Measured
+
+
+def wash_combined_sigma(sigma: float, boost: Optional[float]) -> float:
+    """Inflate a PDG-combined sigma when the QUIPU channel is washed.
+
+    ``boost > 1`` is a status / cadence signal only: it must not invent
+    information by tightening the live bar below the PDG combined sigma.
+    ``boost < 1`` refuses the full ``1/sqrt(N)`` the inverse-variance
+    combination would otherwise claim.
+    """
+    if boost is None or boost >= 1.0 or sigma <= 0.0:
+        return sigma
+    return float(sigma) / math.sqrt(max(float(boost), 0.5))
 
 # Below this, the rectified card has too few pixels per millimetre for the
 # border transition to be located to a useful fraction of a millimetre.
@@ -222,6 +235,7 @@ class LiveSession:
     frames_used: int = 0
     last_guidance: tuple[str, ...] = ()
     last_channel: Optional[ChannelConditions] = None
+    last_efficiency: Optional[float] = None
 
     def observe(self, result, quality: FrameQuality) -> None:
         self.frames_seen += 1
@@ -234,6 +248,7 @@ class LiveSession:
         channel = getattr(result, "channel", None)
         if isinstance(channel, ChannelConditions):
             self.last_channel = channel
+            self.last_efficiency = _channel_efficiency(result, channel)
 
     @property
     def rhythm_boost(self) -> Optional[float]:
@@ -249,8 +264,13 @@ class LiveSession:
             default=None,
         )
         return temporal_spatial_rhythm(
-            self.last_channel, frame_chi2_dof=chi2
+            self.last_channel,
+            efficiency=self.last_efficiency,
+            frame_chi2_dof=chi2,
         ).boost
+
+    def _washed(self, m: Measured) -> Measured:
+        return Measured(m.value, wash_combined_sigma(m.sigma, self.rhythm_boost))
 
     @property
     def worst_ratio(self) -> Optional[Measured]:
@@ -259,7 +279,7 @@ class LiveSession:
         candidates = [c for c in (h, v) if c is not None]
         if not candidates:
             return None
-        return max(candidates, key=lambda m: m.value)
+        return self._washed(max(candidates, key=lambda m: m.value))
 
     @property
     def settled(self) -> bool:
@@ -291,4 +311,22 @@ class LiveSession:
             line += f"  [frames disagree, chi2/dof={c:.1f} -- error bar inflated]"
         elif self.settled:
             line += "  [settled]"
+        boost = self.rhythm_boost
+        if boost is not None and boost < 0.85:
+            line += f"  [channel wash boost={boost:.2f} -- 1/sqrt(N) refused]"
         return line
+
+
+def _channel_efficiency(result, channel: ChannelConditions) -> Optional[float]:
+    """Photon-limit efficiency of the last accepted frame, if it can be bounded."""
+    try:
+        pair = result.worst_axis
+        bound = cramer_rao_ratio_pp(
+            channel, pair.low_mm.value, pair.high_mm.value, result.px_per_mm
+        )
+        reported = pair.ratio_pct.sigma
+    except Exception:
+        return None
+    if reported <= 0 or not math.isfinite(bound):
+        return None
+    return min(1.0, bound / reported)

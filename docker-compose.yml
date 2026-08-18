@@ -1,0 +1,21 @@
+services:
+  bakugo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: bakugo:dev
+    container_name: bakugo
+    ports:
+      - "8765:8765"
+    environment:
+      CARDCENTER_DB: /data/cardcenter.db
+      # Point at a running QUIPU Observer to join the learning mesh.
+      # In the combined stack (Loadopoly-OCR/docker-compose.yml) this is
+      # http://quipu:7100; standalone it can be a host-mapped URL.
+      CARDCENTER_QUIPU_URL: ${CARDCENTER_QUIPU_URL:-}
+    volumes:
+      - bakugo_data:/data
+    restart: unless-stopped
+
+volumes:
+  bakugo_data:

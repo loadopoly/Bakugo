@@ -57,6 +57,11 @@ locally and may sync metadata to the Loadopoly-OCR Supabase project when
 `CARDCENTER_SUPABASE_URL` / `CARDCENTER_SUPABASE_ANON_KEY` (or the Pages
 `config.json`) are set. Photos are not uploaded.
 
+Optional QUIPU Observer: set `CARDCENTER_QUIPU_URL` so structured scans feed the
+shared mesh and numeric priors can break collector-number ties. Measurements
+still work when the Observer is away. Docker: `docker compose up --build`
+serves `:8765`.
+
 ---
 
 ## Run it on an Android phone

@@ -105,6 +105,8 @@ Single-image and `--serve` paths also write `--db` / `CARDCENTER_DB` after a suc
 
 `--serve` and `--ar` load the same model from `--db` or the `CARDCENTER_DB` environment variable. Measure and JSON output report `used_learned` / `n_observations` when certified labels have expanded the heuristic.
 
+When `CARDCENTER_QUIPU_URL` is set, successful `/measure` posts a structured observation to the Observer and `GET /quipu` reports the cached guidance. Collector-number OCR may use numeric priors to break catalog ties; absent or flat priors leave the reading ambiguous.
+
 ---
 
 ## 5. Provenance & Self-Test Verification

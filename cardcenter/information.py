@@ -247,8 +247,12 @@ def modulate(
     grad = relational_gradient(signals, decay=decay)
     weyl = weyl_centroid(signals)
     raw_boost = _BOOST_NEUTRAL + (coh - grad) * 0.5
-    floor = _BOOST_NEUTRAL + 0.25 * max(0.0, min(1.0, float(potential)))
-    raw_boost = max(raw_boost, floor)
+    # QUIPU only lifts the floor when recursive strengthening has
+    # actual potential. A zero default must not pin boost at 1.0,
+    # or the synaptic wash can never refuse 1/sqrt(N).
+    potential = max(0.0, min(1.0, float(potential)))
+    if potential > 0.0:
+        raw_boost = max(raw_boost, _BOOST_NEUTRAL + 0.25 * potential)
     boost = max(_BOOST_MIN, min(_BOOST_MAX, raw_boost))
     return {
         "coherence": round(coh, 4),

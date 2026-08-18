@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Optional, Sequence
+from typing import TYPE_CHECKING, Optional, Sequence
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from .information import ChannelConditions
 
 # Standard modern trading card, 2.5 x 3.5 inches.
 STANDARD_CARD_W_MM = 63.5
@@ -294,6 +297,7 @@ class CenteringResult:
     inner_rect_mm: tuple[float, float, float, float]  # l, t, r, b in card mm coords
     slab: SlabSpec
     rectified: Optional[np.ndarray] = None
+    channel: Optional["ChannelConditions"] = None
 
     @property
     def worst_axis(self) -> BorderPair:

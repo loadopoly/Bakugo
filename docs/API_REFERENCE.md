@@ -62,6 +62,7 @@ Key Attributes:
 * `worst_ratio: Measured`: Value, standard error $\sigma$, and 95% CI.
 * `quality: DetectionQuality`: Outer line-fit residual, inner edge confidence, and refraction flags.
 * `rectified: np.ndarray`: Rectified card image in canonical metric space.
+* `channel: Optional[ChannelConditions]`: Pixel-space lossy-channel observables on the worst-axis low side (contrast, noise, PSF, rows). Attached by `measure_centering`; failure here never sinks a measurement that already cleared the confidence gate.
 
 ---
 

@@ -45,6 +45,7 @@ from .optics import (
     inplane_shift_mm,
     pose_from_homography,
 )
+from .information import measure_channel
 from .types import (
     STANDARD_CARD_H_MM,
     STANDARD_CARD_W_MM,
@@ -352,6 +353,15 @@ def measure_centering(
         high_mm=true_edges["bottom"],
     )
 
+    # Pixel-space channel on the worst-axis low side. Failure here must
+    # never sink a measurement that already cleared the confidence gate.
+    channel = None
+    try:
+        pair = max((horizontal, vertical), key=lambda p: p.ratio_pct.value)
+        channel = measure_channel(rect, pair.low_name, px_per_mm, pair.low_mm.value)
+    except Exception:
+        channel = None
+
     return CenteringResult(
         horizontal=horizontal,
         vertical=vertical,
@@ -366,4 +376,5 @@ def measure_centering(
         ),
         slab=slab,
         rectified=rect if keep_rectified else None,
+        channel=channel,
     )
