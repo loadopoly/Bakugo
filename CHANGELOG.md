@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-08-20
+
+### Added
+- **System Dynamics Documentation** (`docs/SYSTEM_DYNAMICS.md`): Documents Bakugo's role as the **Touch Sense Axis** ($\text{axis}=1$) in the Tri-Repo Mesh with QUIPU and Loadopoly-OCR.
+- **Bi-directional QUIPU & Supabase Telemetry**: Documented metrology controls, $2\times$ weighted ground-truth feedback reinforcement (`POST /feedback`), and Contamination Firewall enforcement on cloud syncing.
+- **Docker Compose Topology Updates**: Containerized configuration enabling automatic Supabase PostgREST mirroring and `host.docker.internal` network routing.
+
 ## [2.3.0] - 2026-08-20
 
 ### Added

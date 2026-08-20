@@ -91,3 +91,9 @@ A key architectural principle in Bakugo is preventing circular model contaminati
 2. **Self-Reported & Crowd Votes**: Stored separately with clear provenance; excluded from training exports unless explicit contamination flags are stamped into audit manifests.
 3. **Sync Protocol Verification**: `ConnectionManager` automatically inspects incoming sync bundles and quarantines any certified label missing a certification identifier.
 4. **Grade-outcome expansion**: After a successful import, `ingest_certified_labels` rebuilds `GradeOutcomeModel` from the certified export only. Marketplace votes, self-reports, and this system's own predictions never reach `observe`. Ratio bands do not pool: off-centre 8s cannot pull a gem-centred card.
+
+---
+
+## 4. System Dynamics & Tri-Repo Mesh Integration
+
+Bakugo is formalised as the **Touch Sense Axis** ($\text{axis}=1$) of the 7-D unified learning mesh. See [SYSTEM_DYNAMICS.md](./SYSTEM_DYNAMICS.md) for complete mathematical formulations, closed-loop observer dynamics with QUIPU, and Supabase PostgREST synchronization topology.
