@@ -415,7 +415,10 @@ def test_learned_prediction_never_exceeds_published_ceiling() -> None:
 
 def test_ingest_rebuilds_instead_of_double_counting(tmp_path) -> None:
     from cardcenter.store import LabelKind, ScanStore
-    from tests.test_connection import _dummy_result
+    try:
+        from .test_connection import _dummy_result
+    except ImportError:
+        from test_connection import _dummy_result
 
     db = str(tmp_path / "grades.db")
     with ScanStore(db) as scans, LearningStore(db) as learned:
