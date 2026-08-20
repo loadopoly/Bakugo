@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-08-20
+
+### Added
+- **World Model Grounding (`cardcenter/world_model_grounding.py`)**: Computes physical-space information efficiency ($\eta = \sigma_{CRB}/\sigma$), lossy channel profiles (blur, noise, refraction, glare, quantization), and accumulates physical invariants (holder refractive indices).
+- **Physical-Space Observer Feed**: Injects `grounding_annotation` into `quipu_client.py` measurement observations, teaching the QUIPU Observer how lossy real-world physical measurements are.
+- **Physical World Summary**: Exposes `physical_world_summary()` to report accumulated priors on information loss and channel degradation.
+
 ## [2.3.1] - 2026-08-20
 
 ### Added

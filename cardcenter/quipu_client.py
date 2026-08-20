@@ -26,6 +26,8 @@ import urllib.error
 import urllib.request
 from typing import Any, Optional
 
+from . import world_model_grounding
+
 _SOURCE = "bakugo"
 _TIMEOUT_S = 3.0
 _GUIDANCE_TTL_S = 300.0
@@ -105,15 +107,29 @@ def observe_measure_async(payload: dict[str, Any]) -> None:
     collector = payload.get("collector_number")
     if collector:
         parts.append(f"collector number {collector}")
+        
+    grounding = world_model_grounding.grounding_annotation(
+        channel_conditions=payload.get("channel_conditions"),
+        ratio=payload.get("ratio"),
+        sigma=payload.get("sigma"),
+        crb_sigma=payload.get("crb_sigma"),
+        holder=payload.get("holder")
+    )
+    
+    meta = {
+        "holder": payload.get("holder"),
+        "ratio": payload.get("ratio"),
+        "px_per_mm": payload.get("px_per_mm"),
+    }
+    meta.update(grounding)
+    
     observe_async(
         " ".join(str(p) for p in parts if p),
         confidence=payload.get("inner_confidence"),
-        meta={
-            "holder": payload.get("holder"),
-            "ratio": payload.get("ratio"),
-            "px_per_mm": payload.get("px_per_mm"),
-        },
+        meta=meta,
     )
+    
+    world_model_grounding.accumulate_physical_priors(grounding)
 
 
 def feedback_async(expected: str, observed: str = "") -> None:

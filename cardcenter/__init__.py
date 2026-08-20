@@ -8,11 +8,12 @@ grade. Centering sets a ceiling; the other three attributes decide where under
 that ceiling a card actually lands.
 """
 
-__version__ = "2.3.1"
+__version__ = "2.4.0"
 
 from .centering import measure_centering
 from .cloud import CloudConfig, CloudResult, resolve_config, sync_scan_id, sync_store, upsert_scan
 from .connection import ConnectionManager, ConnectionSpec, EndpointHealth, SyncClient, SyncPayload, SyncResult
+from .world_model_grounding import accumulate_physical_priors, grounding_annotation, physical_world_summary
 from .grading import (
     CardGradePrediction,
     GradeBand,

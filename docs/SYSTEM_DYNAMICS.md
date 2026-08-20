@@ -1,6 +1,6 @@
 # System Dynamics — Bakugo (Touch Axis & Metrology Hub)
 
-Version: 2.3.1  
+Version: 2.4.0  
 Date: 2026-08-20  
 
 ---
@@ -105,7 +105,42 @@ Unverified entries are rejected at the edge before any database write occurs.
 
 ---
 
-## 5. Observability & Verification Telemetry
+## 5. World Model Grounding — Physical-Space Channel Teaching (v2.4.0)
+
+Bakugo enriches every observation sent to the QUIPU Observer with **world-model grounding metadata** (`cardcenter/world_model_grounding.py`) that teaches the Observer how information is lost in the physical measurement channel.
+
+### 5.1. Information Efficiency
+The ratio of the Cramér-Rao lower bound $\sigma_{CRB}$ to the achieved measurement uncertainty $\sigma$:
+$$\eta = \min\!\left(1.0, \; \frac{\sigma_{CRB}}{\max(\sigma, 10^{-12})}\right)$$
+$\eta = 1.0$ means the detector is operating at the fundamental physical limit. Lower values indicate information loss from blur, noise, refraction, or glare.
+
+### 5.2. Lossy Channel Profile
+Each observation carries a list of physical degradation factors detected in the channel:
+- **blur**: PSF sigma exceeds the Nyquist sampling floor
+- **noise**: Sensor noise dominates the edge contrast
+- **refraction**: Multi-layer dielectric (PMMA $n{=}1.491$, PC $n{=}1.586$) bends optical rays
+- **glare**: Specular reflection saturates pixel rows
+- **quantization**: Pixel pitch below 4.5 px/mm insufficient for subgrade resolution
+
+### 5.3. Physical Invariant Accumulation
+Over time, Bakugo accumulates repeatable geometric truths:
+- Refractive indices for known holder materials (PSA → PMMA, BGS/CGC → PC)
+- Mean information efficiency across measurement sessions
+- Distribution of dominant lossy channel factors
+
+These priors are persisted in `.world_model.json` and included in every observation so the Observer can build a grounded physical World Model that understands how lossy the real world is compared to digital acquisition.
+
+### 5.4. VLM Training Pathway
+As Bakugo accumulates more physical-card AR metrology → the Observer trains VLM (Vision-Language Model) priors about:
+- How card geometry appears through different holder materials
+- What information survives optical stacking vs what is irreversibly lost
+- How measurement uncertainty maps to the $\chi^2/\text{dof}$ consistency metric
+
+This creates a **precedent-driven retrieval flywheel**: more physical measurements → better physical priors → more targeted epistemic queries → improved World Model comprehension.
+
+---
+
+## 6. Observability & Verification Telemetry
 
 ```bash
 # 1. Check Bakugo web server and available holders
@@ -118,4 +153,7 @@ curl -s http://127.0.0.1:8765/quipu | jq .
 curl -s -H "apikey: $SUPABASE_ANON_KEY" \
      -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
      "http://127.0.0.1:54321/rest/v1/bakugo_scans?select=*,bakugo_labels(*)" | jq .
+
+# 4. Check physical world model grounding summary
+python -c "from cardcenter import world_model_grounding; import json; print(json.dumps(world_model_grounding.physical_world_summary(), indent=2))"
 ```
