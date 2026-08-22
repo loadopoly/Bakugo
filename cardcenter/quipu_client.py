@@ -120,6 +120,7 @@ def observe_measure_async(payload: dict[str, Any]) -> None:
         "holder": payload.get("holder"),
         "ratio": payload.get("ratio"),
         "px_per_mm": payload.get("px_per_mm"),
+        "device_id": payload.get("device_id") or "anonymous",
     }
     meta.update(grounding)
     

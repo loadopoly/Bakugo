@@ -341,7 +341,14 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
 const $=s=>document.querySelector(s);
 const out=$('#out'), file=$('#file'), shoot=$('#shoot');
 
-fetch('/holders').then(r=>r.json()).then(d=>{
+// Multi-tenant device isolation: persistent anonymous UUID per browser
+let deviceId = localStorage.getItem('bakugo_device_id');
+if (!deviceId) {
+  deviceId = 'dev_' + (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 12));
+  localStorage.setItem('bakugo_device_id', deviceId);
+}
+
+fetch('/holders', {headers: {'X-Device-ID': deviceId}}).then(r=>r.json()).then(d=>{
   $('#holder').innerHTML=d.holders.map(h=>
     `<option value="${h.id}"${h.id==='raw'?' selected':''}>${h.label}</option>`).join('');
   $('#ver').textContent='v'+d.version;
@@ -356,8 +363,9 @@ function send(f){
   const fd=new FormData();
   fd.append('holder',$('#holder').value);
   fd.append('lens',$('#lens').value);
+  fd.append('device_id', deviceId);
   fd.append('image',f,'card.jpg');
-  fetch('/measure',{method:'POST',body:fd})
+  fetch('/measure',{method:'POST',headers:{'X-Device-ID': deviceId},body:fd})
     .then(r=>r.json()).then(render)
     .catch(e=>fail('Could not reach the engine',String(e)))
     .finally(()=>{shoot.disabled=false;shoot.textContent='Measure a card';file.value='';});
@@ -427,10 +435,30 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _extract_device_id(self, fields: Optional[dict] = None) -> str:
+        """Extract persistent tenant device_id from headers, query, or body."""
+        from urllib.parse import parse_qs, urlparse
+        dev = self.headers.get("X-Device-ID") or self.headers.get("X-Client-ID")
+        if dev:
+            return dev.strip()
+        if fields and fields.get("device_id"):
+            val = fields["device_id"]
+            return val.decode("utf-8", "replace").strip() if isinstance(val, bytes) else str(val).strip()
+        parsed = urlparse(self.path)
+        qs = parse_qs(parsed.query)
+        dev_list = qs.get("device_id")
+        if dev_list and dev_list[0]:
+            return dev_list[0].strip()
+        return "anonymous"
+
     def do_GET(self) -> None:
-        if self.path in ("/", "/index.html"):
+        from urllib.parse import parse_qs, urlparse
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path in ("/", "/index.html"):
             self._send(200, PAGE.encode(), "text/html; charset=utf-8")
-        elif self.path == "/holders":
+        elif path == "/holders":
             from . import __version__
 
             holders = [{"id": "raw", "label": "Raw card"}]
@@ -448,7 +476,52 @@ class Handler(BaseHTTPRequestHandler):
                 json.dumps({"holders": holders, "version": __version__}).encode(),
                 "application/json",
             )
-        elif self.path == "/quipu":
+        elif path == "/my-scans":
+            # Multi-tenant isolated scans: external user can ONLY see their own scans
+            device_id = self._extract_device_id()
+            db = os.environ.get("CARDCENTER_DB", "cardcenter.db")
+            from .store import ScanStore
+
+            with ScanStore(db) as store:
+                scans = store.scans_for_device(device_id)
+            self._send(
+                200,
+                json.dumps({"ok": True, "device_id": device_id, "scans": scans}).encode(),
+                "application/json",
+            )
+        elif path == "/my-analytics":
+            # Multi-tenant isolated analytics: aggregated over caller's device_id
+            device_id = self._extract_device_id()
+            db = os.environ.get("CARDCENTER_DB", "cardcenter.db")
+            try:
+                from .analytics import AnalyticsEngine, available as analytics_available
+                if analytics_available():
+                    with AnalyticsEngine(db) as engine:
+                        # Scoped to caller's device_id
+                        rows = engine._con.execute("""
+                            SELECT
+                                COUNT(*)                       AS total_scans,
+                                COUNT(DISTINCT phash)          AS distinct_cards,
+                                ROUND(AVG(worst_ratio_pct), 2) AS avg_centering,
+                                ROUND(MIN(worst_ratio_pct), 2) AS min_centering,
+                                ROUND(MAX(worst_ratio_pct), 2) AS max_centering
+                            FROM cc.scans
+                            WHERE device_id = ?
+                        """, [device_id]).fetchone()
+                        res = {
+                            "device_id": device_id,
+                            "total_scans": rows[0] if rows else 0,
+                            "distinct_cards": rows[1] if rows else 0,
+                            "avg_centering": rows[2] if rows else None,
+                            "min_centering": rows[3] if rows else None,
+                            "max_centering": rows[4] if rows else None,
+                        }
+                else:
+                    res = {"device_id": device_id, "total_scans": 0, "note": "analytics unavailable"}
+            except Exception as exc:
+                res = {"device_id": device_id, "error": str(exc)}
+            self._send(200, json.dumps(res).encode(), "application/json")
+        elif path == "/quipu":
             # The Observer link: what Bakugo feeds up and receives back.
             try:
                 from .quipu_client import enabled, guidance
@@ -470,7 +543,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b"not found", "text/plain")
 
     def do_POST(self) -> None:
-        if self.path != "/measure":
+        from urllib.parse import urlparse
+        parsed = urlparse(self.path)
+        if parsed.path != "/measure":
             self._send(404, b"not found", "text/plain")
             return
         try:
@@ -480,11 +555,13 @@ class Handler(BaseHTTPRequestHandler):
             image = fields.get("image")
             if not image:
                 raise DetectionError("no photo was attached")
+            device_id = self._extract_device_id(fields)
             payload = _measure_payload(
                 image,
                 fields.get("holder", b"raw").decode(),
                 fields.get("lens", b"main").decode(),
             )
+            payload["device_id"] = device_id
             if payload.get("ok"):
                 payload.update(persist_measure(payload, source="serve"))
                 try:

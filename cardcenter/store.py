@@ -217,12 +217,25 @@ class ScanStore:
                 "warnings": " | ".join(payload.get("warnings") or []),
                 "phash": int(payload.get("phash") or 0),
                 "source": source,
+                "device_id": payload.get("device_id") or "",
             }
         )
 
     def get_scan(self, scan_id: int) -> Optional[dict]:
         row = self.conn.execute("SELECT * FROM scans WHERE id = ?", (scan_id,)).fetchone()
         return dict(row) if row else None
+
+    def scans_for_device(self, device_id: str, limit: int = 100) -> list[dict]:
+        """Fetch scans scoped strictly to a specific device tenant."""
+        self._ensure_device_id_column()
+        dev = (device_id or "").strip()
+        if not dev:
+            return []
+        rows = self.conn.execute(
+            "SELECT * FROM scans WHERE device_id = ? ORDER BY created_at DESC LIMIT ?",
+            (dev, int(limit)),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def labels_for_scan(self, scan_id: int) -> list[dict]:
         rows = self.conn.execute(

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-08-22
+
+### Added
+- **Multi-Tenant User Isolation Endpoints (`GET /my-scans`, `GET /my-analytics`)**: External users querying via `bakugo.loadopoly.com` can only view and analyze their own scans scoped by `X-Device-ID`. Raw SQLite and DuckDB internal databases are completely shielded from public query access.
+- **Client Device Scoping (`cardcenter/serve.py`)**: Persistent anonymous `deviceId` in browser `localStorage` automatically included in multipart uploads and request headers.
+- **Tenant Query Helper (`ScanStore.scans_for_device()`)**: Indexed retrieval on `idx_scans_tenant(device_id, created_at)` with strict zero-leakage fallback.
+- **Unit Test Suite (`tests/test_tenant_isolation.py`)**: Tests verifying cross-tenant scan isolation and tenant-scoped DuckDB OLAP aggregations.
+
 ## [2.6.0] - 2026-08-22
 
 ### Added
