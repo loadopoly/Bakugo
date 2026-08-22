@@ -1,6 +1,6 @@
 # System Dynamics — Bakugo (Touch Axis & Metrology Hub)
 
-Version: 2.6.0  
+Version: 2.7.0  
 Date: 2026-08-22  
 
 ---
@@ -231,4 +231,13 @@ When external users interact via `bakugo.loadopoly.com`:
 | `label_provenance()` | Label counts by kind (certified, self_reported, etc.) |
 | `training_export(kinds)` | Contamination-firewalled join of scans + labels |
 | `export_parquet(output_dir)` | Hive-partitioned Parquet lakehouse sink |
+
+### 7.5. Tenant Isolation & Epistemic Self-Annealing Endpoints (v2.7.0)
+
+| Endpoint | Method | Scope & Access Control |
+| :--- | :---: | :--- |
+| `/my-scans` | `GET` | Returns scans filtered strictly to `WHERE device_id = ?` extracted from `X-Device-ID`. External users are completely isolated from host records. |
+| `/my-analytics` | `GET` | Computes DuckDB OLAP summary metrics scoped strictly to the caller's `device_id`. |
+| `/quipu` | `GET` | Inspects received Observer guidance, cognitive phase state, and refractive priors. |
+
 
