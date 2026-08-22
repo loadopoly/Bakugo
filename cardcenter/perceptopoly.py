@@ -87,18 +87,12 @@ def analyse(image_bytes: bytes, holder: str, lens: str) -> dict:
         "measured": False,
     }
 
-    if not t.route.is_measurable:
-        return out
-
-    if t.px_per_mm and t.px_per_mm < GOOD_PX_PER_MM:
-        out["advice"] = (
-            f"card is {t.px_per_mm:.1f} px/mm -- move closer. Below "
-            f"{GOOD_PX_PER_MM:.0f} px/mm border location is unreliable."
-        )
-
-    # Graded capability first: a card that cannot be fully centred is not
-    # ungradeable. Measured on 75 real cards, requiring all four borders yielded
-    # 0%; grading what is present yields 97%.
+    # Capability is assessed even for frames triage would not route to
+    # measurement. A slab photographed close-up genuinely touches the frame
+    # edge -- triage is right to call that RESHOOT_CROPPED -- but the CARD
+    # inside the slab may still be complete and measurable. Returning early
+    # discarded a reading (54.3/45.7 on a certified PSA 10) that the pipeline
+    # was perfectly capable of producing.
     from .capability import Capability, assess as assess_capability
 
     cap = assess_capability(image)
@@ -112,8 +106,12 @@ def analyse(image_bytes: bytes, holder: str, lens: str) -> dict:
             "notes": list(cap.geometry.notes),
         }
     if cap.capability.has_ratio and cap.worst_ratio is not None:
+        from .evidence import SequentialBoundaryTest, information_value
+
         w = cap.worst_ratio
         lo, hi = w.interval()
+        tst = SequentialBoundaryTest(threshold=55.0)
+        tst.update(w)
         out.update({
             "measured": True,
             "ratio": round(w.value, 1),
@@ -121,7 +119,19 @@ def analyse(image_bytes: bytes, holder: str, lens: str) -> dict:
             "ratio_hi": round(hi, 1),
             "axis": cap.worst_axis_name,
             "partial_axis": cap.capability is Capability.SINGLE_AXIS,
+            "verdict": tst.verdict.value,
+            "info_value": round(information_value(w, 55.0), 3),
+            "more_views_useful": bool(information_value(w, 55.0) > 0.02),
         })
+
+    if not t.route.is_measurable:
+        return out
+
+    if t.px_per_mm and t.px_per_mm < GOOD_PX_PER_MM:
+        out["advice"] = (
+            f"card is {t.px_per_mm:.1f} px/mm -- move closer. Below "
+            f"{GOOD_PX_PER_MM:.0f} px/mm border location is unreliable."
+        )
 
     try:
         res = measure_centering(

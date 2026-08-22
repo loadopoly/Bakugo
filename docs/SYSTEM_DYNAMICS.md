@@ -1,7 +1,7 @@
 # System Dynamics — Bakugo (Touch Axis & Metrology Hub)
 
-Version: 2.4.0  
-Date: 2026-08-20  
+Version: 2.5.0  
+Date: 2026-08-22  
 
 ---
 
@@ -52,10 +52,21 @@ $$\sin \theta_{air} = n_{slab} \sin \theta_{slab}$$
 $$\delta = t \cdot \left( \tan \theta_{air} - \tan \theta_{slab} \right)$$
 Where $t$ is the slab wall thickness and $n_{slab} \approx 1.491$ for PMMA / 1.586 for Polycarbonate.
 
-### 2.3. Temporal-Spatial Inverse-Variance Fusion
-In AR/video capture, consecutive frames $w_i \pm \sigma_i$ are fused into a running estimate with $\chi^2/\text{dof}$ goodness-of-fit inflation:
+### 2.3. Multi-View Evidence Fusion & Consistency Gating (`cardcenter.evidence`)
+Naive inverse-variance pooling on disagreeing views produces false tightening ($1/\sqrt{N}$). Bakugo enforces Particle Data Group (PDG) scale factor inflation:
 $$w_{fused} = \frac{\sum_{i=1}^N w_i / \sigma_i^2}{\sum_{i=1}^N 1 / \sigma_i^2}$$
 $$\sigma_{fused}^2 = \frac{1}{\sum_{i=1}^N 1 / \sigma_i^2} \times \max\left(1.0, \; \frac{1}{N-1}\sum_{i=1}^N \frac{(w_i - w_{fused})^2}{\sigma_i^2}\right)$$
+- **Consistency threshold**: If $\chi^2/\text{dof} > 3.0$ (`MAX_CONSISTENCY`), fusion is marked `untrustworthy` outright (views disagree; at most one can be right) and falls back to `best_single()`.
+
+### 2.4. Wald's Sequential Probability Ratio Test (SPRT Stopping)
+Instead of fixed frame counts, `SequentialBoundaryTest` accumulates log-likelihood ratio drift against decision thresholds (e.g. 55/45 PSA 10 boundary):
+$$LLR_N = \sum_{i=1}^N \frac{(w_i - \theta_{low})^2 - (w_i - \theta_{high})^2}{2\sigma_i^2}$$
+Capture stops as soon as $LLR$ crosses the optimal boundaries $\ln \frac{\beta}{1-\alpha}$ or $\ln \frac{1-\beta}{\alpha}$.
+
+### 2.5. Boundary Information Value
+Fisher information for binary grade decisions peaks at the threshold:
+$$I_{val}(w, \theta) = \exp\left( -0.5 \left( \frac{|w - \theta|}{\sigma} \right)^2 \right)$$
+Capture continues only while $I_{val} > 0.02$, preventing wasted compute on already-decided cards.
 
 ---
 

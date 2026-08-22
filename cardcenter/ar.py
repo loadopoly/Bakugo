@@ -501,14 +501,31 @@ class ARStatus:
 
 @dataclass
 class ARSession:
-    """Continuous measurement of one card while the camera is pointed at it."""
+    """Continuous measurement of one card while the camera is pointed at it.
+
+    Two changes driven by real multi-view data:
+
+    CONSISTENCY BEFORE COMBINATION. Two real views of the same card measured
+    54.1 and 66.6 while each claimed +/-1.67. Naive inverse-variance pooling
+    reported 54.18 +/- 0.288 -- a six-fold tightening onto an answer at most one
+    input supports. The session now runs a chi2 test and refuses to pool
+    inconsistent views.
+
+    SEQUENTIAL STOPPING. A fixed frame count is wrong in both directions. A card
+    at 68/32 against a 55/45 boundary is decided by the FIRST view; a card at
+    55.0 is never decided and the user should be told that rather than handed a
+    coin flip. SPRT stops as soon as the answer is settled.
+    """
 
     holder: str = "raw"
     fov_deg: float = 68.0
     measure_interval_s: float = 0.35
+    boundary: float = 55.0
     calibration: Optional[ScaleCalibration] = None
     horizontal: RunningRatio = field(default_factory=RunningRatio)
     vertical: RunningRatio = field(default_factory=RunningRatio)
+    _measurements: list = field(default_factory=list)
+    _sprt: Optional[object] = None
     _last_quad: Optional[np.ndarray] = None
     _last_measure: float = 0.0
     seen: int = 0
@@ -524,6 +541,8 @@ class ARSession:
         self.measured = 0
         self.seen = 0
         self.last_result = None
+        self._measurements = []
+        self._sprt = None
 
     @property
     def worst_ratio(self) -> Optional[Measured]:
@@ -531,15 +550,46 @@ class ARSession:
         return max(cands, key=lambda m: m.value) if cands else None
 
     @property
+    def fusion(self):
+        """Consistency-checked combination of every view so far."""
+        from .evidence import fuse
+
+        return fuse(self._measurements)
+
+    @property
+    def verdict(self):
+        from .evidence import Verdict
+
+        f = self.fusion
+        if f.n_views and not f.trustworthy:
+            return Verdict.INCONSISTENT
+        return self._sprt.verdict if self._sprt else Verdict.UNDECIDED
+
+    @property
     def settled(self) -> bool:
-        w = self.worst_ratio
-        if w is None or self.measured < 4:
+        """Stop when the decision is made, not at an arbitrary frame count."""
+        f = self.fusion
+        if f.n_views < 2:
             return False
-        cons = max(
-            [c for c in (self.horizontal.consistency, self.vertical.consistency) if c],
-            default=0.0,
-        )
-        return w.sigma < 0.6 and cons < 2.5
+        if not f.trustworthy:
+            return False  # disagreement is not settlement
+        return bool(self._sprt and self._sprt.decided)
+
+    @property
+    def worth_continuing(self) -> bool:
+        """Is another view likely to change the answer?
+
+        Fisher information for a boundary decision peaks AT the boundary, so a
+        card far from it is already decided and further capture is wasted.
+        """
+        from .evidence import information_value
+
+        w = self.worst_ratio
+        if w is None:
+            return True
+        if self.settled:
+            return False
+        return information_value(w, self.boundary) > 0.02
 
     def push(self, frame: np.ndarray, now: Optional[float] = None) -> ARStatus:
         """Feed one camera frame. Cheap unless the frame is worth measuring."""
@@ -598,6 +648,13 @@ class ARSession:
                 self.vertical.add(res.vertical.ratio_pct)
                 self.last_result = res
                 self.measured += 1
+
+                from .evidence import SequentialBoundaryTest
+
+                self._measurements.append(res.worst_ratio)
+                if self._sprt is None:
+                    self._sprt = SequentialBoundaryTest(threshold=self.boundary)
+                self._sprt.update(res.worst_ratio)
             except DetectionError as exc:
                 quality = FrameQuality(
                     sharpness=quality.sharpness,

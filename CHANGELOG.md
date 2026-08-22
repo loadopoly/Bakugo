@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-08-22
+
+### Added
+- **Multi-View Evidence Fusion (`cardcenter/evidence.py`)**: Implements `fuse()` using Particle Data Group (PDG) scale inflation ($\sqrt{\max(1.0, \chi^2/\text{dof})}$) and mandatory consistency gating (`MAX_CONSISTENCY = 3.0`, `GOOD_CONSISTENCY = 1.5`) to eliminate false precision from disagreeing views.
+- **Wald's Sequential Probability Ratio Test (SPRT)**: `SequentialBoundaryTest` accumulates log-likelihood ratio drift per view against grading boundaries (e.g. 55/45 PSA 10), enabling mathematically optimal stopping rather than fixed frame counts.
+- **Boundary Information Value**: `information_value()` computes Fisher information utility ($e^{-0.5 z^2}$) to determine if additional camera views are mathematically justified.
+- **ARSession Multi-View Fusion**: Integrated `self.fusion`, `self.verdict`, `self.settled`, and `self.worth_continuing` into `ARSession` in `cardcenter/ar.py`.
+- **Perceptopoly Capability Pre-Routing**: Evaluates single-axis/full capability on close-up cropped slabs before route termination, and returns SPRT verdict and information value metrics.
+- **Unit Test Suite (`tests/test_evidence.py`)**: Added 11 focused tests for multi-view fusion, consistency rejection, SPRT stopping, and information values.
+
 ## [2.4.0] - 2026-08-20
 
 ### Added
