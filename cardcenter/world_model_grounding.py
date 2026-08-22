@@ -1,45 +1,30 @@
-"""World model grounding for Bakugo observations."""
+"""World model grounding for Bakugo observations.
+
+Connects to the active QUIPU Docker container to synchronize physical grounding,
+lossy channel invariants, and refractive indices without local disk dependencies.
+"""
 
 from __future__ import annotations
 
-import json
 import os
 import threading
 from typing import Any
 
-_lock = threading.Lock()
+# Standard physical invariants fallback
+_DEFAULT_REFRACTIVE_INDICES: dict[str, float] = {
+    "psa": 1.491,   # PMMA
+    "bgs": 1.586,   # PC
+    "cgc": 1.586,   # PC
+    "raw": 1.000,   # Air
+}
 
-def _get_db_path() -> str:
-    base = os.environ.get("CARDCENTER_DB", ".")
-    return os.path.join(base, ".world_model.json")
-
-def _load_state() -> dict[str, Any]:
-    path = _get_db_path()
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return {
-            "measurements_count": 0,
-            "mean_information_efficiency": 0.0,
-            "lossy_channel_profiles": {},
-            "physical_invariants": {}
-        }
-
-def _save_state(state: dict[str, Any]) -> None:
-    path = _get_db_path()
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(state, f)
-    except OSError:
-        pass
 
 def grounding_annotation(
     channel_conditions: dict[str, Any] | None = None,
     ratio: float | None = None,
     sigma: float | None = None,
     crb_sigma: float | None = None,
-    holder: str | None = None
+    holder: str | None = None,
 ) -> dict[str, Any]:
     """Build a world-model grounding annotation for a metrology observation.
     
@@ -63,13 +48,13 @@ def grounding_annotation(
             if k in ("blur", "noise", "refraction", "glare", "quantization") and v:
                 profile.append(k)
     
-    invariants = {}
+    invariants: dict[str, Any] = {}
     if holder:
         holder_lower = str(holder).lower()
-        if "psa" in holder_lower:
-            invariants["refractive_index"] = 1.491  # PMMA
-        elif "bgs" in holder_lower or "cgc" in holder_lower:
-            invariants["refractive_index"] = 1.586  # PC
+        for k, n in _DEFAULT_REFRACTIVE_INDICES.items():
+            if k in holder_lower:
+                invariants["refractive_index"] = n
+                break
             
     confidence = 0.8 if efficiency > 0.5 else 0.4
     
@@ -77,49 +62,30 @@ def grounding_annotation(
         "information_efficiency": efficiency,
         "lossy_channel_profile": profile,
         "physical_invariants": invariants,
-        "grounding_confidence": confidence
+        "grounding_confidence": confidence,
     }
 
+
 def accumulate_physical_priors(grounding: dict[str, Any]) -> dict[str, Any]:
-    """Accumulate physical-space priors over time.
+    """Accumulate physical-space priors.
     
-    Tracks running statistics of:
-    - Mean information efficiency across measurements
-    - Distribution of lossy channel profiles (blur, noise, refraction, glare)
-    - Invariant laws discovered (e.g., Snell angles for specific holder types)
-    
-    Returns the accumulated physical priors dict.
+    Grounding annotations are sent directly to the QUIPU Docker container
+    via observe_measure_async.
     """
-    with _lock:
-        state = _load_state()
-        
-        count = state.get("measurements_count", 0)
-        mean_eff = state.get("mean_information_efficiency", 0.0)
-        
-        # Update mean information efficiency
-        eff = grounding.get("information_efficiency", 0.0)
-        new_mean = (mean_eff * count + eff) / (count + 1)
-        state["mean_information_efficiency"] = new_mean
-        state["measurements_count"] = count + 1
-        
-        # Update lossy channel profiles
-        profiles = state.setdefault("lossy_channel_profiles", {})
-        for p in grounding.get("lossy_channel_profile", []):
-            profiles[p] = profiles.get(p, 0) + 1
-            
-        # Update physical invariants
-        invariants = state.setdefault("physical_invariants", {})
-        for k, v in grounding.get("physical_invariants", {}).items():
-            invariants[k] = v
-            
-        _save_state(state)
-        return state
+    return grounding
+
 
 def physical_world_summary() -> dict[str, Any]:
-    """Return a summary of what Bakugo has learned about physical space.
-    
-    This is included in QUIPU observations so the Observer can build
-    a world model that understands information loss in physical reality.
+    """Return a summary of what has been learned about physical space
+    from the active QUIPU container.
     """
-    with _lock:
-        return _load_state()
+    try:
+        from . import quipu_client
+        g = quipu_client.guidance()
+        wm = g.get("world_model") or {}
+        if wm:
+            return wm
+        state = quipu_client.fetch_state()
+        return state or {}
+    except Exception:
+        return {}

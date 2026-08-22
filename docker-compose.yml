@@ -6,7 +6,7 @@ services:
     image: bakugo:dev
     container_name: bakugo
     ports:
-      - "8765:8765"
+      - "127.0.0.1:8765:8765"
     environment:
       CARDCENTER_DB: /data/cardcenter.db
       # Point at a running QUIPU Observer to join the learning mesh.

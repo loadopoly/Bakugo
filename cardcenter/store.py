@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS scans (
     phash INTEGER,
     source TEXT,
     device_id TEXT DEFAULT '',
+    notes TEXT DEFAULT '',
     created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS labels (
@@ -135,6 +136,7 @@ class ScanStore:
         self.conn.commit()
         self._ensure_sync_columns()
         self._ensure_device_id_column()
+        self._ensure_notes_column()
 
 
     def close(self) -> None:
@@ -218,6 +220,7 @@ class ScanStore:
                 "phash": int(payload.get("phash") or 0),
                 "source": source,
                 "device_id": payload.get("device_id") or "",
+                "notes": str(payload.get("notes") or ""),
             }
         )
 
@@ -228,6 +231,7 @@ class ScanStore:
     def scans_for_device(self, device_id: str, limit: int = 100) -> list[dict]:
         """Fetch scans scoped strictly to a specific device tenant."""
         self._ensure_device_id_column()
+        self._ensure_notes_column()
         dev = (device_id or "").strip()
         if not dev:
             return []
@@ -245,6 +249,7 @@ class ScanStore:
 
     def unsynced_scans(self) -> list[dict]:
         self._ensure_sync_columns()
+        self._ensure_notes_column()
         rows = self.conn.execute(
             "SELECT * FROM scans WHERE COALESCE(synced_at, 0) = 0 ORDER BY id"
         ).fetchall()
@@ -278,6 +283,15 @@ class ScanStore:
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_scans_tenant ON scans(device_id, created_at)"
             )
+            self.conn.commit()
+
+    def _ensure_notes_column(self) -> None:
+        cols = {
+            r[1]
+            for r in self.conn.execute("PRAGMA table_info(scans)").fetchall()
+        }
+        if "notes" not in cols:
+            self.conn.execute("ALTER TABLE scans ADD COLUMN notes TEXT DEFAULT ''")
             self.conn.commit()
 
     def add_label(

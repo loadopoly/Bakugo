@@ -38,7 +38,8 @@ _guidance_fetched_at = 0.0
 
 
 def base_url() -> str:
-    return os.environ.get("CARDCENTER_QUIPU_URL", "").rstrip("/")
+    url = os.environ.get("CARDCENTER_QUIPU_URL") or os.environ.get("QUIPU_URL") or "http://127.0.0.1:7100"
+    return url.rstrip("/")
 
 
 def enabled() -> bool:
@@ -64,6 +65,11 @@ def _get_json(path: str) -> Optional[dict[str, Any]]:
             return json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError):
         return None
+
+
+def fetch_state() -> dict[str, Any]:
+    """Retrieve live MESH-SLM cognitive and physical state from the QUIPU container."""
+    return _get_json("/state") or {}
 
 
 def observe_async(

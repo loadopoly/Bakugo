@@ -485,6 +485,8 @@ class ARStatus:
     ratio: Optional[Measured]
     settled: bool
     scale: Optional[Measured] = None
+    grade_ceiling: Optional[str] = None
+    bands: Optional[dict[str, str]] = None
 
     def headline(self) -> str:
         if not self.tracking:
@@ -667,6 +669,23 @@ class ARSession:
                     guidance=(str(exc).split("\n")[0][:110],),
                 )
 
+        grade_ceil = None
+        bands_dict = None
+        if self.worst_ratio is not None:
+            try:
+                from .grading import grade_band
+                psa_band = grade_band(self.worst_ratio, "PSA", "front")
+                grade_ceil = psa_band.best if psa_band.is_single else f"{psa_band.worst}–{psa_band.best}"
+                bands_dict = {
+                    g: (b.best if b.is_single else f"{b.worst}–{b.best}")
+                    for g, b in {
+                        name: grade_band(self.worst_ratio, name, "front")
+                        for name in ("PSA", "BGS", "CGC")
+                    }.items()
+                }
+            except Exception:
+                pass
+
         return ARStatus(
             tracking=True,
             quad=self._last_quad,
@@ -676,4 +695,6 @@ class ARSession:
             ratio=self.worst_ratio,
             settled=self.settled,
             scale=self.calibration.current(now) if self.calibration else None,
+            grade_ceiling=grade_ceil,
+            bands=bands_dict,
         )

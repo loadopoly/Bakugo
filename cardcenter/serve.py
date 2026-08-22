@@ -194,154 +194,146 @@ PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#10151C">
-<title>Centering</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0B0F15">
+<title>Bakugo — CardCenter Metrology</title>
 <style>
 :root{
-  --ink:#10151C; --glass:#1A2330; --rise:#222E3D; --rule:#31404F;
-  --paper:#E9E5DB; --dim:#8797A8; --key:#5BC0C8;
-  --pass:#57A97A; --hold:#C9A03A; --stop:#B4553F;
+  --ink:#0B0F15; --surface:#121822; --surface-glass:rgba(18,24,34,0.85);
+  --rise:#1D2635; --rule:#2B384A; --paper:#F3EFE6; --dim:#8E9EAF;
+  --key:#4ED2C6; --key-glow:rgba(78,210,198,0.25);
+  --pass:#4EBA82; --hold:#D9A83A; --stop:#D45440;
+  --radius-lg:16px; --radius-md:12px; --radius-sm:8px;
 }
-*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none}
+input,select,textarea{user-select:auto}
 html,body{margin:0;padding:0;background:var(--ink);color:var(--paper);
-  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-  overscroll-behavior-y:contain}
-body{padding-bottom:calc(96px + env(safe-area-inset-bottom))}
-.eyebrow{font-size:10px;letter-spacing:.22em;text-transform:uppercase;
-  color:var(--dim);font-weight:600}
-header{padding:14px 16px 10px;border-bottom:1px solid var(--rule);
-  display:flex;align-items:baseline;gap:10px;position:sticky;top:0;
-  background:var(--ink);z-index:5}
-header h1{font-size:15px;margin:0;letter-spacing:.02em;font-weight:650}
-header .v{margin-left:auto;font-size:10px;color:var(--dim);
-  font-family:ui-monospace,"Roboto Mono",monospace}
-.controls{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:12px 16px}
-label.field{display:block}
-label.field .eyebrow{display:block;margin-bottom:5px}
-select{width:100%;appearance:none;background:var(--glass);color:var(--paper);
-  border:1px solid var(--rule);border-radius:9px;padding:11px 12px;font-size:15px;
-  font-family:inherit}
-select:focus-visible{outline:2px solid var(--key);outline-offset:1px}
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;
+  height:100%;overflow-x:hidden;overscroll-behavior-y:contain}
+header.app-bar{padding:calc(10px + env(safe-area-inset-top)) 16px 10px;
+  display:flex;align-items:center;gap:12px;position:sticky;top:0;
+  background:rgba(11,15,21,0.85);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border-bottom:1px solid var(--rule);z-index:20}
+.brand{display:flex;align-items:baseline;gap:8px}
+.brand h1{font-size:17px;margin:0;font-weight:700;color:#FFF}
+.brand .badge{font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--key);font-weight:700;padding:2px 6px;background:rgba(78,210,198,.12);border-radius:4px}
+header .v{margin-left:auto;font-size:10px;color:var(--dim);font-family:ui-monospace,"SF Mono",monospace}
 
-/* Signature: the two opposing borders drawn AS the ratio, meeting at a split.
-   Drawing the card at true scale looks correct and reads as nothing -- borders
-   are ~4% of a card's width, so the asymmetry that decides the grade is four
-   pixels wide. Scaling the two borders against each other instead puts the
-   measured quantity on screen at full size, and the distance from the split to
-   the centre line IS the miscentering. */
-.strip{margin:8px 16px 0;height:56px;position:relative;border-radius:10px;
-  background:var(--rise);border:1px solid var(--rule);overflow:hidden}
+.quick-pills{display:flex;gap:8px;padding:10px 16px 0;overflow-x:auto;scrollbar-width:none}
+.quick-pills::-webkit-scrollbar{display:none}
+.pill-select{background:var(--surface-glass);border:1px solid var(--rule);color:var(--paper);border-radius:20px;padding:6px 12px;font-size:12px;font-weight:500;display:flex;align-items:center;gap:6px;white-space:nowrap}
+.pill-select select{background:transparent;border:none;color:inherit;font-size:inherit;font-weight:inherit;outline:none;cursor:pointer}
+
+.voice-bubble{margin:10px 16px 0;background:rgba(22,30,42,.92);border:1px solid var(--key);border-radius:var(--radius-md);padding:8px 12px;font-size:12px;color:#FFF;display:flex;align-items:center;gap:8px}
+.voice-bubble.hidden{display:none}
+.voice-bubble .mic-pulse{width:8px;height:8px;border-radius:50%;background:var(--key);box-shadow:0 0 8px var(--key);animation:p 1s infinite alternate}
+@keyframes p{from{opacity:.4;transform:scale(.9)}to{opacity:1;transform:scale(1.15)}}
+
+.empty-card{margin:12px 16px;padding:20px;background:var(--surface);border:1px solid var(--rule);border-radius:var(--radius-lg);font-size:13.5px;line-height:1.6;color:var(--dim)}
+.empty-card b{color:var(--paper)}
+.empty-card ul{padding-left:18px;margin:10px 0 0}
+.empty-card li{margin-bottom:6px}
+
+.strip{margin:12px 16px 0;height:54px;position:relative;border-radius:var(--radius-md);background:var(--rise);border:1px solid var(--rule);overflow:hidden}
 .strip .seg{position:absolute;top:0;bottom:0}
 .strip .segL{left:0;background:linear-gradient(90deg,#243244,#2C3D52)}
 .strip .segR{right:0;background:linear-gradient(270deg,#243244,#2C3D52)}
-.strip .split{position:absolute;top:0;bottom:0;width:2px;background:var(--key);
-  box-shadow:0 0 0 1px rgba(16,21,28,.7)}
-.strip .ci{position:absolute;top:0;bottom:0;background:var(--key);opacity:.22}
-.strip .mid{position:absolute;top:0;bottom:0;left:50%;width:1px;
-  background:var(--paper);opacity:.35}
-.strip .midcap{position:absolute;top:4px;left:50%;transform:translateX(-50%);
-  font-size:8px;letter-spacing:.16em;color:var(--dim);text-transform:uppercase;
-  background:var(--rise);padding:0 4px;border-radius:3px}
-.strip .tag{position:absolute;bottom:6px;font-size:9.5px;letter-spacing:.12em;
-  color:#AFC0CF;text-transform:uppercase;
-  font-family:ui-monospace,"Roboto Mono",monospace}
+.strip .split{position:absolute;top:0;bottom:0;width:2px;background:var(--key);box-shadow:0 0 0 1px rgba(11,15,21,.7)}
+.strip .ci{position:absolute;top:0;bottom:0;background:var(--key);opacity:.25}
+.strip .mid{position:absolute;top:0;bottom:0;left:50%;width:1px;background:var(--paper);opacity:.35}
+.strip .midcap{position:absolute;top:4px;left:50%;transform:translateX(-50%);font-size:8px;letter-spacing:.16em;color:var(--dim);text-transform:uppercase;background:var(--rise);padding:1px 5px;border-radius:3px}
+.strip .tag{position:absolute;bottom:5px;font-size:9.5px;letter-spacing:.1em;color:#AFC0CF;text-transform:uppercase;font-family:ui-monospace,"SF Mono",monospace}
 
-.ratio{display:flex;align-items:baseline;gap:10px;padding:14px 16px 2px}
-.ratio b{font-size:46px;line-height:.9;font-weight:700;letter-spacing:-.03em;
-  font-variant-numeric:tabular-nums;font-family:ui-monospace,"Roboto Mono",monospace}
-.ratio span{font-size:13px;color:var(--dim);font-variant-numeric:tabular-nums;
-  font-family:ui-monospace,"Roboto Mono",monospace}
-.sub{padding:0 16px 12px;font-size:12px;color:var(--dim)}
+.ratio-row{display:flex;align-items:baseline;gap:10px;padding:14px 16px 2px}
+.ratio-row b{font-size:44px;line-height:.92;font-weight:800;letter-spacing:-.03em;font-variant-numeric:tabular-nums;font-family:ui-monospace,"SF Mono",monospace}
+.ratio-row span{font-size:13px;color:var(--dim);font-variant-numeric:tabular-nums;font-family:ui-monospace,"SF Mono",monospace}
+.sub-meta{padding:0 16px 12px;font-size:12px;color:var(--dim)}
 
-.grades{display:flex;gap:6px;padding:0 16px 4px;flex-wrap:wrap}
-.chip{background:var(--glass);border:1px solid var(--rule);border-radius:7px;
-  padding:7px 10px;font-size:12px;font-family:ui-monospace,"Roboto Mono",monospace}
-.chip i{font-style:normal;color:var(--dim);margin-right:6px;font-size:10px;
-  letter-spacing:.1em}
+.sect-title{padding:12px 16px 6px;font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);font-weight:700}
+.chips-row{display:flex;gap:8px;padding:0 16px 6px;flex-wrap:wrap}
+.chip{background:var(--surface);border:1px solid var(--rule);border-radius:var(--radius-sm);padding:7px 11px;font-size:12px;font-family:ui-monospace,"SF Mono",monospace;display:flex;align-items:center;gap:6px}
+.chip i{font-style:normal;color:var(--dim);font-size:10px}
+.chip.gold{border-color:var(--key);background:rgba(78,210,198,.08)}
 
-table.mm{width:calc(100% - 32px);margin:10px 16px 0;border-collapse:collapse;
-  font-family:ui-monospace,"Roboto Mono",monospace;font-size:12px}
-table.mm td{padding:6px 0;border-top:1px solid var(--rule);color:var(--dim)}
-table.mm td:last-child{text-align:right;color:var(--paper);
-  font-variant-numeric:tabular-nums}
+table.mm-table{width:calc(100% - 32px);margin:8px 16px 0;border-collapse:collapse;font-family:ui-monospace,"SF Mono",monospace;font-size:12px}
+table.mm-table td{padding:6px 0;border-top:1px solid var(--rule);color:var(--dim)}
+table.mm-table td:last-child{text-align:right;color:var(--paper);font-variant-numeric:tabular-nums}
 
-.notes{margin:12px 16px 0;padding:0;list-style:none}
-.notes li{border-left:2px solid var(--hold);padding:7px 0 7px 10px;
-  margin-bottom:7px;font-size:12.5px;line-height:1.45;color:#CBD5DF}
-.err{margin:16px;padding:14px;border:1px solid var(--stop);border-radius:10px;
-  background:rgba(180,85,63,.1);font-size:13.5px;line-height:1.5}
-.err b{display:block;margin-bottom:5px;font-size:11px;letter-spacing:.16em;
-  text-transform:uppercase;color:var(--stop)}
-/* A portrait card at full phone width is ~950px tall and buries everything
-   under it. Cap the height: the picture's job is a glance-check that the
-   detector found the right edge, not a viewing experience. */
-img.ov{width:calc(100% - 32px);max-height:46vh;object-fit:contain;
-  object-position:top;margin:12px 16px 0;border-radius:10px;
-  border:1px solid var(--rule);display:block;background:var(--glass)}
+img.ov{width:calc(100% - 32px);max-height:44vh;object-fit:contain;margin:12px 16px 0;border-radius:var(--radius-md);border:1px solid var(--rule);display:block;background:var(--surface)}
+.voice-tag-chip{background:rgba(78,210,198,.12);border:1px solid var(--key);color:var(--paper);border-radius:var(--radius-sm);padding:6px 10px;font-size:12px;margin:0 16px 8px}
 
-.dock{position:fixed;left:0;right:0;bottom:0;padding:12px 16px
-  calc(12px + env(safe-area-inset-bottom));background:linear-gradient(
-  to top,var(--ink) 62%,rgba(16,21,28,0));z-index:6}
-.shoot{width:100%;border:0;border-radius:12px;padding:17px;font-size:16px;
-  font-weight:650;background:var(--key);color:#08131A;font-family:inherit;
-  letter-spacing:.01em}
-.shoot:active{transform:translateY(1px)}
-.shoot[disabled]{opacity:.5}
-.shoot:focus-visible{outline:2px solid var(--paper);outline-offset:2px}
+.native-dock{position:fixed;left:0;right:0;bottom:0;padding:10px 16px calc(12px + env(safe-area-inset-bottom));background:linear-gradient(to top,var(--ink) 75%,rgba(11,15,21,0));display:flex;align-items:center;gap:10px;z-index:25}
+.btn-primary{flex:1;border:none;border-radius:var(--radius-md);padding:16px;font-size:15px;font-weight:700;background:var(--key);color:#061116;font-family:inherit;cursor:pointer;box-shadow:0 4px 14px var(--key-glow)}
+.btn-primary:active{transform:scale(.98)}
+.btn-primary[disabled]{opacity:.45}
+.btn-round{width:50px;height:50px;border-radius:var(--radius-md);border:1px solid var(--rule);background:var(--surface);color:var(--paper);display:flex;align-items:center;justify-content:center;font-size:18px;cursor:pointer}
+.btn-round:active{transform:scale(.94)}
+.btn-round.mic-active{background:rgba(78,210,198,.2);border-color:var(--key);color:var(--key)}
+.spin{padding:24px 16px;color:var(--key);font-size:13.5px}
 input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
-.empty{padding:26px 16px;color:var(--dim);font-size:13.5px;line-height:1.6}
-.empty ul{padding-left:16px;margin:9px 0 0}
-.empty li{margin-bottom:5px}
-.spin{padding:26px 16px;color:var(--key);font-size:13.5px}
-@media (prefers-reduced-motion:no-preference){
-  .spin::after{content:"";display:inline-block;width:6px;height:6px;
-    margin-left:6px;border-radius:50%;background:var(--key);
-    animation:p 1s ease-in-out infinite}
-  @keyframes p{0%,100%{opacity:.25}50%{opacity:1}}
-}
 </style>
 </head>
 <body>
-<header>
-  <h1>Centering</h1>
+<header class="app-bar">
+  <div class="brand">
+    <h1>Bakugo</h1>
+    <span class="badge">Metrology</span>
+  </div>
   <span class="v" id="ver"></span>
 </header>
 
-<div class="controls">
-  <label class="field"><span class="eyebrow">Holder</span>
-    <select id="holder"></select></label>
-  <label class="field"><span class="eyebrow">Lens</span>
+<div class="quick-pills">
+  <div class="pill-select">
+    <span>Holder:</span>
+    <select id="holder"></select>
+  </div>
+  <div class="pill-select">
+    <span>Lens:</span>
     <select id="lens">
       <option value="main">Main 1&times;</option>
       <option value="tele2x">Tele 2&times;</option>
       <option value="tele5x">Tele 5&times;</option>
       <option value="ultrawide">Ultrawide</option>
-    </select></label>
+    </select>
+  </div>
+</div>
+
+<div class="voice-bubble hidden" id="voice-bubble">
+  <span class="mic-pulse"></span>
+  <span id="voice-text">Listening for condition notes…</span>
 </div>
 
 <div id="out">
-  <div class="empty">
-    Fill the frame with one card, all four edges visible, against a plain
-    background. Square up to it.
+  <div class="empty-card">
+    Fill the frame with one card, all four edges visible against a plain background. Square up to it.
     <ul>
-      <li>Shooting into a case? Pick a <b>case</b> holder — the glass bends the image.</li>
-      <li>Glare is the usual reason a shot gets refused. Shade the case with your body.</li>
+      <li>Shooting into a case? Pick a <b>case</b> holder — the dielectric glass bends light.</li>
       <li>Zoom to 2&times; if you can. It measures tighter.</li>
+      <li>Tap 🎙️ to narrate condition notes (Scanlily-style) before taking the shot.</li>
     </ul>
   </div>
 </div>
 
-<div class="dock">
+<div class="native-dock">
   <input type="file" id="file" accept="image/*" capture="environment">
-  <button class="shoot" id="shoot">Measure a card</button>
+  <button type="button" class="btn-round" id="btn-mic" title="Voice Condition Tagging">🎙️</button>
+  <button class="btn-primary" id="shoot">Measure a card</button>
 </div>
 
 <script>
 const $=s=>document.querySelector(s);
 const out=$('#out'), file=$('#file'), shoot=$('#shoot');
 
-// Multi-tenant device isolation: persistent anonymous UUID per browser
+function haptic(t){
+  if(!navigator.vibrate) return;
+  try{
+    if(t==='tap') navigator.vibrate(10);
+    else if(t==='settle') navigator.vibrate([25,35,25]);
+    else if(t==='voice') navigator.vibrate([15,15]);
+  }catch(e){}
+}
+
 let deviceId = localStorage.getItem('bakugo_device_id');
 if (!deviceId) {
   deviceId = 'dev_' + (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 12));
@@ -354,35 +346,64 @@ fetch('/holders', {headers: {'X-Device-ID': deviceId}}).then(r=>r.json()).then(d
   $('#ver').textContent='v'+d.version;
 });
 
-shoot.onclick=()=>file.click();
+// Voice dictation
+let voiceActive = false, speechRecognizer = null, activeVoiceNotes = '';
+const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+if(SpeechRec){
+  speechRecognizer = new SpeechRec();
+  speechRecognizer.continuous = true;
+  speechRecognizer.interimResults = true;
+  speechRecognizer.lang = 'en-US';
+  speechRecognizer.onresult = (e)=>{
+    let t = '';
+    for(let i=e.resultIndex; i<e.results.length; ++i) t += e.results[i][0].transcript;
+    activeVoiceNotes = t.trim();
+    $('#voice-text').textContent = '🎙️ "' + activeVoiceNotes + '"';
+    haptic('voice');
+  };
+  speechRecognizer.onend = ()=>{ if(voiceActive) speechRecognizer.start(); };
+  $('#btn-mic').onclick = ()=>{
+    haptic('tap');
+    voiceActive = !voiceActive;
+    $('#btn-mic').classList.toggle('mic-active', voiceActive);
+    $('#voice-bubble').classList.toggle('hidden', !voiceActive);
+    if(voiceActive) try{ speechRecognizer.start(); }catch(e){}
+    else if(speechRecognizer) try{ speechRecognizer.stop(); }catch(e){}
+  };
+} else {
+  $('#btn-mic').style.display = 'none';
+}
+
+shoot.onclick=()=>{ haptic('tap'); file.click(); };
 file.onchange=()=>{ if(file.files[0]) send(file.files[0]); };
 
 function send(f){
-  shoot.disabled=true; shoot.textContent='Measuring…';
-  out.innerHTML='<div class="spin">Reading the borders</div>';
+  shoot.disabled=true; shoot.textContent='Measuring Borders…';
+  out.innerHTML='<div class="spin">🔬 Ray-tracing dielectric refraction & calculating border ratios…</div>';
   const fd=new FormData();
   fd.append('holder',$('#holder').value);
   fd.append('lens',$('#lens').value);
   fd.append('device_id', deviceId);
+  if(activeVoiceNotes) fd.append('notes', activeVoiceNotes);
   fd.append('image',f,'card.jpg');
   fetch('/measure',{method:'POST',headers:{'X-Device-ID': deviceId},body:fd})
     .then(r=>r.json()).then(render)
-    .catch(e=>fail('Could not reach the engine',String(e)))
+    .catch(e=>fail('Engine unreachable',String(e)))
     .finally(()=>{shoot.disabled=false;shoot.textContent='Measure a card';file.value='';});
 }
 
 function fail(t,m){
-  out.innerHTML=`<div class="err"><b>${esc(t)}</b>${esc(m)}</div>`;
+  out.innerHTML=`<div class="empty-card" style="border-color:var(--stop)"><b style="color:var(--stop)">${esc(t)}</b><div>${esc(m)}</div></div>`;
 }
 function esc(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
 
 function render(d){
   if(!d.ok){ fail('Not measured', d.error); return; }
+  haptic('settle');
   const wide=d.ratio, narrow=+(100-d.ratio).toFixed(1);
   const horiz = d.axis==='horizontal';
   const a = horiz? d.borders.left : d.borders.top;
   const b = horiz? d.borders.right : d.borders.bottom;
-  // Split point = this border's share of the two. That is the ratio itself.
   const split = 100*a/(a+b);
   const ci = Math.max(0.8, d.ratio_hi-d.ratio_lo);
 
@@ -391,28 +412,26 @@ function render(d){
     <div class="seg segL" style="width:${split.toFixed(2)}%"></div>
     <div class="seg segR" style="width:${(100-split).toFixed(2)}%"></div>
     <div class="ci" style="left:${(split-ci/2).toFixed(2)}%;width:${ci.toFixed(2)}%"></div>
-    <div class="mid"></div><div class="midcap">even</div>
+    <div class="mid"></div><div class="midcap">50/50</div>
     <div class="split" style="left:${split.toFixed(2)}%"></div>
     <div class="tag" style="left:10px">${esc(horiz?'left':'top')} ${a.toFixed(2)}mm</div>
     <div class="tag" style="right:10px">${b.toFixed(2)}mm ${esc(horiz?'right':'bottom')}</div>
   </div>
-  <div class="ratio"><b>${wide.toFixed(1)}/${narrow.toFixed(1)}</b>
-    <span>&plusmn; ${((d.ratio_hi-d.ratio_lo)/2).toFixed(1)}</span></div>
-  <div class="sub">${esc(d.axis)} axis is worse &middot; wider on ${esc(d.wider)}
-    &middot; 95% CI ${d.ratio_lo.toFixed(1)}&ndash;${d.ratio_hi.toFixed(1)}</div>
-  <div class="grades">${Object.entries(d.bands).map(([g,b])=>
-    `<div class="chip"><i>${esc(g)}</i>${esc(b.label)}</div>`).join('')}</div>
-  <table class="mm">
-    <tr><td>left / right</td><td>${d.borders.left.toFixed(2)} / ${d.borders.right.toFixed(2)} mm</td></tr>
-    <tr><td>top / bottom</td><td>${d.borders.top.toFixed(2)} / ${d.borders.bottom.toFixed(2)} mm</td></tr>
-    <tr><td>scale</td><td>${d.px_per_mm} px/mm</td></tr>
-    <tr><td>holder</td><td>${esc(d.holder)}${d.refraction?' · corrected':''}</td></tr>
+  <div class="ratio-row"><b>${wide.toFixed(1)}/${narrow.toFixed(1)}</b>
+    <span>&plusmn; ${((d.ratio_hi-d.ratio_lo)/2).toFixed(1)}%</span></div>
+  <div class="sub-meta">${esc(d.axis)} axis binding &middot; 95% CI ${d.ratio_lo.toFixed(1)}&ndash;${d.ratio_hi.toFixed(1)}%</div>
+  ${activeVoiceNotes?`<div class="voice-tag-chip">🎙️ <b>Spoken Note:</b> ${esc(activeVoiceNotes)}</div>`:''}
+  <div class="sect-title">Centering Grade Ceiling</div>
+  <div class="chips-row">${Object.entries(d.bands).map(([g,b])=>
+    `<div class="chip ${String(b.label).includes('10')?'gold':''}"><i>${esc(g)}</i><b>${esc(b.label)}</b></div>`).join('')}</div>
+  <table class="mm-table">
+    <tr><td>Horizontal Borders (L/R)</td><td>${d.borders.left.toFixed(2)} / ${d.borders.right.toFixed(2)} mm</td></tr>
+    <tr><td>Vertical Borders (T/B)</td><td>${d.borders.top.toFixed(2)} / ${d.borders.bottom.toFixed(2)} mm</td></tr>
+    <tr><td>Sensor Metric Scale</td><td>${d.px_per_mm} px/mm</td></tr>
+    <tr><td>Optical Refraction</td><td>${esc(d.holder)}${d.refraction?' · Snell Corrected':''}</td></tr>
   </table>
-  ${d.warnings.length?`<ul class="notes">${d.warnings.map(w=>`<li>${esc(w)}</li>`).join('')}</ul>`:''}
-  ${d.overlay?`<img class="ov" alt="Detected border drawn over the card"
-     src="data:image/jpeg;base64,${d.overlay}">`:''}
-  <div class="sub" style="padding-top:14px">Centering only. This caps a grade;
-    it never confirms one. Corners, edges and surface are not measured.</div>`;
+  ${d.overlay?`<img class="ov" alt="Card Metrology" src="data:image/jpeg;base64,${d.overlay}">`:''}
+  <div class="sub-meta" style="padding-top:14px">Centering only. Corners, edges and surface decide final grade.</div>`;
   window.scrollTo({top:0,behavior:'smooth'});
 }
 </script>
@@ -555,13 +574,15 @@ class Handler(BaseHTTPRequestHandler):
             image = fields.get("image")
             if not image:
                 raise DetectionError("no photo was attached")
-            device_id = self._extract_device_id(fields)
+            notes = fields.get("notes", b"").decode("utf-8", "replace").strip() if fields.get("notes") else ""
             payload = _measure_payload(
                 image,
                 fields.get("holder", b"raw").decode(),
                 fields.get("lens", b"main").decode(),
             )
             payload["device_id"] = device_id
+            if notes:
+                payload["notes"] = notes
             if payload.get("ok"):
                 payload.update(persist_measure(payload, source="serve"))
                 try:
