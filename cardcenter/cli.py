@@ -373,6 +373,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="push unsynced local scans to the Loadopoly-OCR Supabase project",
     )
+    p.add_argument(
+        "--transfer-supabase",
+        action="store_true",
+        help="extract and transfer all Supabase items/tables into DuckDB and Parquet lakehouse",
+    )
+    p.add_argument(
+        "--target-duckdb",
+        metavar="PATH",
+        default="supabase_vault.duckdb",
+        help="target DuckDB database path (default: supabase_vault.duckdb)",
+    )
+    p.add_argument(
+        "--analytics-summary",
+        action="store_true",
+        help="query and display DuckDB OLAP scan summary and device leaderboard",
+    )
     p.add_argument("--auth-token", metavar="TOKEN", help="bearer authentication token for remote sync")
     p.add_argument("--migrate-db", metavar="PATH", help="migrate SQLite database to the latest schema version")
     p.add_argument("--info", action="store_true", help="show detailed build, runtime, and schema version info")
@@ -511,8 +527,35 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  wrote {result.count} scan(s). Photos were not uploaded.")
                 print()
                 return 0
-            print(f"  failed: {result.error}", file=sys.stderr)
-            return 1
+    if args.transfer_supabase:
+        from .transfer_supabase import run_transfer
+        print(f"\nInitiating Supabase -> DuckDB transfer into '{args.target_duckdb}'...")
+        summary = run_transfer(
+            duckdb_path=args.target_duckdb,
+            sqlite_path=args.db or "cardcenter.db",
+        )
+        print(f"\n[OK] Transferred {summary['total_tables']} table(s), {summary['total_rows']} row(s) to DuckDB & Parquet.")
+        print(f"  DuckDB Vault : {summary['duckdb_database']}")
+        print(f"  Parquet Sinks: {summary['parquet_directory']}")
+        print(f"  Reconciled   : {summary['sqlite_reconciliation']}\n")
+        return 0
+
+    if args.analytics_summary:
+        from .analytics import AnalyticsEngine
+        sqlite_p = args.db or "cardcenter.db"
+        with AnalyticsEngine(sqlite_p) as engine:
+            s = engine.scan_summary()
+            print("\n=== CardCenter DuckDB OLAP Summary ===")
+            print(f"Total Scans   : {s['total_scans']}")
+            print(f"Distinct Cards: {s['distinct_cards']}")
+            print(f"Avg Centering : {s['avg_centering']}% (min: {s['min_centering']}%, max: {s['max_centering']}%)")
+            board = engine.device_leaderboard()
+            if board:
+                print("\nDevice Leaderboard:")
+                for b in board:
+                    print(f"  * {b['device_id']:20s}: {b['scan_count']:4d} scans (avg: {b['avg_centering']}%)")
+            print()
+        return 0
 
     if args.sync_url:
         if not args.db:

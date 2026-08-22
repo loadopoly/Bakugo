@@ -60,13 +60,14 @@ from .versioning import (
     migrate_database,
 )
 
-# DuckDB analytics is an optional dependency.  On Android / Termux where
-# native C extensions are fragile, cardcenter works perfectly without it.
 try:
     from .analytics import AnalyticsEngine, available as analytics_available
+    from .transfer_supabase import SupabaseTransferEngine, run_transfer
 except ImportError:
     AnalyticsEngine = None  # type: ignore[misc,assignment]
     analytics_available = lambda: False  # noqa: E731
+    SupabaseTransferEngine = None  # type: ignore[misc,assignment]
+    run_transfer = None  # type: ignore[misc,assignment]
 
 __all__ = [
     "measure_centering",
@@ -121,5 +122,7 @@ __all__ = [
     "physical_world_summary",
     "AnalyticsEngine",
     "analytics_available",
+    "SupabaseTransferEngine",
+    "run_transfer",
     "__version__",
 ]
