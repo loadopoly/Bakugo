@@ -18,13 +18,14 @@ ENV PYTHONUNBUFFERED=1 \
 
 # opencv-python-headless replaces the pyproject's opencv-python (GUI build);
 # install deps manually, then the package itself with --no-deps.
-RUN pip install --no-cache-dir "numpy>=1.24" "opencv-python-headless>=4.8"
+# duckdb powers the OLAP analytical layer (always available in Docker).
+RUN pip install --no-cache-dir "numpy>=1.24" "opencv-python-headless>=4.8" "duckdb>=1.0.0"
 
 COPY pyproject.toml README.md ./
 COPY cardcenter/ ./cardcenter/
 RUN pip install --no-cache-dir --no-deps .
 
-RUN mkdir -p /data
+RUN mkdir -p /data /data/parquet
 VOLUME /data
 
 EXPOSE 8765

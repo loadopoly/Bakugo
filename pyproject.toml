@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cardcenter"
-version = "2.3.0"
+version = "2.6.0"
 description = "Trading card centering measurement and batch scanning, with honest error bars"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -39,6 +39,9 @@ Documentation = "https://github.com/PoodlesOfWar/Bakugo#readme"
 # scipy and pillow are used only by the test suite (the Fermat ray trace and
 # the OCR font fixtures). They are not needed to run the tool.
 dev = ["pytest>=7.4", "scipy>=1.10", "pillow>=10.0"]
+# DuckDB powers the OLAP analytical layer.  It is optional because on
+# mobile (Android Termux) the native C extension can fail to compile.
+analytics = ["duckdb>=1.0.0"]
 
 [project.scripts]
 cardcenter = "cardcenter.cli:main"

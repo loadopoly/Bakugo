@@ -1,6 +1,6 @@
 # System Dynamics — Bakugo (Touch Axis & Metrology Hub)
 
-Version: 2.5.0  
+Version: 2.6.0  
 Date: 2026-08-22  
 
 ---
@@ -167,4 +167,68 @@ curl -s -H "apikey: $SUPABASE_ANON_KEY" \
 
 # 4. Check physical world model grounding summary
 python -c "from cardcenter import world_model_grounding; import json; print(json.dumps(world_model_grounding.physical_world_summary(), indent=2))"
+
+# 5. Run DuckDB analytical queries over the live store
+python -c "from cardcenter.analytics import AnalyticsEngine; import json; e = AnalyticsEngine('/data/cardcenter.db'); print(json.dumps(e.scan_summary(), indent=2)); e.close()"
 ```
+
+---
+
+## 7. DuckDB Analytical Layer & Parquet Lakehouse (`cardcenter.analytics`)
+
+### 7.1. Architecture: Hybrid OLTP + OLAP
+
+Bakugo uses a **hybrid ingest + analytical engine** pattern:
+
+1. **OLTP Ingest (SQLite WAL)**: All incoming scans are written to `cardcenter.db` in Write-Ahead Logging mode (`PRAGMA journal_mode=WAL`). WAL allows unlimited concurrent readers while a write occurs, with sub-millisecond transaction latency.
+
+2. **OLAP Analytics (DuckDB)**: The `AnalyticsEngine` attaches the live SQLite database via DuckDB's native scanner — **zero-copy, no ETL** — and executes vectorised columnar aggregations:
+   ```python
+   con.execute("ATTACH '/data/cardcenter.db' AS cc (TYPE SQLITE, READ_ONLY);")
+   ```
+
+3. **Parquet Lakehouse**: `export_parquet()` sinks scan metadata into Hive-partitioned `.parquet` files (`/data/parquet/year=YYYY/month=MM/`) for lock-free downstream queries, dashboard loading, or cross-service federation.
+
+```mermaid
+flowchart LR
+    subgraph Writes["OLTP Path"]
+        Scan["Camera Frame"] --> Store["ScanStore\n(SQLite WAL)"]
+    end
+    subgraph Reads["OLAP Path"]
+        Store -.->|"Zero-copy\nATTACH"| DuckDB["AnalyticsEngine\n(DuckDB)"]
+        DuckDB -->|"COPY TO"| Parquet["Parquet\nLakehouse"]
+    end
+    subgraph Consumers["Downstream"]
+        Parquet --> Dashboard["Analytics Dashboard"]
+        Parquet --> Browser["Loadopoly-OCR\n(DuckDB-WASM)"]
+    end
+```
+
+### 7.2. Multi-Tenant User Isolation
+
+When external users interact via `bakugo.loadopoly.com`:
+- Frontend generates a persistent device UUID in `localStorage` and submits via `X-Device-ID` header.
+- Scans are indexed on `(device_id, created_at)` for tenant-scoped queries.
+- Contamination Firewall is enforced: only `LabelKind.CERTIFIED` trains models.
+
+### 7.3. Zero-Cost Deployment
+
+| Component | Solution | Monthly Cost |
+| :--- | :--- | :--- |
+| Compute | Local Docker Engine | \$0 |
+| Ingress & SSL | Cloudflare Tunnel (Free) | \$0 |
+| Database | SQLite WAL + DuckDB OLAP | \$0 |
+| DDoS Protection | Cloudflare WAF (Free) | \$0 |
+| **Total** | | **\$0** |
+
+### 7.4. Available Queries
+
+| Method | Description |
+| :--- | :--- |
+| `scan_summary()` | Total scans, distinct cards, avg/min/max centering |
+| `centering_distribution(bins)` | Histogram of worst_ratio_pct |
+| `device_leaderboard()` | Per-device scan counts and averages |
+| `label_provenance()` | Label counts by kind (certified, self_reported, etc.) |
+| `training_export(kinds)` | Contamination-firewalled join of scans + labels |
+| `export_parquet(output_dir)` | Hive-partitioned Parquet lakehouse sink |
+

@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS scans (
     warnings TEXT,
     phash INTEGER,
     source TEXT,
+    device_id TEXT DEFAULT '',
     created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS labels (
@@ -109,6 +110,7 @@ CREATE TABLE IF NOT EXISTS labels (
 CREATE INDEX IF NOT EXISTS idx_labels_scan ON labels(scan_id);
 CREATE INDEX IF NOT EXISTS idx_labels_kind ON labels(kind);
 CREATE INDEX IF NOT EXISTS idx_scans_card ON scans(card_key);
+CREATE INDEX IF NOT EXISTS idx_scans_tenant ON scans(device_id, created_at);
 CREATE TABLE IF NOT EXISTS _schema_metadata (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
@@ -122,13 +124,17 @@ class ScanStore:
         self.path = path
         self.conn = sqlite3.connect(path)
         self.conn.row_factory = sqlite3.Row
+        # WAL mode allows unlimited concurrent readers (including DuckDB
+        # OLAP queries) while writes proceed without blocking.
+        self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
         self.conn.execute(
-            "INSERT OR IGNORE INTO _schema_metadata (key, value, updated_at) VALUES ('schema_version', 'cardcenter/2', ?)",
+            "INSERT OR IGNORE INTO _schema_metadata (key, value, updated_at) VALUES ('schema_version', 'cardcenter/3', ?)",
             (time.time(),),
         )
         self.conn.commit()
         self._ensure_sync_columns()
+        self._ensure_device_id_column()
 
 
     def close(self) -> None:
@@ -246,6 +252,19 @@ class ScanStore:
         }
         if "synced_at" not in cols:
             self.conn.execute("ALTER TABLE scans ADD COLUMN synced_at REAL DEFAULT 0.0")
+            self.conn.commit()
+
+    def _ensure_device_id_column(self) -> None:
+        """Migrate pre-v2.6 databases that lack the device_id tenant column."""
+        cols = {
+            r[1]
+            for r in self.conn.execute("PRAGMA table_info(scans)").fetchall()
+        }
+        if "device_id" not in cols:
+            self.conn.execute("ALTER TABLE scans ADD COLUMN device_id TEXT DEFAULT ''")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_scans_tenant ON scans(device_id, created_at)"
+            )
             self.conn.commit()
 
     def add_label(

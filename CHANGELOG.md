@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-08-22
+
+### Added
+- **DuckDB Analytical Layer (`cardcenter/analytics.py`)**: Zero-copy OLAP engine that attaches the live SQLite store via DuckDB's native scanner. Provides `scan_summary()`, `centering_distribution()`, `device_leaderboard()`, `label_provenance()`, contamination-firewalled `training_export()`, and Hive-partitioned `export_parquet()`.
+- **SQLite WAL Mode**: Enabled `PRAGMA journal_mode=WAL` in `ScanStore.__init__()` for unlimited concurrent readers during active scans — required for DuckDB zero-lock attachment.
+- **Multi-Tenant Device Isolation**: Added `device_id` column and `idx_scans_tenant(device_id, created_at)` index to the scans schema for per-device query scoping when serving external users via `bakugo.loadopoly.com`.
+- **Parquet Lakehouse Sink**: `AnalyticsEngine.export_parquet()` writes scans into `/data/parquet/year=YYYY/month=MM/` for lock-free downstream consumption by dashboards and Loadopoly-OCR's DuckDB-WASM browser engine.
+- **Optional Dependency**: DuckDB is added under `[project.optional-dependencies] analytics = ["duckdb>=1.0.0"]` — mobile Termux installs remain clean.
+- **Unit Test Suite (`tests/test_analytics.py`)**: 12 tests covering summaries, histograms, leaderboards, provenance, training export, Parquet export, and lifecycle.
+
+### Changed
+- **Schema version**: Bumped from `cardcenter/2` to `cardcenter/3`.
+- **Dockerfile**: Now installs `duckdb>=1.0.0` and creates `/data/parquet` volume.
+
 ## [2.5.0] - 2026-08-22
 
 ### Added

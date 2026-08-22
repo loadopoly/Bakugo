@@ -8,7 +8,7 @@ grade. Centering sets a ceiling; the other three attributes decide where under
 that ceiling a card actually lands.
 """
 
-__version__ = "2.5.0"
+__version__ = "2.6.0"
 
 from .centering import measure_centering
 from .cloud import CloudConfig, CloudResult, resolve_config, sync_scan_id, sync_store, upsert_scan
@@ -60,6 +60,14 @@ from .versioning import (
     migrate_database,
 )
 
+# DuckDB analytics is an optional dependency.  On Android / Termux where
+# native C extensions are fragile, cardcenter works perfectly without it.
+try:
+    from .analytics import AnalyticsEngine, available as analytics_available
+except ImportError:
+    AnalyticsEngine = None  # type: ignore[misc,assignment]
+    analytics_available = lambda: False  # noqa: E731
+
 __all__ = [
     "measure_centering",
     "grade_band",
@@ -108,6 +116,10 @@ __all__ = [
     "information_value",
     "MAX_CONSISTENCY",
     "GOOD_CONSISTENCY",
+    "accumulate_physical_priors",
+    "grounding_annotation",
+    "physical_world_summary",
+    "AnalyticsEngine",
+    "analytics_available",
     "__version__",
 ]
-

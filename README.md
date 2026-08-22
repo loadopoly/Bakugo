@@ -24,6 +24,7 @@ grade; the other three attributes decide where under that ceiling a card lands.
 | [**Versioning & Connection**](docs/VERSIONING_AND_CONNECTION.md) | SemVer, schema migrations, remote sync protocols, and GitHub update checks. |
 | [**API Reference**](docs/API_REFERENCE.md) | Complete Python API documentation across all modules. |
 | [**Mathematical Foundations**](docs/MATHEMATICAL_FOUNDATIONS.md) | Derivations for Snell stack displacement, $\chi^2$ fusion, and Almgren-Chriss liquidation. |
+| [**Deployment & DuckDB Architecture**](docs/DEPLOYMENT_AND_DUCKDB_ARCHITECTURE.md) | Zero-cost Cloudflare Tunnel binding (`bakugo.loadopoly.com`), SQLite WAL ingest, and DuckDB analytical layer. |
 
 ---
 
