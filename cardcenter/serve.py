@@ -263,6 +263,8 @@ header.app-bar{padding:calc(10px + env(safe-area-inset-top)) 16px 10px;
 .hud-chip .radar{width:7px;height:7px;border-radius:50%;background:var(--key);animation:p 1s infinite alternate}
 @keyframes p{from{opacity:.3;transform:scale(.8)}to{opacity:1;transform:scale(1.2)}}
 .hud-verdict{background:rgba(11,15,21,0.85);backdrop-filter:blur(10px);border:1px solid var(--rule);padding:4px 10px;border-radius:20px;font-size:11px;font-family:ui-monospace,"SF Mono",monospace;color:var(--dim)}
+.hud-chip.settled{border-color:var(--pass);color:var(--pass)}
+.hud-chip.settled .radar{background:var(--pass);animation:none;opacity:1;transform:none}
 
 /* Still & Results Output */
 #out{padding-bottom:90px}
@@ -616,10 +618,42 @@ function drawARHUD(d) {
       ctx.fillRect(px - 4, py - 4, 8, 8);
     });
 
-    $('#hud-status').textContent = (d.ratio ? `${d.ratio.toFixed(1)}%` : 'TRACKING') + (d.grade_ceiling ? ` · ${d.grade_ceiling}` : '');
+    const chip = $('#hud-status');
+    const chipBox = document.querySelector('.hud-chip');
+    // grade_ceiling is the honest worst-case range (interval mapped through
+    // every grade tier it touches) -- necessarily wide on early frames, e.g.
+    // "7-10", and that alone reads as a verdict when it is really a shrug.
+    // grade_estimate/grade_confidence come from predict_overall_grade, which
+    // turns the same measurement into a single most-likely grade plus a
+    // probability using edge/corner signal the session already has. Show
+    // both: the actionable guess up front, the honest range alongside it.
+    // grade_estimate already reads like "PSA 9" (predict_overall_grade
+    // prefixes the grader itself), so don't prefix it again here.
+    const est = d.grade_estimate
+      ? `~${d.grade_estimate}${d.grade_confidence != null ? ` (${Math.round(d.grade_confidence * 100)}%)` : ''}`
+      : null;
+    if (!d.ratio) {
+      chip.textContent = 'TRACKING';
+      if (chipBox) chipBox.classList.remove('settled');
+    } else if (d.settled) {
+      // Only a settled estimate -- the SPRT/fusion machinery in ARSession has
+      // accumulated enough consistent views to trust -- gets to look final.
+      chip.textContent = `${d.ratio.toFixed(1)}%` + (est ? ` · ${est}` : '') + (d.grade_ceiling ? ` · range ${d.grade_ceiling}` : '');
+      if (chipBox) chipBox.classList.add('settled');
+    } else {
+      // A single early view carries a wide confidence interval. Say so
+      // instead of presenting a first-frame guess with the same weight as a
+      // settled one, but still lead with the best-guess grade rather than
+      // just the range, which is the part that actually reads as an answer.
+      const n = d.measured_frames || 0;
+      chip.textContent = `${d.ratio.toFixed(1)}%` + (est ? ` · ${est}` : '') + ` · narrowing (${n} view${n === 1 ? '' : 's'})`;
+      if (chipBox) chipBox.classList.remove('settled');
+    }
   } else {
     lastLocked = false;
     $('#hud-status').textContent = 'SEARCHING';
+    const chipBox = document.querySelector('.hud-chip');
+    if (chipBox) chipBox.classList.remove('settled');
   }
 
   if (d.settled && !lastSettled) {
@@ -809,6 +843,9 @@ class Handler(BaseHTTPRequestHandler):
         if dev_list and dev_list[0]:
             return dev_list[0].strip()
         return "anonymous"
+
+    def do_HEAD(self) -> None:
+        self.do_GET()
 
     def do_GET(self) -> None:
         from urllib.parse import urlparse
@@ -1047,6 +1084,12 @@ class Handler(BaseHTTPRequestHandler):
                     ),
                     "settled": status.settled,
                     "grade_ceiling": status.grade_ceiling,
+                    "grade_estimate": status.grade_estimate,
+                    "grade_confidence": (
+                        round(status.grade_confidence, 2)
+                        if status.grade_confidence is not None
+                        else None
+                    ),
                     "bands": status.bands,
                     "verdict": (
                         session.verdict.name

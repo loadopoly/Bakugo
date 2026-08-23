@@ -198,8 +198,9 @@ def measure_centering(
             "cancel in the ratio, so the correction carries its own error term."
         )
     elif shadow.directional:
+        qualifier = "at least " if shadow.shadow_unbounded else ""
         raise DetectionError(
-            f"a {shadow.estimated_shadow_mm:.2f}mm edge shadow on the "
+            f"a {qualifier}{shadow.estimated_shadow_mm:.2f}mm edge shadow on the "
             f"{shadow.darker_side} is too wide to subtract reliably -- it "
             "overlaps the printed border. Change your angle relative to the "
             "light, or shoot the card from a different side of the case."

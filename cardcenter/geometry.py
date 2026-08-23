@@ -380,9 +380,11 @@ def quad_candidates(
 
 
 def find_card_quad(
-    image: np.ndarray, min_area_frac: float = 0.008
+    image: np.ndarray,
+    min_area_frac: float = 0.008,
+    prefer_point: Optional[tuple[float, float]] = None,
 ) -> tuple[np.ndarray, np.ndarray, float]:
-    """Locate the single largest card in the image.
+    """Locate a card in the image.
 
     ``min_area_frac`` defaulted to 0.03 for synthetic renders, where the card
     fills the frame by construction. On a real capture session the median card
@@ -390,6 +392,17 @@ def find_card_quad(
     default was rejecting cards the detector had already found. Measured on 200
     real photographs: at 0.03 the pipeline measured 0 of 60; the candidate stage
     was finding valid 1.44-aspect quads and the area gate was discarding them.
+
+    ``prefer_point``, if given, breaks ties among the quality-gated survivors by
+    distance to that point instead of by area. A shop table is rarely one card:
+    it is a spread, a display case, or a box lid, and "biggest card-shaped thing
+    anywhere in the frame" silently measures whichever neighbour happens to be
+    larger rather than the one the user framed. AR callers pass the reticle (the
+    frame centre) on first acquisition and the last known position on
+    re-acquisition after a lost track, so the tool measures what it was already
+    looking at, not whatever else is on the table. Ungated candidates are never
+    promoted by this -- it only orders within the survivors of the existing
+    residual/edge-support ladder.
 
     Returns (refined_corners, contour, mean_line_residual_px).
     """
@@ -412,7 +425,17 @@ def find_card_quad(
     # is worse -- it lets a small, crisp inner rectangle outscore the real card.
     # Use explicit gates instead, then take the largest survivor, relaxing the
     # gates only if nothing passes.
-    found.sort(key=lambda x: -x[0])
+    #
+    # When a caller supplies prefer_point, rank candidates for the refinement
+    # cap by nearness to it rather than by size. A cluttered table can easily
+    # hold more than 14 card-shaped regions, and without this the target card
+    # -- smaller in frame than a neighbour, but the one under the reticle --
+    # gets pushed out of the top 14 before it is ever scored.
+    if prefer_point is not None:
+        pp = np.asarray(prefer_point, dtype=np.float64)
+        found.sort(key=lambda x: float(np.linalg.norm(x[1].mean(axis=0) - pp)))
+    else:
+        found.sort(key=lambda x: -x[0])
     evaluated: list[tuple[float, np.ndarray, np.ndarray, float, float]] = []
     for area, quad, contour in found[:14]:
         try:
@@ -443,7 +466,13 @@ def find_card_quad(
             "The card may be obscured, bent, or overlapping another card."
         )
 
-    _, refined, contour, residual = max(scored, key=lambda x: x[0])
+    if prefer_point is not None:
+        pp = np.asarray(prefer_point, dtype=np.float64)
+        _, refined, contour, residual = min(
+            scored, key=lambda x: float(np.linalg.norm(x[1].mean(axis=0) - pp))
+        )
+    else:
+        _, refined, contour, residual = max(scored, key=lambda x: x[0])
 
     # SUBPIXEL REFINEMENT CAN MAKE THE QUAD WORSE, AND MUST BE ABLE TO DECLINE.
     #

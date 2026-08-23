@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.1] - 2026-08-23
+
+### Fixed
+- **Shadow-width saturation (`cardcenter/illumination.py`)**: `detect_edge_shadow`'s inner-profile scan stopped at a fixed 1.6mm depth, so any dark band deeper than that (normal desk/directional lighting, not just extreme cases) was silently reported as exactly `1.60mm` regardless of its true width — every affected shot showed an identical, coincidence-looking "edge shadow" error. The scan now runs to `SHADOW_SCAN_MAX_DEPTH_MM = 4.0mm` at higher resolution, and `ShadowVerdict.shadow_unbounded` flags when the dark band still hadn't ended at the far edge of the scan, so `centering.py`'s refusal message says "at least Xmm" instead of a falsely-precise number.
+- **Candidate selection ignored what the camera was pointed at (`cardcenter/geometry.py`, `cardcenter/ar.py`)**: `find_card_quad` always picked the *largest* card-shaped region surviving the quality gates, which is wrong the moment a real table holds more than one card — a bigger neighbour would silently outrank the card under the reticle. Added an optional `prefer_point` parameter that re-ranks the same gate-surviving candidates by proximity instead of area (including the top-14 pre-refinement cut, so a smaller target isn't discarded before scoring). `ARSession.push()` now passes the frame centre on first acquisition and the last known card position on re-acquisition after a lost track, so the AR loop measures what it was already looking at instead of whatever else is on the table. Single-card scenes are unaffected — ties only matter when more than one candidate survives.
+
+### Changed
+- **Live AR grade readout (`cardcenter/ar.py`, `cardcenter/serve.py`)**: `ARSession.push()` now also calls the existing `predict_overall_grade` (previously wired only into the still-photo `/measure` path) to produce a single most-likely grade and a confidence score alongside the honest worst-case ceiling band. The live HUD leads with that estimate (`~PSA 9 (72%)`) and labels the readout `narrowing (N views)` until `ARSession.settled` actually fires, instead of showing a wide first-frame confidence band (e.g. "7-10") with the same visual weight as a converged one.
+
 ## [2.8.0] - 2026-08-22
 
 ### Added

@@ -76,6 +76,17 @@ TYPICAL_CARD_THICKNESS_MM = 0.30
 # Below this the shadow starts to matter more than everything else combined.
 SAFE_ELEVATION_DEG = 55.0
 
+# How far inward the shadow-width scan looks. This used to stop at 1.6mm, which
+# is well inside what a low, dim, or partly-blocked light source can cast (a
+# soft, badly-lit desk shot routinely shadows 2-4mm in). Any dark band deeper
+# than the scan window was silently reported AS the window's edge -- every
+# such photo came back with an identical, coincidence-looking "1.60mm" -- and
+# because the correction threshold is 1.2mm, that saturated reading is refused
+# either way. Widening the window does not change the refuse/correct decision
+# for these deep shadows, but it stops the tool from lying about the number.
+SHADOW_SCAN_MAX_DEPTH_MM = 4.0
+SHADOW_SCAN_SAMPLES = 21
+
 
 @dataclass(frozen=True)
 class CoherenceCheck:
@@ -197,6 +208,7 @@ class ShadowVerdict:
     warnings: tuple[str, ...]
     side_index: int = -1
     correctable: bool = False
+    shadow_unbounded: bool = False
 
     def describe(self) -> str:
         if not self.directional:
@@ -260,7 +272,7 @@ def detect_edge_shadow(
             n = -n  # outward
         ts = np.linspace(-0.3, 0.3, 40)
         out = []
-        for d_mm in np.linspace(0.12, 1.6, 9):
+        for d_mm in np.linspace(0.12, SHADOW_SCAN_MAX_DEPTH_MM, SHADOW_SCAN_SAMPLES):
             pts = mid[None, :] + ts[:, None] * edge[None, :] - (
                 d_mm * px_per_mm
             ) * n[None, :]
@@ -288,23 +300,36 @@ def detect_edge_shadow(
     elevation: Optional[float] = None
     shadow = 0.0
     severe = False
+    saturated = False
 
     if directional:
         # Width of the contaminated band, read off the profile directly, which
         # is a far better estimate of the shadow than inferring it from
         # brightness ratios.
         prof = profiles[darkest_idx]
-        depths = np.linspace(0.12, 1.6, len(prof))
+        depths = np.linspace(0.12, SHADOW_SCAN_MAX_DEPTH_MM, len(prof))
         dark_mask = np.array(prof) < 0.7 * reference
+        saturated = bool(dark_mask.any() and dark_mask[-1])
         shadow = float(depths[dark_mask].max()) if dark_mask.any() else 0.2
         elevation = float(
             math.degrees(math.atan2(thickness_mm, max(shadow, 1e-6)))
         )
         severe = elevation < SAFE_ELEVATION_DEG
-        warnings.append(
-            f"a {shadow:.2f} mm edge shadow biases ONE border and not its "
-            "opposite, so unlike most errors here it does not cancel in the ratio"
-        )
+        if saturated:
+            # The dark band still hadn't ended at the far edge of the scan --
+            # the true width is unknown and at least this large, not exactly
+            # this large. Say so rather than print a suspiciously round number.
+            warnings.append(
+                f"a dark band at least {shadow:.2f} mm wide runs along the "
+                f"{darker} side and did not end within the scan window -- this "
+                "looks like a shadow (or occluding object) wider than any "
+                "printed border, not lighting the correction can fix"
+            )
+        else:
+            warnings.append(
+                f"a {shadow:.2f} mm edge shadow biases ONE border and not its "
+                "opposite, so unlike most errors here it does not cancel in the ratio"
+            )
         if shadow > 1.2:
             warnings.append(
                 "the shadow is wide enough to overlap the printed border; the "
@@ -314,7 +339,7 @@ def detect_edge_shadow(
     # A shadow narrower than about a third of a typical border can be measured
     # off the profile well enough to subtract. Beyond that the dark band starts
     # to swallow the border itself and the correction stops being trustworthy.
-    correctable = directional and shadow <= 1.2
+    correctable = directional and shadow <= 1.2 and not saturated
 
     return ShadowVerdict(
         side_index=darkest_idx if directional else -1,
@@ -325,5 +350,6 @@ def detect_edge_shadow(
         estimated_elevation_deg=elevation,
         directional=directional,
         severe=severe,
+        shadow_unbounded=saturated,
         warnings=tuple(warnings),
     )

@@ -487,6 +487,8 @@ class ARStatus:
     scale: Optional[Measured] = None
     grade_ceiling: Optional[str] = None
     bands: Optional[dict[str, str]] = None
+    grade_estimate: Optional[str] = None
+    grade_confidence: Optional[float] = None
 
     def headline(self) -> str:
         if not self.tracking:
@@ -599,15 +601,29 @@ class ARSession:
         self.seen += 1
 
         track_img, track_scale = _resize_long(frame, TRACK_LONG_SIDE)
+        th, tw = track_img.shape[:2]
+        frame_centre = (tw / 2.0, th / 2.0)
         quad_small: Optional[np.ndarray] = None
         try:
             if self._last_quad is not None:
                 quad_small = track_quad(track_img, self._last_quad * track_scale)
             else:
-                quad_small, _, _ = find_card_quad(track_img)
+                # Nothing to track yet: a real table is rarely one card, so
+                # acquire whatever is under the reticle (frame centre) rather
+                # than the largest card-shaped thing anywhere in the shot.
+                quad_small, _, _ = find_card_quad(track_img, prefer_point=frame_centre)
         except DetectionError:
+            # Lost the tracked card -- most likely a glare frame or a momentary
+            # occlusion, not the user re-aiming at a different card. Re-acquire
+            # near where it was last seen; only fall back to the reticle if
+            # there was nothing to anchor to.
+            anchor = (
+                tuple((self._last_quad * track_scale).mean(axis=0))
+                if self._last_quad is not None
+                else frame_centre
+            )
             try:
-                quad_small, _, _ = find_card_quad(track_img)
+                quad_small, _, _ = find_card_quad(track_img, prefer_point=anchor)
             except DetectionError:
                 self._last_quad = None
                 return ARStatus(
@@ -671,9 +687,11 @@ class ARSession:
 
         grade_ceil = None
         bands_dict = None
+        grade_est = None
+        grade_conf = None
         if self.worst_ratio is not None:
             try:
-                from .grading import grade_band
+                from .grading import grade_band, predict_overall_grade
                 psa_band = grade_band(self.worst_ratio, "PSA", "front")
                 grade_ceil = psa_band.best if psa_band.is_single else f"{psa_band.worst}–{psa_band.best}"
                 bands_dict = {
@@ -683,6 +701,20 @@ class ARSession:
                         for name in ("PSA", "BGS", "CGC")
                     }.items()
                 }
+                # grade_ceil above is the honest worst-case range: it can only
+                # narrow as more views accumulate and stays wide (e.g. "7-10")
+                # on early frames by design, which reads as worthless on its
+                # own. predict_overall_grade already exists for the still-photo
+                # path and turns the same ratio into a single most-likely
+                # grade plus a probability, using edge/corner quality signal
+                # this session already measured -- wire it into the live loop
+                # too instead of showing only the conservative range.
+                quality_hint = self.last_result.quality if self.last_result else None
+                pred = predict_overall_grade(
+                    self.worst_ratio, quality=quality_hint, grader="PSA", face="front"
+                )
+                grade_est = pred.grade_label
+                grade_conf = float(pred.confidence)
             except Exception:
                 pass
 
@@ -697,4 +729,6 @@ class ARSession:
             scale=self.calibration.current(now) if self.calibration else None,
             grade_ceiling=grade_ceil,
             bands=bands_dict,
+            grade_estimate=grade_est,
+            grade_confidence=grade_conf,
         )
