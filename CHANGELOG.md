@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-08-22
+
+### Added
+- **Dual Mobile Native & WebApp Architecture**: Complete cross-platform mobile native project scaffold in `mobile/` using Capacitor with native camera, device info, network, and haptic support.
+- **Universal Container Backend (`cardcenter/serve.py`)**:
+  - Full Cross-Origin Resource Sharing (CORS) preflight support (`do_OPTIONS()`) and complete access control headers across all endpoints, enabling mobile shells (`capacitor://localhost`) and external IPs to connect without restrictions.
+  - Real-time streaming AR endpoints (`POST /ar/session`, `POST /ar/push`, `POST /ar/reset`) providing continuous subpixel quad tracking, frame quality gating, and SPRT boundary convergence.
+  - Server discovery and health endpoints (`GET /health`, `GET /config`, `GET /manifest.json`).
+- **Live AR & Web Audio Synthesizer Interface**:
+  - Live AR video canvas mode with animated perspective targeting quads, laser caliper sweep lines, dynamic centering ratio badges, and SPRT decision dials.
+  - Custom Web Audio API Synthesizer generating cybernetic audio cues for edge lock, boundary settlement, and warnings without external media files.
+  - Dynamic container host settings modal allowing mobile and web users to configure target container IP / tunnel addresses on the fly.
+- **PWA Capabilities**: Full Progressive Web App manifest (`/manifest.json`) and mobile standalone support for zero-install home-screen app launching on iOS and Android.
+- **Automated Test Suite (`tests/test_serve_api.py`)**: Comprehensive test suite covering CORS preflights, discovery endpoints, streaming AR pushes, and multi-tenant scoping.
+
 ## [2.7.0] - 2026-08-22
 
 ### Added

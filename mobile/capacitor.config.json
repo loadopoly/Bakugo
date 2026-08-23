@@ -1,0 +1,16 @@
+{
+  "appId": "com.loadopoly.bakugo",
+  "appName": "Bakugo AR Metrology",
+  "webDir": "www",
+  "bundledWebRuntime": false,
+  "server": {
+    "cleartext": true,
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 1000,
+      "backgroundColor": "#0B0F15"
+    }
+  }
+}

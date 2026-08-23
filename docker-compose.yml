@@ -6,7 +6,8 @@ services:
     image: bakugo:dev
     container_name: bakugo
     ports:
-      - "127.0.0.1:8765:8765"
+      # Expose on 0.0.0.0 so mobile phones on WiFi or local native shells can connect
+      - "8765:8765"
     environment:
       CARDCENTER_DB: /data/cardcenter.db
       # Point at a running QUIPU Observer to join the learning mesh.

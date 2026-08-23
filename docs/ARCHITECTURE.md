@@ -65,8 +65,9 @@
 * **`cardcenter.multicard`**: Multi-card segmentation in single display case photos or video pan frames with halo rejection and spatial deduplication.
 * **`cardcenter.information`**: Pixel-space Fisher / Cramér–Rao floor plus the QUIPU temporal-spatial rhythm. Boost scales effective independent-row count for fusion only; the single-shot CRB is unchanged.
 * **`cardcenter.capture`**: `RunningRatio` inverse-variance accumulator with $\chi^2 / \text{dof}$ inflation. `LiveSession` stores the last `ChannelConditions` and inflates the combined PDG bar when `rhythm_boost < 1`; boost above 1 is a status signal only.
-* **`cardcenter.ar` / `cardcenter.perceptopoly`**: Web-based Augmented Reality capture client with continuous tracking and caliper-grade scale calibration.
-* **`cardcenter.serve`**: Ultra-lightweight offline HTTP server running on standard library primitives, optimized for Android Termux.
+* **`cardcenter.ar` / `cardcenter.perceptopoly`**: Web-based & Mobile Augmented Reality capture client with continuous edge tracking, caliper-grade scale calibration, and Sequential Probability Ratio Testing (SPRT).
+* **`cardcenter.serve`**: High-performance HTTP server providing full CORS preflight handling, real-time AR streaming endpoints (`/ar/session`, `/ar/push`, `/ar/reset`), healthchecks, PWA manifest, and a Web Audio synthesized cybernetic HUD.
+* **`mobile/`**: Capacitor native mobile wrapper & PWA scaffold enabling native Android/iOS compilation and zero-install PWA home-screen operation talking to the same central Bakugo Docker container.
 
 ### C. Versioning, Provenance & Connection
 * **`cardcenter.versioning`**: SemVer 2.0.0 parser, runtime capability matrix, forward SQLite schema migrations, and upstream GitHub release checker (`https://github.com/PoodlesOfWar/Bakugo`).
