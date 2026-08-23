@@ -835,6 +835,27 @@ class Handler(BaseHTTPRequestHandler):
                 ).encode(),
                 "application/json",
             )
+        elif path == "/slabs":
+            # Publish the measured slab metrology, not just the holder labels.
+            # The mesh grounds warehouse dimension solving on these physical
+            # constants, and a consumer cannot use a thickness it cannot read.
+            slabs = [
+                {
+                    "id": name,
+                    "label": name.replace("_", " ").title(),
+                    "acrylic_thickness_mm": round(slab.acrylic_thickness_mm, 4),
+                    "acrylic_thickness_sigma_mm": round(slab.acrylic_thickness_sigma_mm, 4),
+                    "refractive_index": round(slab.refractive_index, 4),
+                }
+                for name, slab in sorted(SLAB_PRESETS.items())
+            ]
+            self._send(
+                200,
+                json.dumps(
+                    {"slabs": slabs, "unit": "mm", "version": __version__}
+                ).encode(),
+                "application/json",
+            )
         elif path == "/holders":
             holders = [{"id": "raw", "label": "Raw card"}]
             holders += [
@@ -943,6 +964,13 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:  # pragma: no cover - observer is optional
                 payload = {"enabled": False, "error": str(exc)}
             self._send(200, json.dumps(payload).encode(), "application/json")
+        elif path == "/marketplace/assets":
+            try:
+                from .marketplace_client import get_marketplace_assets
+                assets = get_marketplace_assets(axis="touch")
+                self._send(200, json.dumps({"ok": True, "assets": assets}).encode(), "application/json")
+            except Exception as exc:
+                self._send(200, json.dumps({"ok": False, "error": str(exc)}).encode(), "application/json")
         else:
             self._send(404, b"not found", "text/plain")
 
@@ -1034,6 +1062,28 @@ class Handler(BaseHTTPRequestHandler):
                 session = _get_or_create_ar_session(device_id, holder=holder, lens=lens)
                 session.reset()
                 payload = {"ok": True, "device_id": device_id, "status": "reset"}
+
+            elif path == "/marketplace/tokenize":
+                try:
+                    data = json.loads(body.decode("utf-8")) if body else {}
+                    from .marketplace_client import tokenize_metrology_scan
+                    payload = tokenize_metrology_scan(
+                        scan_id=str(data.get("scan_id", f"scan-{int(time.time())}")),
+                        title=str(data.get("title", "Centering Metrology Scan")),
+                        contributor_wallet=str(data.get("wallet", "0x89A21B7401B5f6d871C7656EC7ab88b098defB75")),
+                        user_id=device_id,
+                        centering_ratio=float(data.get("ratio", 50.0)),
+                        ratio_ci=data.get("ratio_ci", [49.5, 50.5]),
+                        cramer_rao_floor_px=float(data.get("cramer_rao_floor_px", 0.045)),
+                        grade_ceiling=str(data.get("grade_ceiling", "PSA 10")),
+                        holder=str(data.get("holder", "raw")),
+                        refraction=bool(data.get("refraction", False)),
+                        shard_count=int(data.get("shard_count", 218)),
+                        shard_price_base=float(data.get("shard_price_base", 10.0)),
+                        metadata=data.get("metadata", {}),
+                    )
+                except Exception as exc:
+                    payload = {"ok": False, "error": str(exc)}
 
             else:
                 self._send(404, b"not found", "text/plain")
