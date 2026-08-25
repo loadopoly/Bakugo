@@ -7,10 +7,13 @@ import math
 import numpy as np
 import pytest
 
+import cv2
+
 from cardcenter.geometry import (
     apply_h,
     card_plane_corners_mm,
     enforce_portrait,
+    find_card_quad,
     fit_line_tls,
     intersect_lines,
     order_quad,
@@ -141,3 +144,70 @@ def test_card_plane_corners_are_portrait_and_standard() -> None:
     assert c[1][0] - c[0][0] == pytest.approx(STANDARD_CARD_W_MM)
     assert c[3][1] - c[0][1] == pytest.approx(STANDARD_CARD_H_MM)
     assert STANDARD_CARD_W_MM < STANDARD_CARD_H_MM
+
+
+# ---------------------------------------------------------------------------
+# find_card_quad: the multi-card container guard
+# ---------------------------------------------------------------------------
+
+
+def _draw_tray() -> tuple[np.ndarray, list[tuple[int, int]]]:
+    """A 3x3 display-case tray: a strong outer rim around faint-gapped cells.
+
+    Built so the rim itself is a clean, card-aspect-ish rectangle that would
+    otherwise win find_card_quad's normal largest-survivor selection -- the
+    scenario that silently measured a whole display case as "one card".
+    Returns (image, cell_centers).
+    """
+    img = np.full((1300, 1000, 3), 180, dtype=np.uint8)
+    tray_x0, tray_y0, tray_x1, tray_y1 = 40, 40, 960, 1260
+    cv2.rectangle(img, (tray_x0, tray_y0), (tray_x1, tray_y1), (30, 30, 30), -1)
+    # Generous margin so no cell's own contour clips against the tray rim --
+    # that would make refine_quad legitimately fail on it (too few contour
+    # points on the clipped side) for reasons unrelated to what this test is
+    # checking, the way a real photographed edge-of-tray cell might too.
+    inner_x0, inner_y0 = tray_x0 + 40, tray_y0 + 40
+    inner_x1, inner_y1 = tray_x1 - 40, tray_y1 - 40
+    cv2.rectangle(img, (inner_x0, inner_y0), (inner_x1, inner_y1), (150, 150, 150), -1)
+
+    cell_w, cell_h, gap = 258, 360, 20
+    colors = [
+        (60, 60, 220), (60, 180, 60), (220, 60, 60),
+        (60, 200, 200), (180, 60, 180), (200, 200, 60),
+        (110, 110, 240), (240, 110, 110), (110, 240, 110),
+    ]
+    centers = []
+    for r in range(3):
+        for c in range(3):
+            cx = inner_x0 + c * (cell_w + gap) + cell_w // 2 + 5
+            cy = inner_y0 + r * (cell_h + gap) + cell_h // 2 + 5
+            centers.append((cx, cy))
+            x_a, y_a = cx - cell_w // 2, cy - cell_h // 2
+            x_b, y_b = cx + cell_w // 2, cy + cell_h // 2
+            color = colors[r * 3 + c]
+            cv2.rectangle(img, (x_a, y_a), (x_b, y_b), color, -1)
+            cv2.rectangle(
+                img, (x_a + 12, y_a + 12), (x_b - 12, y_b - 12),
+                (color[0] - 25, color[1] - 25, color[2] - 25), 4,
+            )
+    return img, centers
+
+
+def test_find_card_quad_refuses_a_packed_tray_without_a_reticle() -> None:
+    """A display case of 9 cards must not be silently measured as one card."""
+    img, _ = _draw_tray()
+    with pytest.raises(DetectionError, match="card-shaped regions nested"):
+        find_card_quad(img)
+
+
+def test_find_card_quad_drills_into_the_cell_under_the_reticle() -> None:
+    """With prefer_point, the tool measures the cell aimed at, not the tray."""
+    img, centers = _draw_tray()
+    for target in (centers[4], centers[0], centers[8]):
+        quad, _, _ = find_card_quad(img, prefer_point=target)
+        centroid = quad.mean(axis=0)
+        assert np.linalg.norm(centroid - np.asarray(target, dtype=np.float64)) < 20.0
+        # Must be one cell, not the whole tray.
+        e01 = np.linalg.norm(quad[1] - quad[0])
+        e12 = np.linalg.norm(quad[2] - quad[1])
+        assert max(e01, e12) < 500.0

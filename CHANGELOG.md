@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.2] - 2026-08-25
+
+### Fixed
+- **Multi-card container silently measured as one card (`cardcenter/geometry.py`)**: `find_card_quad` could accept the outer rim of a packed display case, binder page, or several cards pushed edge to edge as if it were a single card's boundary -- that rim is often a strong, straight, plausibly card-aspect rectangle in its own right, so it passed every existing gate, and border detection downstream could even find *some* signal along it (the tray's own bezel, a neighbouring card's edge) and report a confident but meaningless centering ratio and grade estimate. This was worse than refusing: on a 3x3 tray of graded slabs, the live AR HUD reported a narrowing "~PSA 6 (50%)" estimate for a region that was not a card at all. `find_card_quad` now detects when its winning quad contains two or more other already-valid, meaningfully-smaller, mutually-non-overlapping card-shaped candidates -- the signature of a container rather than a card -- and either raises a clear, actionable error (no `prefer_point` given) or drills down to the sibling nearest `prefer_point` (the cell the camera is actually aimed at). `ARSession.push()` now also surfaces this specific message to the live HUD instead of a generic "point at a card" when it fires. Added `tests/test_geometry.py::test_find_card_quad_refuses_a_packed_tray_without_a_reticle` and `::test_find_card_quad_drills_into_the_cell_under_the_reticle`.
+
 ## [2.8.1] - 2026-08-23
 
 ### Fixed

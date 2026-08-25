@@ -624,12 +624,22 @@ class ARSession:
             )
             try:
                 quad_small, _, _ = find_card_quad(track_img, prefer_point=anchor)
-            except DetectionError:
+            except DetectionError as exc2:
                 self._last_quad = None
+                # A generic "point at a card" is right for "nothing found at
+                # all", but the container guard raises something specific and
+                # actionable ("found 9 card-shaped regions...") that the user
+                # should see instead of a canned message.
+                msg = str(exc2).split("\n")[0]
+                guidance = (
+                    (msg[:160],)
+                    if "nested inside" in msg
+                    else ("point at a card, all four edges in frame",)
+                )
                 return ARStatus(
                     tracking=False,
                     quad=None,
-                    guidance=("point at a card, all four edges in frame",),
+                    guidance=guidance,
                     measured_frames=self.measured,
                     seen_frames=self.seen,
                     ratio=self.worst_ratio,

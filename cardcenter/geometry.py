@@ -519,6 +519,79 @@ def find_card_quad(
             "face (a card is 1.40). This is usually the caliper beam, a card "
             "seen edge-on, or a partial detection."
         )
+
+    # CONTAINER GUARD: a winning quad can be the OUTER rim of several cards
+    # pushed edge to edge -- a display case tray, a binder page, a stack of
+    # pocket sleeves -- rather than one card. That rim is often a strong,
+    # straight, plausibly card-aspect rectangle in its own right, so it
+    # passes every gate above, and border detection downstream can even find
+    # SOME signal along it (the tray's own bezel, a neighbouring card's edge)
+    # and report a confident but meaningless measurement. That is worse than
+    # refusing. If the winner contains two or more OTHER candidates that are
+    # each already valid card-shaped quads on their own, meaningfully
+    # smaller, and do not substantially overlap each other, this is a
+    # container: prefer the sibling nearest prefer_point (the cell the
+    # camera is actually aimed at) instead of measuring the whole tray as
+    # one card. Skipped when only one candidate exists at all, which is the
+    # overwhelming majority of real single-card shots.
+    if len(found) > 1:
+        mask_h, mask_w = image.shape[:2]
+
+        def _mask(q: np.ndarray) -> np.ndarray:
+            m = np.zeros((mask_h, mask_w), dtype=np.uint8)
+            cv2.fillConvexPoly(m, np.round(q).astype(np.int32), 1)
+            return m
+
+        winner_area = abs(cv2.contourArea(refined.astype(np.float32)))
+        winner_mask = _mask(refined)
+        siblings: list[tuple[np.ndarray, np.ndarray]] = []
+        for area, quad, cont in found:
+            if cont is contour or area > 0.7 * winner_area:
+                continue
+            qm = _mask(quad)
+            qarea = float(qm.sum())
+            if qarea <= 0 or float((qm & winner_mask).sum()) / qarea < 0.75:
+                continue
+            siblings.append((quad, cont))
+
+        distinct: list[tuple[np.ndarray, np.ndarray]] = []
+        distinct_masks: list[np.ndarray] = []
+        for quad, cont in siblings:
+            qm = _mask(quad)
+            if all(
+                float((qm & dm).sum()) / float((qm | dm).sum() or 1) < 0.2
+                for dm in distinct_masks
+            ):
+                distinct.append((quad, cont))
+                distinct_masks.append(qm)
+
+        if len(distinct) >= 2:
+            if prefer_point is None:
+                raise DetectionError(
+                    f"found {len(distinct) + 1} card-shaped regions nested inside "
+                    "one larger boundary -- this looks like a display case, "
+                    "binder page, or several cards pushed edge to edge, not one "
+                    "card. Point the camera at a single card, filling more of "
+                    "the frame, or use the multi-card scan mode to measure them "
+                    "all at once."
+                )
+            pp = np.asarray(prefer_point, dtype=np.float64)
+            pick_quad, pick_cont = min(
+                distinct, key=lambda qc: float(np.linalg.norm(qc[0].mean(axis=0) - pp))
+            )
+            try:
+                r2, res2 = refine_quad(pick_cont, pick_quad)
+                r2 = enforce_portrait(order_quad(r2))
+                e01b = float(np.linalg.norm(r2[1] - r2[0]))
+                e12b = float(np.linalg.norm(r2[2] - r2[1]))
+                if (
+                    min(e01b, e12b) > 1e-6
+                    and 1.15 < max(e01b, e12b) / min(e01b, e12b) < 1.75
+                ):
+                    refined, contour, residual = r2, pick_cont, res2
+            except DetectionError:
+                pass  # keep the container quad if the sibling won't refine cleanly
+
     return refined, contour, residual
 
 
