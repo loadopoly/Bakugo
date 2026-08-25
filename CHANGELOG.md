@@ -9,6 +9,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-08-25
+
+Detection rebuilt against a 162-photo corpus of **raw cards in penny sleeves,
+handheld over bulk bins** — backgrounds made entirely of other cards, sleeve
+glare, real perspective. The previous pipeline measured **0 of 162** and reached
+the border stage on 59%. It now reaches the border stage on **93%**.
+
+### Added
+- **Robust line fitting (`geometry.fit_line_robust`)**: total-least-squares with a
+  trimmed-quantile robust seed followed by MAD-based outlier rejection. `fit_line_tls`
+  is least-squares, whose breakdown point is zero, and the points assigned to a card
+  side in a real photo are a *mixture of surfaces* — the card's cut edge, the penny
+  sleeve's edge running parallel 1–3 mm out, sleeve crinkles, and neighbouring cards.
+  Plain TLS returned side residuals of 46–68 px on cards whose raw quad was already a
+  correct 1.33 aspect. The robust seed matters independently: contamination covering
+  only part of a side *tilts* the fit rather than offsetting it, so residuals vary
+  smoothly and MAD alone has nothing to separate.
+- **Edge snapping (`geometry.snap_quad_to_edges`)**: pulls each side of an approximate
+  quad onto the peak gradient along its normal, searching far inward and barely
+  outward. Thresholding a card against a bin of other cards yields a **halo** — right
+  shape, right place, several millimetres too big. A halo is the dangerous failure: it
+  adds the same margin to opposite sides, pulling any ratio toward 50/50 with a tight
+  error bar. `edge_support` cannot catch it, because a halo in a bin of cards still
+  lies on real intensity steps — just the wrong cards'. Accepted only when the snap
+  improves edge support *and* the area change is a plausible shrink, since a collapse
+  onto interior artwork can score higher support than the true boundary. Accepted on
+  77% of corpus images, shrinking halos ~19% linearly.
+- **Subject prior on the still-photo path (`centering.measure_centering`)**: a
+  single-card measurement is a photograph *of* a card, so the subject is the large
+  object containing the frame centre. Only the AR path had a reticle; stills had no
+  notion of subject at all.
+
+### Changed
+- **Per-column border reference (`detect._profile_pass`)**: deltaE is now measured
+  against each column's own outer band, smoothed along the side, rather than one
+  reference colour per side. Silver and foil borders on modern cards are specular, so
+  under any directional light the border sweeps bright-to-dark *along* its length;
+  against a single global reference every column reads as far from it, inflating noise
+  and collapsing signal. This was the single largest cause of "no measurable border":
+  **64 → 9** occurrences, on cards with perfectly visible printed frames. Border widths
+  now recover a plausible 2.98 mm median (real Pokémon borders are ~3 mm) at 0.19 mm
+  standard error with 3% of columns rejected.
+- **Aspect is a selection signal, not just a final veto (`geometry.find_card_quad`)**:
+  the residual ladder relaxes until something passes, then takes the largest survivor —
+  which assumed residual separates cards from non-cards. On handheld photos it does the
+  opposite: printed artwork has crisp straight edges while the card's outer boundary
+  does not, so a 3.2%-of-frame blob refining to aspect 1.01 repeatedly beat the
+  82.6%-of-frame card at 1.49, and the aspect gate then rejected the blob *and the whole
+  frame with it*. `aspect_reject`: **58 → 11**.
+- **Subject selection is outermost-wins (`geometry.find_card_quad`)**: when a subject
+  point is given, among card-shaped candidates containing it the outermost is the card —
+  the same nesting fact `multicard.py` already relies on for dedupe. Residual no longer
+  chooses; it reports boundary uncertainty. The support floor starts at 0.55 ("a real
+  edge") rather than 0.75, because starting stricter recreated the same early-exit trap
+  on a different axis.
+
+### Fixed
+- **Container guard misfired on ordinary single cards (`geometry.find_card_quad`)**:
+  "two or more non-overlapping card-shaped regions inside the winner" is true of a
+  display case *and* of any card, whose artwork panel and text box are card-ish
+  rectangles. The guard now also requires the nested regions to **cover ≥50% of** the
+  container: a tray's cells tile it, a card's internal rectangles merely dot it.
+  `container_guard` false positives: **9 → 0**.
+- **Refinement sanity check (`geometry._refinement_is_sane`)**: line-intersection
+  refinement of near-parallel sides produced refined aspects of 15, 20 and 409 from raw
+  quads that were a correct 1.3. Robust fitting makes this *more* likely, not less —
+  rejecting hard enough can leave a small spurious run that fits its own line tightly,
+  so the residual looks fine and the old residual-only decline never fired. Refinement
+  is now judged by how far it moved the quad, and declines to the raw quad instead of
+  discarding the candidate.
+- **Ungrammatical shadow refusal**: "a at least 4.00mm edge shadow" → "an at-least
+  4.00mm edge shadow".
+
+### Known limits
+The corpus still yields only 1 reported measurement, and that is the tool working as
+designed rather than a remaining bug. With geometry fixed, 92 images now fail on
+border-detection *confidence*: the per-column spread of the located border edge is
+~1.3 mm on handheld shots through glossy sleeves, so the confidence gate refuses rather
+than emit a ratio it cannot support. Bulk-bin phone photos do not carry sub-millimetre
+border precision; a controlled shot is still required for a grade-relevant number.
+
 ## [2.8.2] - 2026-08-25
 
 ### Fixed

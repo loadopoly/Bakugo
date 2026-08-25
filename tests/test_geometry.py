@@ -14,10 +14,12 @@ from cardcenter.geometry import (
     card_plane_corners_mm,
     enforce_portrait,
     find_card_quad,
+    fit_line_robust,
     fit_line_tls,
     intersect_lines,
     order_quad,
     refine_quad,
+    snap_quad_to_edges,
 )
 from cardcenter.types import STANDARD_CARD_H_MM, STANDARD_CARD_W_MM, DetectionError
 
@@ -130,6 +132,79 @@ def test_refine_quad_rejects_sparse_side() -> None:
     quad = order_quad(np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]))
     with pytest.raises(DetectionError):
         refine_quad(contour, quad)
+
+
+# ---------------------------------------------------------------------------
+# Robust line fitting: a card side is a MIXTURE of surfaces, not noisy samples
+# ---------------------------------------------------------------------------
+
+
+def test_fit_line_robust_ignores_a_parallel_second_edge() -> None:
+    """The penny-sleeve case: a second straight edge alongside the card's own.
+
+    Least squares splits the difference between the two and lands between them,
+    which is where no edge is. Rejection must keep the dominant one.
+    """
+    x = np.linspace(0, 200, 120)
+    card = np.column_stack([x, np.full_like(x, 50.0)])
+    sleeve = np.column_stack([x[:40], np.full(40, 62.0)])  # 12 px out, parallel
+    pts = np.vstack([card, sleeve])
+
+    _, plain_rms = fit_line_tls(pts)
+    line, rms, rejected = fit_line_robust(pts)
+
+    offset = float(np.median(pts[:120] @ line[:2] + line[2]))
+    assert abs(offset) < 0.5, "robust fit did not land on the card edge"
+    assert rms < plain_rms
+    assert 0.0 < rejected < 0.5
+
+
+def test_fit_line_robust_matches_tls_on_clean_points() -> None:
+    """With no contamination it must not throw data away or move the line."""
+    x = np.linspace(0, 100, 60)
+    pts = np.column_stack([x, 3.0 + 0.0 * x])
+    line, rms, rejected = fit_line_robust(pts)
+    assert rejected == pytest.approx(0.0)
+    assert rms < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Edge snapping: correcting a halo boundary
+# ---------------------------------------------------------------------------
+
+
+def test_snap_quad_pulls_a_halo_onto_the_real_edge() -> None:
+    """A quad sitting outside the card must be pulled back onto its cut edge."""
+    img = np.full((700, 560, 3), 30, dtype=np.uint8)
+    x0, y0, x1, y1 = 130, 150, 430, 570  # the true card
+    cv2.rectangle(img, (x0, y0), (x1, y1), (225, 225, 225), -1)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    grad = cv2.magnitude(
+        cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3),
+        cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3),
+    )
+
+    halo = order_quad(
+        np.array(
+            [[x0 - 22.0, y0 - 20.0], [x1 + 21.0, y0 - 19.0],
+             [x1 + 20.0, y1 + 22.0], [x0 - 19.0, y1 + 21.0]]
+        )
+    )
+    snapped, _ = snap_quad_to_edges(grad, halo)
+    snapped = order_quad(snapped)
+
+    truth = order_quad(
+        np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=np.float64)
+    )
+    assert np.abs(snapped - truth).max() < 2.0
+    assert np.abs(snapped - truth).max() < np.abs(halo - truth).max()
+
+
+def test_snap_quad_refuses_a_degenerate_input() -> None:
+    grad = np.zeros((80, 80), dtype=np.float32)
+    tiny = order_quad(np.array([[1.0, 1.0], [6.0, 1.0], [6.0, 8.0], [1.0, 8.0]]))
+    with pytest.raises(DetectionError):
+        snap_quad_to_edges(grad, tiny)
 
 
 def test_apply_h_identity_and_scaling() -> None:

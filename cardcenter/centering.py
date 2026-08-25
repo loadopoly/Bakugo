@@ -168,7 +168,18 @@ def measure_centering(
         )
         outer_residual_px = float(quad_residual_px)
     else:
-        image_corners, _contour, outer_residual_px = find_card_quad(image)
+        # A single-card measurement is a photograph OF a card, and the subject
+        # of a photograph is the thing the photographer framed: the large
+        # object containing the centre. Without that prior the detector treats
+        # every card-shaped region equally, which is fine on a plain desk and
+        # useless in the real setting -- a card held over a bin, a binder page,
+        # or a shop's display, where the background is made ENTIRELY of other
+        # cards and a corner artifact can outscore the subject. The multi-card
+        # scanner passes card_quad explicitly and is unaffected.
+        h, w = image.shape[:2]
+        image_corners, _contour, outer_residual_px = find_card_quad(
+            image, prefer_point=(w / 2.0, h / 2.0)
+        )
     quality.outer_residual_px = outer_residual_px
 
     px_per_mm = _pick_scale(image_corners)
@@ -198,9 +209,9 @@ def measure_centering(
             "cancel in the ratio, so the correction carries its own error term."
         )
     elif shadow.directional:
-        qualifier = "at least " if shadow.shadow_unbounded else ""
+        qualifier = "an at-least " if shadow.shadow_unbounded else "a "
         raise DetectionError(
-            f"a {qualifier}{shadow.estimated_shadow_mm:.2f}mm edge shadow on the "
+            f"{qualifier}{shadow.estimated_shadow_mm:.2f}mm edge shadow on the "
             f"{shadow.darker_side} is too wide to subtract reliably -- it "
             "overlaps the printed border. Change your angle relative to the "
             "light, or shoot the card from a different side of the case."
