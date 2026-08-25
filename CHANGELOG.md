@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.1] - 2026-08-25
+
+### Fixed
+- **`corroborated` claimed a cross-check that never happened**: `Recognition.dex` falls
+  back to the matched species' catalogue number when none is printed on the card, so
+  `POST /identify` deriving the flag as `dex is not None` reported
+  `corroborated: true` alongside the warning "no printed dex number was read". Caught by
+  exercising the live endpoint on real photos. `Recognition` now carries an explicit
+  `corroborated`, set only when a dex number was read **off the card** and agreed with
+  the name.
+
+### Added
+- **Upside-down retry**: `enforce_portrait` fixes a 90° rotation but says nothing about
+  which end is up, and a card photographed upside down has a perfectly readable name that
+  the engine simply cannot read. `recognise_card` now retries a half turn when the upright
+  pass finds nothing, and reports which orientation resolved it. The upright case costs
+  nothing extra.
+
 ## [2.10.0] - 2026-08-25
 
 Card **identification**, for photographs that cannot be measured. v2.9.0 established

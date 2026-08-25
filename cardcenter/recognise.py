@@ -216,6 +216,12 @@ class Recognition:
     tokens_considered: int
     engine: str
     warnings: tuple[str, ...] = field(default=())
+    # True only when a dex number was READ OFF THE CARD and agreed with the
+    # name. ``dex`` alone cannot carry this: it falls back to the vocabulary's
+    # number for the matched species, so a caller inspecting it would report
+    # independent corroboration that never happened.
+    corroborated: bool = False
+    orientation: str = "upright"
 
     @property
     def resolved(self) -> bool:
@@ -293,8 +299,22 @@ def recognise_card(
         )
 
     prepared = prepare_for_text(rect_bgr)
+
+    # A card photographed upside down still has a perfectly readable name; the
+    # engine just cannot read it. enforce_portrait fixes a 90-degree rotation
+    # but says nothing about which end is up, and on the corpus several cards
+    # resolved only after a half turn. Try upright first and rotate only if
+    # that fails, so the common case costs nothing.
+    attempts = [("upright", prepared)]
+    orientation = "upright"
+    raw_text = ""
     try:
         raw_text = engine.read_text(prepared)
+        if match_species(tokenise(raw_text), vocab)[0] is None:
+            flipped = cv2.rotate(prepared, cv2.ROTATE_180)
+            flipped_text = engine.read_text(flipped)
+            if match_species(tokenise(flipped_text), vocab)[0] is not None:
+                raw_text, orientation = flipped_text, "rotated 180"
     except OcrUnavailable as exc:
         return Recognition(
             name=None, dex=None, matched_token=None, edits=None,
@@ -329,9 +349,13 @@ def recognise_card(
             name=None, dex=dex, matched_token=token, edits=edits,
             alternatives=(sp.name,), tokens_considered=len(tokens),
             engine=engine.name, warnings=tuple(warnings),
+            corroborated=False, orientation=orientation,
         )
 
-    if sp is not None and dex is None:
+    corroborated = (
+        sp is not None and dex is not None and sp.dex is not None and sp.dex == dex
+    )
+    if sp is not None and not corroborated:
         warnings.append(
             "no printed dex number was read, so the name is uncorroborated."
         )
@@ -345,4 +369,6 @@ def recognise_card(
         tokens_considered=len(tokens),
         engine=engine.name,
         warnings=tuple(warnings),
+        corroborated=corroborated,
+        orientation=orientation,
     )

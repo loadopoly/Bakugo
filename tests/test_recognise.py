@@ -159,6 +159,55 @@ def test_recognise_card_refuses_when_name_and_dex_disagree() -> None:
     assert any("disagree" in w for w in r.warnings)
 
 
+def test_corroborated_means_the_dex_was_read_not_looked_up() -> None:
+    """The flag must describe evidence from the CARD, not from the vocabulary.
+
+    `dex` falls back to the matched species' catalogue number, so a caller
+    reading `dex is not None` would claim an independent cross-check that never
+    happened -- which is exactly what the live endpoint reported before this.
+    """
+    got = recognise_card(_card(), vocabulary=VOCAB, engine=FakeEngine("Sableye only"))
+    assert got.resolved and got.dex == 302  # filled in from the vocabulary
+    assert got.corroborated is False        # but nothing was read off the card
+
+    read = recognise_card(
+        _card(), vocabulary=VOCAB, engine=FakeEngine("Sableye NO. 0302")
+    )
+    assert read.resolved and read.corroborated is True
+
+
+class FlipEngine:
+    """Legible only after a half turn, like a card photographed upside down."""
+
+    psm = 11
+    timeout_s = 1
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    @property
+    def name(self) -> str:
+        return "flip"
+
+    def read_text(self, image: np.ndarray) -> str:
+        self.calls += 1
+        return "junk qqqq zzzz" if self.calls == 1 else "Thundurus NO. 0642"
+
+
+def test_recognise_card_retries_upside_down() -> None:
+    eng = FlipEngine()
+    r = recognise_card(_card(), vocabulary=VOCAB, engine=eng)
+    assert r.resolved and r.name == "Thundurus"
+    assert r.orientation == "rotated 180"
+    assert eng.calls >= 2
+
+
+def test_upright_success_does_not_pay_for_the_retry() -> None:
+    eng = FakeEngine("Goodra NO. 0706")
+    r = recognise_card(_card(), vocabulary=VOCAB, engine=eng)
+    assert r.resolved and r.orientation == "upright"
+
+
 def test_recognise_card_refuses_on_garbage() -> None:
     r = recognise_card(_card(), vocabulary=VOCAB, engine=FakeEngine("wes 2G ZF ees"))
     assert not r.resolved
