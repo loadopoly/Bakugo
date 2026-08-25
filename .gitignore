@@ -53,6 +53,11 @@ coverage.xml
 *.sqlite3
 *.log
 data/
+# ...but cardcenter/data is package data (standards.json, species.json), not a
+# run artifact. standards.json predates the rule above and so was tracked
+# anyway; without this negation the next data file added there is silently
+# dropped from the package instead.
+!cardcenter/data/
 out.png
 out.json
 scan_results/

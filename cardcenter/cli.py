@@ -196,6 +196,52 @@ SCAN_DISCLAIMER = (
 )
 
 
+def _run_identify(image, path) -> int:
+    """Name the card in a photograph, or say why it cannot be named.
+
+    Identification is rectification-tolerant in a way metrology is not, so this
+    path deliberately keeps going where measure_centering would refuse: it
+    rectifies from the FULL-resolution pixels (glyph size is the whole game for
+    OCR, unlike centering where accuracy is flat above 1200 px) and reads the
+    card as sparse text.
+    """
+    import numpy as np
+
+    from .geometry import find_card_quad, rectify
+    from .recognise import recognise_card
+    from .types import STANDARD_CARD_W_MM
+
+    detect_long = 1400
+    scale = detect_long / max(image.shape[:2])
+    small = (
+        cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        if scale < 1.0
+        else image
+    )
+    h, w = small.shape[:2]
+    try:
+        quad, _, _ = find_card_quad(small, prefer_point=(w / 2.0, h / 2.0))
+    except DetectionError as exc:
+        print(f"\nNOT IDENTIFIED\n\n  could not locate a card: {exc}\n", file=sys.stderr)
+        return 1
+
+    quad_full = quad / (scale if scale < 1.0 else 1.0)
+    px_per_mm = float(np.linalg.norm(quad_full[1] - quad_full[0])) / STANDARD_CARD_W_MM
+    try:
+        rect, _ = rectify(image, quad_full, px_per_mm=min(px_per_mm, 24.0))
+    except DetectionError as exc:
+        print(f"\nNOT IDENTIFIED\n\n  could not rectify: {exc}\n", file=sys.stderr)
+        return 1
+
+    result = recognise_card(rect)
+    print()
+    print(f"  {path.name}")
+    print(f"  {result.describe()}")
+    print(f"  read {result.tokens_considered} text tokens via {result.engine}")
+    print()
+    return 0 if result.resolved else 1
+
+
 def _run_scan(args, video: bool) -> int:
     from .multicard import scan_image, scan_video
     from .store import ScanStore
@@ -363,6 +409,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         metavar="N",
         help="render N synthetic cards with known centering and report accuracy",
+    )
+    p.add_argument(
+        "--identify",
+        action="store_true",
+        help=(
+            "name the card instead of measuring it. Works on photographs too "
+            "rough for metrology -- bulk bins, sleeves, glare -- because "
+            "reading a name needs legible glyphs, not a sub-millimetre boundary"
+        ),
     )
     p.add_argument("--capabilities", action="store_true", help="list supported engine capabilities")
     p.add_argument("--check-updates", action="store_true", help="check upstream GitHub repository for updates")
@@ -611,6 +666,9 @@ def main(argv: list[str] | None = None) -> int:
     if image is None:
         print(f"error: could not decode image: {path}", file=sys.stderr)
         return 2
+
+    if args.identify:
+        return _run_identify(image, path)
 
     if args.focal_px:
         capture = CaptureSpec(focal_px=args.focal_px)

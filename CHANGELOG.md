@@ -9,6 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.0] - 2026-08-25
+
+Card **identification**, for photographs that cannot be measured. v2.9.0 established
+that bulk-bin phone photos do not carry sub-millimetre border precision, so metrology
+correctly refuses on them. Identification has a different error budget — reading a name
+needs legible glyphs, not a precise boundary — so those same photos are not worthless.
+
+### Added
+- **`cardcenter/recognise.py`**: sparse OCR over the whole rectified card, snapped to a
+  closed vocabulary of species names. Deliberately does *not* crop a fixed fraction of
+  the card: with a halo boundary the layout does not line up, and measured on the corpus
+  fixed-crop name bands landed on sleeve and background while whole-card sparse text
+  returned real names. Rectifies from **full-resolution** pixels — glyph size is the whole
+  game for OCR, the opposite of centering where accuracy is flat above 1200 px.
+- **`cardcenter/data/species.json`**: 250-entry seed vocabulary (Generation 1 complete
+  plus widely-printed later species), each with its National Pokédex number. A species
+  outside the file is *refused*, never guessed, so extending the file only ever adds
+  coverage.
+- **Dex cross-check**: modern cards print the National Pokédex number next to the species.
+  When both are read they must agree; disagreement refuses rather than resolving in
+  favour of one. Caught two real cases in the corpus — a card reading `Garbodor` printed
+  dex 562 (Garbodor is 569), and one reading `Chespin` printed 651 (Chespin is 650).
+- **`--identify` CLI flag** and **`POST /identify`** endpoint, so a photo that `/measure`
+  rightly refuses is still worth something.
+
+### Results (153 cards located out of 162 photos)
+- **17 identified (11%)**, 5 corroborated by a printed dex number, 2 refused on dex
+  conflict. 11 distinct species: Genesect ×3, Sableye ×2, Zacian ×2, Zapdos ×2,
+  Ambipom ×2, Goodra, Golbat, Thundurus, Toxtricity, Moltres, Zubat.
+- Previously there was **no image→identity path at all**: `catalog.identify()` takes a
+  name as an argument, and the docstring assumed an operator typed it in.
+
+### Notes on the safety argument
+Sparse OCR over artwork returns mostly garbage, so the closed vocabulary is the entire
+defence — the same "closer to exactly one member than to any other" rule
+`read_collector_number` already uses. The edit budget is **inverted from the obvious
+choice**: it shrinks with token length rather than growing, because the number of garbage
+strings within one edit of a target does not shrink. A first version, generous on short
+names, reported **"Seel" 22 times out of 58 identifications** from readings of `Sees`,
+`seal` and `peel`; none of those cards was a Seel. Short names must now be read exactly.
+Lowering the length floor from 5 to 4 was then measured to change nothing (same 17
+identifications, no new false positives), confirming the edit budget — not the floor —
+was doing the safety work, so four-letter species remain identifiable from an exact read.
+
+### Known limits
+The 250-species seed and species-only scope are the binding constraints, not the optics:
+Trainer and Energy cards carry no species name and are refused by construction, and the
+full National Pokédex is 1025 entries. Coverage scales directly with `species.json`.
+
 ## [2.9.0] - 2026-08-25
 
 Detection rebuilt against a 162-photo corpus of **raw cards in penny sleeves,

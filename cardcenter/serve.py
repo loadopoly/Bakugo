@@ -1099,6 +1099,54 @@ class Handler(BaseHTTPRequestHandler):
                     "scale": round(status.scale.value, 2) if status.scale else None,
                 }
 
+            elif path == "/identify":
+                # Naming a card and measuring it have different error budgets.
+                # Metrology needs the cut edge to a fraction of a millimetre;
+                # OCR needs legible glyphs. This endpoint exists so a photo
+                # that /measure rightly refuses -- a sleeved card over a bulk
+                # bin -- is still worth something to the user.
+                image_bytes = fields.get("image") or (body if not fields else None)
+                if not image_bytes:
+                    raise DetectionError("no image provided")
+                data = np.frombuffer(image_bytes, dtype=np.uint8)
+                image = cv2.imdecode(data, cv2.IMREAD_COLOR)
+                if image is None:
+                    raise DetectionError("image could not be decoded")
+
+                from .geometry import find_card_quad, rectify
+                from .recognise import recognise_card
+                from .types import STANDARD_CARD_W_MM
+
+                detect_long = 1400
+                s = min(1.0, detect_long / max(image.shape[:2]))
+                small = (
+                    cv2.resize(image, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
+                    if s < 1.0
+                    else image
+                )
+                ih, iw = small.shape[:2]
+                quad, _, _ = find_card_quad(small, prefer_point=(iw / 2.0, ih / 2.0))
+                quad_full = quad / s
+                ppm = (
+                    float(np.linalg.norm(quad_full[1] - quad_full[0]))
+                    / STANDARD_CARD_W_MM
+                )
+                rect, _ = rectify(image, quad_full, px_per_mm=min(ppm, 24.0))
+                rec = recognise_card(rect)
+                payload = {
+                    "ok": True,
+                    "identified": rec.resolved,
+                    "name": rec.name,
+                    "dex": rec.dex,
+                    "matched_token": rec.matched_token,
+                    "edits": rec.edits,
+                    "alternatives": list(rec.alternatives),
+                    "corroborated": rec.resolved and rec.dex is not None,
+                    "tokens_considered": rec.tokens_considered,
+                    "engine": rec.engine,
+                    "warnings": list(rec.warnings),
+                }
+
             elif path == "/ar/session" or path == "/ar/reset":
                 holder = fields.get("holder", b"raw").decode("utf-8", "replace")
                 lens = fields.get("lens", b"main").decode("utf-8", "replace")
