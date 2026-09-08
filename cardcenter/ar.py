@@ -54,6 +54,7 @@ import numpy as np
 from .capture import FrameQuality, RunningRatio, assess_frame
 from .centering import measure_centering
 from .geometry import (
+    compute_edge_gradient,
     enforce_portrait,
     find_card_quad,
     order_quad,
@@ -370,6 +371,86 @@ def verify_calibration_against_card(
 
 
 # ---------------------------------------------------------------------------
+# Temporal Filtering (1€ Filter)
+# ---------------------------------------------------------------------------
+
+
+class LowPassFilter:
+    """First-order low-pass exponential smoothing filter."""
+
+    def __init__(self, alpha: float = 0.5):
+        self.alpha = float(np.clip(alpha, 0.0, 1.0))
+        self._y: Optional[np.ndarray] = None
+
+    def filter(self, val: np.ndarray, alpha: Optional[float] = None) -> np.ndarray:
+        if alpha is not None:
+            self.alpha = float(np.clip(alpha, 0.0, 1.0))
+        val_arr = np.asarray(val, dtype=np.float64)
+        if self._y is None:
+            self._y = val_arr.copy()
+        else:
+            self._y = self.alpha * val_arr + (1.0 - self.alpha) * self._y
+        return self._y.copy()
+
+    @property
+    def last(self) -> Optional[np.ndarray]:
+        return self._y
+
+    def reset(self) -> None:
+        self._y = None
+
+
+class OneEuroFilter:
+    """1€ Filter: Adaptive low-pass filter for interactive AR tracking.
+
+    Minimizes jitter when stationary (low cutoff frequency fc_min) while eliminating
+    lag during fast movement (cutoff increases dynamically with velocity).
+    Casiez, Roussel, & Vogel (CHI 2012).
+    """
+
+    def __init__(
+        self,
+        freq: float = 30.0,
+        min_cutoff: float = 1.0,
+        beta: float = 0.015,
+        d_cutoff: float = 1.0,
+    ):
+        self.freq = float(freq)
+        self.min_cutoff = float(min_cutoff)
+        self.beta = float(beta)
+        self.d_cutoff = float(d_cutoff)
+        self.x_filt = LowPassFilter()
+        self.dx_filt = LowPassFilter()
+        self.last_time: Optional[float] = None
+
+    def _alpha(self, rate: float, cutoff: float) -> float:
+        tau = 1.0 / (2.0 * math.pi * max(cutoff, 1e-4))
+        te = 1.0 / max(rate, 1e-4)
+        return 1.0 / (1.0 + tau / te)
+
+    def filter(self, x: np.ndarray, timestamp: Optional[float] = None) -> np.ndarray:
+        x_arr = np.asarray(x, dtype=np.float64)
+        if self.last_time is None or timestamp is None:
+            rate = self.freq
+        else:
+            dt = timestamp - self.last_time
+            rate = 1.0 / dt if dt > 1e-5 else self.freq
+        self.last_time = timestamp
+
+        prev_x = self.x_filt.last
+        dx = np.zeros_like(x_arr) if prev_x is None else (x_arr - prev_x) * rate
+        edx = self.dx_filt.filter(dx, self._alpha(rate, self.d_cutoff))
+        cutoff = self.min_cutoff + self.beta * np.linalg.norm(edx)
+        a = self._alpha(rate, cutoff)
+        return self.x_filt.filter(x_arr, a)
+
+    def reset(self) -> None:
+        self.x_filt.reset()
+        self.dx_filt.reset()
+        self.last_time = None
+
+
+# ---------------------------------------------------------------------------
 # The session loop
 # ---------------------------------------------------------------------------
 
@@ -411,12 +492,8 @@ def track_quad(
     )
     search_px = float(np.clip(0.02 * shortest, 3.0, search_px))
 
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
-    grad = cv2.magnitude(
-        cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3),
-        cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3),
-    )
-    h, w = grad.shape
+    grad = compute_edge_gradient(image)
+    h, w = grad.shape[:2]
     offsets = np.arange(-search_px, search_px + 1e-9, 1.0)
 
     lines = []
@@ -539,6 +616,9 @@ class ARSession:
     _measurements: list = field(default_factory=list)
     _sprt: Optional[object] = None
     _last_quad: Optional[np.ndarray] = None
+    _quad_filter: OneEuroFilter = field(
+        default_factory=lambda: OneEuroFilter(freq=30.0, min_cutoff=1.2, beta=0.02)
+    )
     _last_measure: float = 0.0
     seen: int = 0
     measured: int = 0
@@ -550,6 +630,7 @@ class ARSession:
         self.horizontal = RunningRatio()
         self.vertical = RunningRatio()
         self._last_quad = None
+        self._quad_filter.reset()
         self.measured = 0
         self.seen = 0
         self.last_result = None
@@ -634,6 +715,7 @@ class ARSession:
                 quad_small, _, _ = find_card_quad(track_img, prefer_point=anchor)
             except DetectionError as exc2:
                 self._last_quad = None
+                self._quad_filter.reset()
                 # A generic "point at a card" is right for "nothing found at
                 # all", but the container guard raises something specific and
                 # actionable ("found 9 card-shaped regions...") that the user
@@ -655,7 +737,8 @@ class ARSession:
                     scale=self.calibration.current(now) if self.calibration else None,
                 )
 
-        self._last_quad = quad_small / track_scale
+        smoothed_quad = self._quad_filter.filter(quad_small, timestamp=now)
+        self._last_quad = smoothed_quad / track_scale
         # The gate must judge the resolution the MEASUREMENT will have, not the
         # tracker's. Tracking runs at 540 px where a card is ~5 px/mm, which is
         # below the usable floor -- gating on that rejects every frame while the

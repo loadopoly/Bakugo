@@ -329,6 +329,31 @@ def _gather_contours(image: np.ndarray) -> list[np.ndarray]:
     return out
 
 
+def compute_edge_gradient(image: np.ndarray) -> np.ndarray:
+    """Compute multi-channel chromatic edge gradient magnitude.
+
+    Grayscale conversion (0.299R + 0.587G + 0.114B) loses edge contrast when
+    yellow, silver, or white card borders rest on light wood, pine desks, or
+    light quartz where the luminance difference is negligible. Computing the
+    Sobel gradient per color channel and taking the element-wise maximum:
+        mag = max(mag_B, mag_G, mag_R)
+    preserves strong edge response across iso-luminant chromatic boundaries.
+    """
+    if image.ndim == 3 and image.shape[2] >= 3:
+        mags = []
+        for c in range(3):
+            ch = image[..., c]
+            gx = cv2.Sobel(ch, cv2.CV_32F, 1, 0, ksize=3)
+            gy = cv2.Sobel(ch, cv2.CV_32F, 0, 1, ksize=3)
+            mags.append(cv2.magnitude(gx, gy))
+        return np.maximum.reduce(mags)
+    else:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+        gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        return cv2.magnitude(gx, gy)
+
+
 def edge_support(gradient: np.ndarray, quad: np.ndarray, samples: int = 240) -> float:
     """Fraction of the quad's perimeter that sits on a real intensity edge.
 
@@ -622,12 +647,7 @@ def quad_candidates(
     img_area = float(h * w)
     expected = STANDARD_CARD_H_MM / STANDARD_CARD_W_MM
 
-    gray_full = (
-        cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
-    )
-    gx = cv2.Sobel(gray_full, cv2.CV_32F, 1, 0, ksize=3)
-    gy = cv2.Sobel(gray_full, cv2.CV_32F, 0, 1, ksize=3)
-    gradient = cv2.magnitude(gx, gy)
+    gradient = compute_edge_gradient(image)
 
     found: list[tuple[float, np.ndarray, np.ndarray]] = []
     seen_boxes: list[tuple[int, int, int, int]] = []
@@ -683,20 +703,11 @@ def quad_candidates(
         if min(e01, e12) < 1e-6:
             continue
         aspect = max(e01, e12) / min(e01, e12)
-        # A card face is 1.400. Perspective stretches this, but only so far
-        # before the quad stops being a card at all.
-        #
-        # The old window ran to expected*1.45 = 2.03, which admitted the
-        # CALIPER'S STEEL SCALE. Measured on 75 real photographs: 73% of
-        # accepted quads had an aspect implausible for a card face, including
-        # 9.85, 9.33 and 5.67 -- those are the caliper beam, a card seen
-        # edge-on, and partial detections. They then routed to geometry_only,
-        # so a misdetection arrived wearing a respectable label rather than
-        # being refused.
-        #
-        # 1.75 still allows substantial perspective on a genuine card while
-        # excluding anything long and thin.
-        if not (1.15 < aspect < 1.75):
+        # A card face is 1.400. Perspective foreshortening stretches or compresses
+        # this under handheld tilts (e.g. 1.40 * cos(45 deg) approx 0.99).
+        # Expanding the aspect window to 0.92 < aspect < 1.88 admits natural tilted
+        # viewing angles up to ~48 deg while still reliably excluding elongated objects.
+        if not (0.92 < aspect < 1.88):
             continue
 
         if edge_support(gradient, quad) < min_edge_support:
@@ -765,11 +776,7 @@ def find_card_quad(
             "against a plain contrasting background with all four edges visible."
         )
 
-    _g = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
-    gradient_full = cv2.magnitude(
-        cv2.Sobel(_g, cv2.CV_32F, 1, 0, ksize=3),
-        cv2.Sobel(_g, cv2.CV_32F, 0, 1, ksize=3),
-    )
+    gradient_full = compute_edge_gradient(image)
 
     # Largest-wins is not enough: a slightly larger candidate that fits its own
     # edges badly is a blob or a halo, not a card, and picking it silently
@@ -858,8 +865,8 @@ def find_card_quad(
     card_shaped = [
         e
         for e in evaluated
-        if 1.15 < _aspect(e[1]) < 1.75
-        or 1.15 < raw_aspect_by_contour.get(id(e[2]), 0.0) < 1.75
+        if 0.92 < _aspect(e[1]) < 1.88
+        or 0.92 < raw_aspect_by_contour.get(id(e[2]), 0.0) < 1.88
     ]
     # If nothing is card-shaped, fall back to the full set so the existing
     # aspect error below still reports what was actually found.
@@ -975,7 +982,7 @@ def find_card_quad(
         plausible_shrink = area_in > 0 and 0.55 <= area_out / area_in <= 1.05
         if (
             min(e01s, e12s) > 1e-6
-            and 1.15 < max(e01s, e12s) / min(e01s, e12s) < 1.75
+            and 0.92 < max(e01s, e12s) / min(e01s, e12s) < 1.88
             and plausible_shrink
             and edge_support(gradient_full, snapped)
             > edge_support(gradient_full, refined)
@@ -1011,7 +1018,7 @@ def find_card_quad(
                 fallback = enforce_portrait(order_quad(quad))
                 e01 = float(np.linalg.norm(fallback[1] - fallback[0]))
                 e12 = float(np.linalg.norm(fallback[2] - fallback[1]))
-                if min(e01, e12) > 1e-6 and 1.15 < max(e01, e12) / min(e01, e12) < 1.75:
+                if min(e01, e12) > 1e-6 and 0.92 < max(e01, e12) / min(e01, e12) < 1.88:
                     # Raw polygon corners are pixel-quantised, so report a
                     # residual reflecting that rather than the failed fit.
                     return fallback, cont, 1.0
@@ -1028,10 +1035,10 @@ def find_card_quad(
     if min(e01, e12) < 1e-6:
         raise DetectionError("degenerate card outline")
     final_aspect = max(e01, e12) / min(e01, e12)
-    if not (1.15 < final_aspect < 1.75):
+    if not (0.92 < final_aspect < 1.88):
         raise DetectionError(
             f"best candidate has aspect {final_aspect:.2f}, which is not a card "
-            "face (a card is 1.40). This is usually the caliper beam, a card "
+            "face (nominal card is 1.40). This is usually the caliper beam, a card "
             "seen edge-on, or a partial detection."
         )
 
@@ -1121,7 +1128,7 @@ def find_card_quad(
                 e12b = float(np.linalg.norm(r2[2] - r2[1]))
                 if (
                     min(e01b, e12b) > 1e-6
-                    and 1.15 < max(e01b, e12b) / min(e01b, e12b) < 1.75
+                    and 0.92 < max(e01b, e12b) / min(e01b, e12b) < 1.88
                 ):
                     refined, contour, residual = r2, pick_cont, res2
             except DetectionError:

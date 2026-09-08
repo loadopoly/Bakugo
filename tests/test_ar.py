@@ -14,6 +14,8 @@ from cardcenter.ar import (
     MEASURE_LONG_SIDE,
     TRACK_LONG_SIDE,
     ARSession,
+    LowPassFilter,
+    OneEuroFilter,
     ScaleCalibration,
     calibrate_from_points,
     detect_caliper_gap,
@@ -275,4 +277,68 @@ def test_session_handles_pillarboxed_stream() -> None:
     min_y = st.quad[:, 1].min()
     max_y = st.quad[:, 1].max()
     assert not (min_y <= 5.0 and max_y >= ch - 6.0)
+
+
+def test_low_pass_filter() -> None:
+    f = LowPassFilter(alpha=0.5)
+    assert f.last is None
+    y1 = f.filter(np.array([10.0, 20.0]))
+    assert np.allclose(y1, [10.0, 20.0])
+    y2 = f.filter(np.array([20.0, 40.0]))
+    assert np.allclose(y2, [15.0, 30.0])
+    f.reset()
+    assert f.last is None
+
+
+def test_one_euro_filter_jitter_reduction() -> None:
+    rng = np.random.default_rng(42)
+    filt = OneEuroFilter(freq=30.0, min_cutoff=1.0, beta=0.01)
+    
+    # Generate stationary signal with sensor jitter (mean 100.0, std 2.0)
+    true_val = np.array([100.0, 200.0])
+    noisy_samples = [true_val + rng.normal(0, 2.0, 2) for _ in range(60)]
+    
+    filtered = []
+    for i, s in enumerate(noisy_samples):
+        filtered.append(filt.filter(s, timestamp=i / 30.0))
+        
+    noisy_var = np.var([s[0] for s in noisy_samples[10:]])
+    filtered_var = np.var([s[0] for s in filtered[10:]])
+    
+    # 1€ filter must damp stationary jitter by at least 60%
+    assert filtered_var < 0.40 * noisy_var
+    # Must not have biased the mean
+    assert abs(np.mean([s[0] for s in filtered[10:]]) - 100.0) < 0.5
+
+
+def test_one_euro_filter_step_response() -> None:
+    filt = OneEuroFilter(freq=30.0, min_cutoff=1.0, beta=0.02)
+    # Initialize at 0
+    for i in range(10):
+        filt.filter(np.array([0.0, 0.0]), timestamp=i / 30.0)
+        
+    # Sudden step jump to 100
+    out = None
+    for i in range(10, 25):
+        out = filt.filter(np.array([100.0, 100.0]), timestamp=i / 30.0)
+        
+    # High speed derivative must open cutoff and converge fast (within 15 frames)
+    assert np.all(out > 98.0)
+
+
+def test_ar_session_temporal_smoothing(small_card) -> None:
+    small, quad, _ = small_card
+    sess = ARSession()
+    st1 = sess.push(small, now=1.0)
+    assert st1.tracking
+    q1 = st1.quad.copy()
+    
+    # Next frame at slightly perturbed timestamp
+    st2 = sess.push(small, now=1.033)
+    assert st2.tracking
+    q2 = st2.quad.copy()
+    
+    # Smoothed quad should be very close to initial on static frame
+    assert np.allclose(q1, q2, atol=2.0)
+
 

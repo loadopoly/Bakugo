@@ -266,6 +266,14 @@ header.app-bar{padding:calc(10px + env(safe-area-inset-top)) 16px 10px;
 .hud-chip.settled{border-color:var(--pass);color:var(--pass)}
 .hud-chip.settled .radar{background:var(--pass);animation:none;opacity:1;transform:none}
 
+.hud-banner{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);background:rgba(11,15,21,0.85);backdrop-filter:blur(10px);border:1px solid rgba(78,210,198,0.4);border-radius:20px;padding:5px 14px;font-size:11px;font-weight:600;font-family:ui-monospace,"SF Mono",monospace;color:var(--paper);display:flex;align-items:center;gap:6px;pointer-events:none;transition:all .2s;white-space:nowrap;max-width:90%;overflow:hidden;text-overflow:ellipsis;z-index:10;box-shadow:0 4px 16px rgba(0,0,0,0.5)}
+.hud-banner.warn{border-color:var(--hold);color:var(--hold)}
+.hud-banner.good{border-color:var(--pass);color:var(--pass)}
+.hud-spirit{position:absolute;bottom:14px;right:14px;background:rgba(11,15,21,0.8);backdrop-filter:blur(8px);border:1px solid var(--rule);border-radius:14px;padding:3px 8px;font-size:9.5px;font-family:ui-monospace,"SF Mono",monospace;color:var(--dim);display:flex;align-items:center;gap:5px;pointer-events:none;z-index:10}
+.hud-spirit .spirit-bubble{width:6px;height:6px;border-radius:50%;background:var(--pass);transition:background .2s}
+.hud-spirit.tilted{border-color:var(--hold);color:var(--hold)}
+.hud-spirit.tilted .spirit-bubble{background:var(--hold)}
+
 /* Still & Results Output */
 #out{padding-bottom:90px}
 .empty-card{margin:12px 16px;padding:20px;background:var(--surface);border:1px solid var(--rule);border-radius:var(--radius-lg);font-size:13.5px;line-height:1.6;color:var(--dim)}
@@ -371,6 +379,8 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
       <div class="hud-chip"><span class="radar"></span><span id="hud-status">SEARCHING</span></div>
       <div class="hud-verdict" id="hud-verdict">SPRT IDLE</div>
     </div>
+    <div id="hud-guidance" class="hud-banner">Align card inside viewfinder template</div>
+    <div id="hud-spirit-level" class="hud-spirit"><span class="spirit-bubble"></span><span id="spirit-deg">0° LEVEL</span></div>
   </div>
 </div>
 
@@ -523,8 +533,32 @@ function setMode(m) {
   }
 }
 
+// Gyroscope spirit level tracking (DeviceOrientation)
+let deviceTiltDeg = 0;
+function setupGyroscope() {
+  if (window.DeviceOrientationEvent) {
+    window.addEventListener('deviceorientation', (e) => {
+      if (e.beta == null || e.gamma == null) return;
+      const b = e.beta, g = e.gamma;
+      const pitchDev = Math.abs(b) > 45 ? Math.abs(Math.abs(b) - 90) : Math.abs(b);
+      const rollDev = Math.abs(g);
+      const tilt = Math.round(Math.hypot(pitchDev, rollDev));
+      deviceTiltDeg = Math.min(90, Math.max(0, tilt));
+      const spirit = $('#hud-spirit-level'), spiritText = $('#spirit-deg');
+      if (spirit && spiritText) {
+        spiritText.textContent = `${deviceTiltDeg}° ${deviceTiltDeg <= 16 ? 'LEVEL' : 'TILT'}`;
+        spirit.classList.toggle('tilted', deviceTiltDeg > 16);
+      }
+    }, true);
+  }
+}
+setupGyroscope();
+
 // Live AR Loop & WebRTC Camera Stream
-let videoStream = null, arInterval = null, isPushing = false, lastSettled = false, lastLocked = false;
+let videoStream = null, arInterval = null, arAnimFrame = null, isPushing = false;
+let lastSettled = false, lastLocked = false, autoCaptured = false, autoCaptureTimer = null;
+let lastHUDData = null, currentQuad = null, targetQuad = null;
+
 const arVideo = $('#ar-video'), arCanvas = $('#ar-canvas'), ctx = arCanvas.getContext('2d');
 const offscreenCanvas = document.createElement('canvas'), offCtx = offscreenCanvas.getContext('2d');
 
@@ -542,7 +576,8 @@ async function startARStream() {
       arCanvas.height = arVideo.videoHeight;
       offscreenCanvas.width = 540;
       offscreenCanvas.height = Math.round(540 * (arVideo.videoHeight / arVideo.videoWidth));
-      arInterval = setInterval(arTick, 200);
+      arInterval = setInterval(arTick, 180);
+      if (!arAnimFrame) arAnimFrame = requestAnimationFrame(renderARHUDContinuous);
     };
   } catch(err) {
     $('#hud-status').textContent = 'CAMERA BLOCKED';
@@ -552,11 +587,15 @@ async function startARStream() {
 
 function stopARStream() {
   if (arInterval) { clearInterval(arInterval); arInterval = null; }
+  if (arAnimFrame) { cancelAnimationFrame(arAnimFrame); arAnimFrame = null; }
   if (videoStream) {
     videoStream.getTracks().forEach(t => t.stop());
     videoStream = null;
     arVideo.srcObject = null;
   }
+  lastHUDData = null;
+  currentQuad = null;
+  targetQuad = null;
   ctx.clearRect(0, 0, arCanvas.width, arCanvas.height);
 }
 
@@ -588,47 +627,25 @@ async function arTick() {
 }
 
 function drawARHUD(d) {
-  ctx.clearRect(0, 0, arCanvas.width, arCanvas.height);
-  if (!d || !d.ok) return;
+  if (!d || !d.ok) {
+    lastHUDData = null;
+    targetQuad = null;
+    return;
+  }
+  lastHUDData = d;
 
   const scaleX = arCanvas.width / offscreenCanvas.width;
   const scaleY = arCanvas.height / offscreenCanvas.height;
 
   if (d.tracking && d.quad && d.quad.length === 4) {
-    if (!lastLocked) { synth.playLock(); haptic('lock'); lastLocked = true; }
-    
-    // Draw sci-fi quad
-    ctx.strokeStyle = '#4ED2C6';
-    ctx.lineWidth = 4;
-    ctx.shadowColor = '#4ED2C6';
-    ctx.shadowBlur = 12;
-    ctx.beginPath();
-    ctx.moveTo(d.quad[0][0] * scaleX, d.quad[0][1] * scaleY);
-    for (let i = 1; i < 4; i++) {
-      ctx.lineTo(d.quad[i][0] * scaleX, d.quad[i][1] * scaleY);
+    targetQuad = d.quad.map(pt => [pt[0] * scaleX, pt[1] * scaleY]);
+    if (!currentQuad) {
+      currentQuad = targetQuad.map(p => [...p]);
     }
-    ctx.closePath();
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-
-    // Laser crosshairs on corners
-    d.quad.forEach(pt => {
-      const px = pt[0] * scaleX, py = pt[1] * scaleY;
-      ctx.fillStyle = '#FFFFFF';
-      ctx.fillRect(px - 4, py - 4, 8, 8);
-    });
+    if (!lastLocked) { synth.playLock(); haptic('lock'); lastLocked = true; }
 
     const chip = $('#hud-status');
     const chipBox = document.querySelector('.hud-chip');
-    // grade_ceiling is the honest worst-case range (interval mapped through
-    // every grade tier it touches) -- necessarily wide on early frames, e.g.
-    // "7-10", and that alone reads as a verdict when it is really a shrug.
-    // grade_estimate/grade_confidence come from predict_overall_grade, which
-    // turns the same measurement into a single most-likely grade plus a
-    // probability using edge/corner signal the session already has. Show
-    // both: the actionable guess up front, the honest range alongside it.
-    // grade_estimate already reads like "PSA 9" (predict_overall_grade
-    // prefixes the grader itself), so don't prefix it again here.
     const est = d.grade_estimate
       ? `~${d.grade_estimate}${d.grade_confidence != null ? ` (${Math.round(d.grade_confidence * 100)}%)` : ''}`
       : null;
@@ -636,35 +653,212 @@ function drawARHUD(d) {
       chip.textContent = 'TRACKING';
       if (chipBox) chipBox.classList.remove('settled');
     } else if (d.settled) {
-      // Only a settled estimate -- the SPRT/fusion machinery in ARSession has
-      // accumulated enough consistent views to trust -- gets to look final.
       chip.textContent = `${d.ratio.toFixed(1)}%` + (est ? ` · ${est}` : '') + (d.grade_ceiling ? ` · range ${d.grade_ceiling}` : '');
       if (chipBox) chipBox.classList.add('settled');
     } else {
-      // A single early view carries a wide confidence interval. Say so
-      // instead of presenting a first-frame guess with the same weight as a
-      // settled one, but still lead with the best-guess grade rather than
-      // just the range, which is the part that actually reads as an answer.
       const n = d.measured_frames || 0;
       chip.textContent = `${d.ratio.toFixed(1)}%` + (est ? ` · ${est}` : '') + ` · narrowing (${n} view${n === 1 ? '' : 's'})`;
       if (chipBox) chipBox.classList.remove('settled');
     }
   } else {
+    targetQuad = null;
     lastLocked = false;
     $('#hud-status').textContent = 'SEARCHING';
     const chipBox = document.querySelector('.hud-chip');
     if (chipBox) chipBox.classList.remove('settled');
   }
 
+  // Guidance banner coaching
+  const banner = $('#hud-guidance');
+  if (banner) {
+    if (d.settled) {
+      banner.textContent = '✓ Target settled · Auto-capturing metrology';
+      banner.className = 'hud-banner good';
+    } else if (d.guidance && d.guidance.length > 0) {
+      banner.textContent = '⚠ ' + d.guidance[0];
+      banner.className = 'hud-banner warn';
+    } else if (d.tracking) {
+      banner.textContent = '⚡ Tracking · Hold steady for multi-view convergence';
+      banner.className = 'hud-banner';
+    } else {
+      banner.textContent = 'Align card inside viewfinder template';
+      banner.className = 'hud-banner';
+    }
+  }
+
+  // Peak-sharpness auto-capture on settlement
   if (d.settled && !lastSettled) {
     synth.playSettle();
     haptic('settle');
     lastSettled = true;
+    if (!autoCaptured) {
+      autoCaptured = true;
+      clearTimeout(autoCaptureTimer);
+      autoCaptureTimer = setTimeout(() => {
+        if (currentMode === 'ar' && lastHUDData && lastHUDData.settled) {
+          triggerARFreeze();
+        }
+      }, 400);
+    }
   } else if (!d.settled) {
     lastSettled = false;
+    autoCaptured = false;
+    clearTimeout(autoCaptureTimer);
   }
 
   $('#hud-verdict').textContent = d.verdict ? `SPRT: ${d.verdict}` : (d.settled ? 'SPRT SETTLED' : 'ACCUMULATING');
+}
+
+// 60fps Smooth Canvas Render: Viewfinder reticle, lerped quad, laser caliper sweep, glowing lock
+function renderARHUDContinuous() {
+  if (currentMode === 'ar') {
+    ctx.clearRect(0, 0, arCanvas.width, arCanvas.height);
+    const W = arCanvas.width, H = arCanvas.height;
+
+    if (targetQuad && currentQuad) {
+      // Smoothly lerp towards target quad corners
+      for (let i = 0; i < 4; i++) {
+        currentQuad[i][0] += (targetQuad[i][0] - currentQuad[i][0]) * 0.45;
+        currentQuad[i][1] += (targetQuad[i][1] - currentQuad[i][1]) * 0.45;
+      }
+
+      const isSettled = lastHUDData && lastHUDData.settled;
+      const themeColor = isSettled ? '#4EBA82' : '#4ED2C6';
+
+      // Draw glowing boundary polygon
+      ctx.save();
+      ctx.strokeStyle = themeColor;
+      ctx.lineWidth = 3.5;
+      ctx.shadowColor = themeColor;
+      ctx.shadowBlur = isSettled ? 16 : 10;
+      ctx.beginPath();
+      ctx.moveTo(currentQuad[0][0], currentQuad[0][1]);
+      for (let i = 1; i < 4; i++) {
+        ctx.lineTo(currentQuad[i][0], currentQuad[i][1]);
+      }
+      ctx.closePath();
+      ctx.stroke();
+
+      // Corner crosshairs / brackets
+      currentQuad.forEach(pt => {
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(pt[0] - 4, pt[1] - 4, 8, 8);
+        ctx.strokeStyle = themeColor;
+        ctx.strokeRect(pt[0] - 7, pt[1] - 7, 14, 14);
+      });
+
+      // Laser Caliper Sweep animation
+      const sweepTime = (Date.now() % 2200) / 2200;
+      const sFrac = 0.5 - 0.5 * Math.cos(sweepTime * 2 * Math.PI);
+      const pLeft = [
+        currentQuad[0][0] + sFrac * (currentQuad[3][0] - currentQuad[0][0]),
+        currentQuad[0][1] + sFrac * (currentQuad[3][1] - currentQuad[0][1])
+      ];
+      const pRight = [
+        currentQuad[1][0] + sFrac * (currentQuad[2][0] - currentQuad[1][0]),
+        currentQuad[1][1] + sFrac * (currentQuad[2][1] - currentQuad[1][1])
+      ];
+
+      ctx.strokeStyle = themeColor;
+      ctx.lineWidth = 2.5;
+      ctx.shadowColor = themeColor;
+      ctx.shadowBlur = 10;
+      ctx.beginPath();
+      ctx.moveTo(pLeft[0], pLeft[1]);
+      ctx.lineTo(pRight[0], pRight[1]);
+      ctx.stroke();
+
+      // Caliper beam trail
+      const grad = ctx.createLinearGradient(pLeft[0], pLeft[1] - 8, pLeft[0], pLeft[1] + 8);
+      grad.addColorStop(0, 'rgba(78,210,198,0)');
+      grad.addColorStop(0.5, isSettled ? 'rgba(78,186,130,0.22)' : 'rgba(78,210,198,0.22)');
+      grad.addColorStop(1, 'rgba(78,210,198,0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(pLeft[0], pLeft[1] - 8);
+      ctx.lineTo(pRight[0], pRight[1] - 8);
+      ctx.lineTo(pRight[0], pRight[1] + 8);
+      ctx.lineTo(pLeft[0], pLeft[1] + 8);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.restore();
+    } else if (W && H) {
+      currentQuad = null;
+      // Draw Holographic Cybernetic Viewfinder Template
+      const cx = W / 2, cy = H / 2;
+      const cardH = Math.min(H * 0.70, W * 0.85 * 1.40);
+      const cardW = cardH / 1.40;
+      const x0 = cx - cardW / 2, y0 = cy - cardH / 2;
+      const cornerLen = Math.min(cardW, cardH) * 0.15;
+
+      ctx.save();
+      const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 400);
+
+      // Holographic aura
+      ctx.fillStyle = `rgba(78, 210, 198, ${0.015 + 0.015 * pulse})`;
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(x0, y0, cardW, cardH, 14);
+      else ctx.rect(x0, y0, cardW, cardH);
+      ctx.fill();
+
+      // Outer dashed guide
+      ctx.strokeStyle = `rgba(78, 210, 198, ${0.25 + 0.15 * pulse})`;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([8, 8]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Corner brackets
+      ctx.strokeStyle = '#4ED2C6';
+      ctx.lineWidth = 3.5;
+      ctx.shadowColor = '#4ED2C6';
+      ctx.shadowBlur = 8;
+
+      // TL
+      ctx.beginPath();
+      ctx.moveTo(x0, y0 + cornerLen); ctx.lineTo(x0, y0); ctx.lineTo(x0 + cornerLen, y0);
+      ctx.stroke();
+      // TR
+      ctx.beginPath();
+      ctx.moveTo(x0 + cardW - cornerLen, y0); ctx.lineTo(x0 + cardW, y0); ctx.lineTo(x0 + cardW, y0 + cornerLen);
+      ctx.stroke();
+      // BR
+      ctx.beginPath();
+      ctx.moveTo(x0 + cardW, y0 + cardH - cornerLen); ctx.lineTo(x0 + cardW, y0 + cardH); ctx.lineTo(x0 + cardW - cornerLen, y0 + cardH);
+      ctx.stroke();
+      // BL
+      ctx.beginPath();
+      ctx.moveTo(x0 + cornerLen, y0 + cardH); ctx.lineTo(x0, y0 + cardH); ctx.lineTo(x0, y0 + cardH - cornerLen);
+      ctx.stroke();
+
+      // Center crosshair
+      ctx.strokeStyle = `rgba(78, 210, 198, ${0.4 + 0.3 * pulse})`;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(cx - 10, cy); ctx.lineTo(cx + 10, cy);
+      ctx.moveTo(cx, cy - 10); ctx.lineTo(cx, cy + 10);
+      ctx.stroke();
+
+      // Viewfinder label
+      ctx.fillStyle = `rgba(78, 210, 198, ${0.6 + 0.2 * pulse})`;
+      ctx.font = '11px ui-monospace, "SF Mono", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('VIEWFINDER · 2.5" × 3.5"', cx, y0 - 10);
+
+      ctx.restore();
+    }
+  }
+  arAnimFrame = requestAnimationFrame(renderARHUDContinuous);
+}
+
+function triggerARFreeze() {
+  if (!arVideo.videoWidth) return;
+  const freezeCanvas = document.createElement('canvas');
+  freezeCanvas.width = arVideo.videoWidth;
+  freezeCanvas.height = arVideo.videoHeight;
+  freezeCanvas.getContext('2d').drawImage(arVideo, 0, 0);
+  freezeCanvas.toBlob(sendStillPhoto, 'image/jpeg', 0.92);
 }
 
 // Action button
@@ -674,13 +868,7 @@ $('#btn-action').onclick = () => {
   if (currentMode === 'still') {
     $('#file').click();
   } else {
-    // Freeze current AR frame and run high-res metrology
-    if (!arVideo.videoWidth) return;
-    const freezeCanvas = document.createElement('canvas');
-    freezeCanvas.width = arVideo.videoWidth;
-    freezeCanvas.height = arVideo.videoHeight;
-    freezeCanvas.getContext('2d').drawImage(arVideo, 0, 0);
-    freezeCanvas.toBlob(sendStillPhoto, 'image/jpeg', 0.92);
+    triggerARFreeze();
   }
 };
 

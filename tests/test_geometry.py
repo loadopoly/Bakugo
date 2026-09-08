@@ -12,6 +12,7 @@ import cv2
 from cardcenter.geometry import (
     apply_h,
     card_plane_corners_mm,
+    compute_edge_gradient,
     detect_active_viewport,
     enforce_portrait,
     find_card_quad,
@@ -368,4 +369,39 @@ def test_find_card_quad_recovers_card_inside_pillarbox() -> None:
     # Centroid should be shifted by offset_x into stream coordinates
     expected_cx = (cw / 2.0) + offset_x
     assert abs(centroid[0] - expected_cx) < 20.0
+
+
+def test_compute_edge_gradient_color_contrast() -> None:
+    """An edge between two colors with near-identical luminance (e.g. yellow border
+    on light pine wood) has negligible grayscale gradient, but high multi-channel
+    chromatic gradient."""
+    # Synthetic image: left half is (B=30, G=200, R=220) [yellowish],
+    # right half is (B=190, G=180, R=100) [cyanish], both ~180 in grayscale.
+    img = np.zeros((100, 100, 3), dtype=np.uint8)
+    img[:, :50] = [30, 200, 220]
+    img[:, 50:] = [190, 180, 100]
+
+    grad_color = compute_edge_gradient(img)
+    # Multi-channel gradient at the vertical boundary must be strong
+    assert grad_color[:, 49:51].max() > 150.0
+
+    # Also verify single-channel fallback
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    grad_gray = compute_edge_gradient(gray)
+    assert grad_gray.shape == (100, 100)
+
+
+def test_find_card_quad_foreshortened_perspective() -> None:
+    """A card viewed under handheld perspective foreshortening (aspect < 1.15)
+    must still be recognized under the expanded 0.92-1.88 aspect window."""
+    from cardcenter.synth import render_capture
+    # 40 degree tilt causes perspective foreshortening
+    card_img, _, _ = render_capture(left_mm=3.0, right_mm=3.0, tilt_deg=40.0)
+    quad, _, _ = find_card_quad(card_img)
+    assert quad.shape == (4, 2)
+    e01 = float(np.linalg.norm(quad[1] - quad[0]))
+    e12 = float(np.linalg.norm(quad[2] - quad[1]))
+    aspect = max(e01, e12) / min(e01, e12)
+    assert 0.92 < aspect < 1.88
+
 

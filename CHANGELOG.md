@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
  
+## [2.11.0] - 2026-09-08
+
+### Added
+- **Multi-channel chromatic edge gradients (`compute_edge_gradient`)**: Grayscale conversion
+  (`0.299R + 0.587G + 0.114B`) previously wiped out edge steps when light yellow, silver, or
+  white card borders lay on light pine wood desks, tablecloths, or quartz countertops where the
+  luminance contrast was near zero. The detector and tracker now compute multi-channel color
+  gradients (`max(Sobel_R, Sobel_G, Sobel_B)`), preserving strong edge responses on iso-luminant
+  chromatic transitions.
+- **Dual-scale adaptive thresholding in contour gathering**: Replaced the single adaptive
+  threshold block with dual-scale passes (fine ~21px for subtle card borders against textured
+  backgrounds; coarse ~51px for non-uniform ambient light and shadows), eliminating contour
+  starvation on low-contrast cards.
+- **Handheld perspective foreshortening expansion (`0.92 < aspect < 1.88`)**: Cards photographed
+  under handheld camera tilts (35°–45°) foreshorten along the optical axis, compressing apparent
+  aspect ratio to `1.40 * cos(40°) ≈ 1.07`. The previous floor (`aspect > 1.15`) rejected these
+  valid angled views. The window is now expanded to `0.92 < aspect < 1.88`, allowing natural handheld
+  viewing angles up to ~48° tilt while still excluding elongated caliper beams and tools.
+- **Temporal 1€ (One Euro) Filter for subpixel quad corner smoothing**: Integrated `LowPassFilter`
+  and `OneEuroFilter` in `cardcenter/ar.py`. Stationary jitter from sensor noise is damped by >60%
+  without introducing lag during rapid camera movement.
+- **Actionable live guidance banner (`#hud-guidance`)**: Real-time coaching banner on the live AR HUD
+  surfacing camera positioning tips (e.g. angle tilt, distance, glare, alignment, multi-view accumulation).
+- **Holographic cybernetic card viewfinder template**: 60fps holographic reticle rendering a 2.5" × 3.5"
+  card outline with cybernetic corner brackets, pulsing crosshairs, and holographic aura when searching.
+- **Hardware gyroscope horizon / spirit level**: Tracks device pitch and roll via `DeviceOrientationEvent`,
+  displaying real-time tilt degree in `#hud-spirit-level` and indicating planar alignment.
+- **Laser caliper sweep animation**: Renders a glowing laser caliper sweep line across the tracked card
+  surface that intensifies during SPRT multi-view convergence and locks upon decision.
+- **Peak-sharpness auto-capture on settlement**: Automatically freezes the stabilized AR frame and executes
+  high-res metrology upon SPRT settlement with debounce protection.
+
 ## [2.10.2] - 2026-09-08
 
 ### Fixed
