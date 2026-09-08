@@ -53,7 +53,13 @@ import numpy as np
 
 from .capture import FrameQuality, RunningRatio, assess_frame
 from .centering import measure_centering
-from .geometry import enforce_portrait, find_card_quad, order_quad, refine_quad
+from .geometry import (
+    enforce_portrait,
+    find_card_quad,
+    order_quad,
+    refine_quad,
+    touches_frame_boundary,
+)
 from .types import (
     STANDARD_CARD_H_MM,
     STANDARD_CARD_W_MM,
@@ -470,6 +476,8 @@ def track_quad(
     # admits it lost the card, because the session would keep averaging.
     if float(np.abs(out - q).max()) > 4.0 * search_px:
         raise DetectionError("tracking drifted too far; re-detecting")
+    if touches_frame_boundary(out, h, w):
+        raise DetectionError("tracked quad touches frame boundary; re-detecting")
     return out
 
 

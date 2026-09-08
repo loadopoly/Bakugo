@@ -12,6 +12,7 @@ import cv2
 from cardcenter.geometry import (
     apply_h,
     card_plane_corners_mm,
+    detect_active_viewport,
     enforce_portrait,
     find_card_quad,
     fit_line_robust,
@@ -20,6 +21,7 @@ from cardcenter.geometry import (
     order_quad,
     refine_quad,
     snap_quad_to_edges,
+    touches_frame_boundary,
 )
 from cardcenter.types import STANDARD_CARD_H_MM, STANDARD_CARD_W_MM, DetectionError
 
@@ -286,3 +288,84 @@ def test_find_card_quad_drills_into_the_cell_under_the_reticle() -> None:
         e01 = np.linalg.norm(quad[1] - quad[0])
         e12 = np.linalg.norm(quad[2] - quad[1])
         assert max(e01, e12) < 500.0
+
+
+# --------------------------------------------------------------------------
+# Active viewport detection and frame boundary guard
+# --------------------------------------------------------------------------
+
+
+def test_detect_active_viewport_passes_clean_image() -> None:
+    img = np.full((720, 1280, 3), 160, dtype=np.uint8)
+    vx, vy, vw, vh = detect_active_viewport(img)
+    assert (vx, vy, vw, vh) == (0, 0, 1280, 720)
+
+
+def test_detect_active_viewport_finds_pillarbox() -> None:
+    img = np.zeros((720, 1280, 3), dtype=np.uint8)
+    # Active portrait feed in the center: cols 400..880
+    img[:, 400:880] = 160
+    vx, vy, vw, vh = detect_active_viewport(img)
+    assert abs(vx - 400) <= 2
+    assert abs(vw - 480) <= 4
+    assert vy == 0
+    assert vh == 720
+
+
+def test_detect_active_viewport_finds_letterbox() -> None:
+    img = np.zeros((1000, 800, 3), dtype=np.uint8)
+    # Active feed in rows 200..800
+    img[200:800, :] = 160
+    vx, vy, vw, vh = detect_active_viewport(img)
+    assert abs(vy - 200) <= 2
+    assert abs(vh - 600) <= 4
+    assert vx == 0
+    assert vw == 800
+
+
+def test_detect_active_viewport_ignores_outer_border_lines() -> None:
+    img = np.zeros((720, 1280, 3), dtype=np.uint8)
+    # 1px border at col 0 and col 1279
+    img[:, 0] = 50
+    img[:, 1279] = 50
+    # Active content in cols 350..930
+    img[:, 350:930] = 180
+    vx, vy, vw, vh = detect_active_viewport(img)
+    assert abs(vx - 350) <= 3
+    assert abs(vw - 580) <= 6
+
+
+def test_touches_frame_boundary_detects_coincident_edges() -> None:
+    h, w = 480, 640
+    # Quad running along top and bottom
+    q_span = np.array([[100.0, 1.0], [500.0, 1.0], [500.0, 478.0], [100.0, 478.0]])
+    assert touches_frame_boundary(q_span, h, w)
+
+    # Quad running along left boundary
+    q_left = np.array([[2.0, 100.0], [200.0, 100.0], [200.0, 300.0], [2.0, 300.0]])
+    assert touches_frame_boundary(q_left, h, w)
+
+    # Quad safely in the interior
+    q_safe = np.array([[100.0, 100.0], [300.0, 100.0], [300.0, 380.0], [100.0, 380.0]])
+    assert not touches_frame_boundary(q_safe, h, w)
+
+
+def test_find_card_quad_recovers_card_inside_pillarbox() -> None:
+    """A card presented in a pillarboxed stream must be found, with its
+    coordinates returned in the full stream coordinate space."""
+    from cardcenter.synth import render_capture
+    card_img, gt, _ = render_capture(left_mm=3.4, right_mm=2.6)
+    ch, cw = card_img.shape[:2]
+
+    # Create a 16:9 pillarboxed stream
+    stream_w, stream_h = int(cw * 16 / 9), ch
+    stream = np.zeros((stream_h, stream_w, 3), dtype=np.uint8)
+    offset_x = (stream_w - cw) // 2
+    stream[:, offset_x : offset_x + cw] = card_img
+
+    quad, _, _ = find_card_quad(stream)
+    centroid = quad.mean(axis=0)
+    # Centroid should be shifted by offset_x into stream coordinates
+    expected_cx = (cw / 2.0) + offset_x
+    assert abs(centroid[0] - expected_cx) < 20.0
+

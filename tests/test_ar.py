@@ -236,3 +236,43 @@ def test_ambiguous_jaws_are_refused_not_guessed() -> None:
     """A mis-detected calibration corrupts every measurement taken after it."""
     with pytest.raises(DetectionError):
         detect_caliper_gap(np.full((300, 700, 3), 210, dtype=np.uint8))
+
+
+def test_track_quad_refuses_frame_boundary(small_card) -> None:
+    """If a quad drifts to or touches the frame boundary, tracking must refuse
+    rather than locking onto the frame edges."""
+    small, _, _ = small_card
+    h, w = small.shape[:2]
+    # Quad touching top and bottom
+    boundary_quad = np.array([[10.0, 1.0], [w - 10.0, 1.0], [w - 10.0, h - 2.0], [10.0, h - 2.0]])
+    with pytest.raises(DetectionError):
+        track_quad(small, boundary_quad)
+
+
+def test_session_handles_pillarboxed_stream() -> None:
+    """A video feed with wide digital black pillarboxes (e.g. from a mobile phone
+    streaming as a webcam) must track the card itself, not the pillarbox borders."""
+    img, gt, _ = render_capture(left_mm=3.4, right_mm=2.6)
+    ch, cw = img.shape[:2]
+
+    # Create a 16:9 pillarboxed frame
+    stream_w = int(cw * 16 / 9)
+    stream = np.zeros((ch, stream_w, 3), dtype=np.uint8)
+    offset_x = (stream_w - cw) // 2
+    stream[:, offset_x : offset_x + cw] = img
+
+    sess = ARSession()
+    st = sess.push(stream, now=1.0)
+    assert st.tracking
+    assert st.quad is not None
+    # Tracked quad must be inside the active feed (offset_x..offset_x+cw),
+    # not spanning the stream edges
+    min_x = st.quad[:, 0].min()
+    max_x = st.quad[:, 0].max()
+    assert min_x >= offset_x - 5.0
+    assert max_x <= offset_x + cw + 5.0
+    # Must not span the entire height of the stream
+    min_y = st.quad[:, 1].min()
+    max_y = st.quad[:, 1].max()
+    assert not (min_y <= 5.0 and max_y >= ch - 6.0)
+

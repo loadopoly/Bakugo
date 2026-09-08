@@ -496,6 +496,118 @@ def snap_quad_to_edges(
     return corners, float(np.mean(residuals))
 
 
+def touches_frame_boundary(
+    quad: np.ndarray, h: int, w: int, margin: Optional[float] = None
+) -> bool:
+    """Return True if the quad touches, spans, or runs along the sensor/image boundary.
+
+    A collectible card being measured must have all four edges visible in frame.
+    An edge coincident with the image boundary indicates a clipped card or a
+    viewport/container boundary artifact.
+    """
+    q = np.asarray(quad, dtype=np.float64).reshape(4, 2)
+    m = margin if margin is not None else max(4.0, 0.008 * min(h, w))
+    min_x, max_x = float(q[:, 0].min()), float(q[:, 0].max())
+    min_y, max_y = float(q[:, 1].min()), float(q[:, 1].max())
+
+    # Spans essentially the full height or full width of the image
+    if min_y <= m and max_y >= (h - 1) - m:
+        return True
+    if min_x <= m and max_x >= (w - 1) - m:
+        return True
+
+    # Check if any side of the quad lies along an image boundary
+    for i in range(4):
+        p1, p2 = q[i], q[(i + 1) % 4]
+        # Top border
+        if abs(p1[1]) <= m and abs(p2[1]) <= m:
+            return True
+        # Bottom border
+        if abs(p1[1] - (h - 1)) <= m and abs(p2[1] - (h - 1)) <= m:
+            return True
+        # Left border
+        if abs(p1[0]) <= m and abs(p2[0]) <= m:
+            return True
+        # Right border
+        if abs(p1[0] - (w - 1)) <= m and abs(p2[0] - (w - 1)) <= m:
+            return True
+
+    return False
+
+
+def detect_active_viewport(
+    image: np.ndarray,
+    black_threshold: float = 16.0,
+    min_consecutive: int = 10,
+    min_span_frac: float = 0.20,
+) -> tuple[int, int, int, int]:
+    """Detect (x, y, w, h) of the active camera viewport, excluding digital
+    pillarbox (black bars on left/right) or letterbox (black bars on top/bottom)
+    introduced by webcam drivers or letterboxed video streams.
+
+    Returns (0, 0, w, h) if no digital padding is present.
+    """
+    if image.ndim == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image
+    h, w = gray.shape[:2]
+
+    # Sample middle 60% of rows to avoid any corner UI overlays/badges
+    r_start, r_end = int(0.2 * h), max(int(0.2 * h) + 1, int(0.8 * h))
+    mid_rows = gray[r_start:r_end, :]
+    col_means = mid_rows.mean(axis=0)
+    col_active = col_means >= black_threshold
+
+    # Find active column boundaries with sustained content
+    x1 = 0
+    for i in range(w - min_consecutive):
+        if np.all(col_active[i : i + min_consecutive]):
+            x1 = i
+            break
+
+    x2 = w - 1
+    for i in range(w - 1, min_consecutive - 1, -1):
+        if np.all(col_active[i - min_consecutive + 1 : i + 1]):
+            x2 = i
+            break
+
+    # Sample middle 60% of columns between x1 and x2
+    span_w = max(1, x2 - x1)
+    c_start = x1 + int(0.2 * span_w)
+    c_end = max(c_start + 1, x1 + int(0.8 * span_w))
+    mid_cols = gray[:, c_start:c_end]
+    row_means = mid_cols.mean(axis=1)
+    row_active = row_means >= black_threshold
+
+    y1 = 0
+    for i in range(h - min_consecutive):
+        if np.all(row_active[i : i + min_consecutive]):
+            y1 = i
+            break
+
+    y2 = h - 1
+    for i in range(h - 1, min_consecutive - 1, -1):
+        if np.all(row_active[i - min_consecutive + 1 : i + 1]):
+            y2 = i
+            break
+
+    pad_w = x1 + (w - 1 - x2)
+    pad_h = y1 + (h - 1 - y2)
+    # Only treat as digital padding if padding is significant (> 4% of dimension)
+    if pad_w < 0.04 * w:
+        x1, x2 = 0, w - 1
+    if pad_h < 0.04 * h:
+        y1, y2 = 0, h - 1
+
+    active_w = x2 - x1 + 1
+    active_h = y2 - y1 + 1
+    if active_w < min_span_frac * w or active_h < min_span_frac * h:
+        return 0, 0, w, h
+
+    return x1, y1, active_w, active_h
+
+
 def quad_candidates(
     image: np.ndarray, min_area_frac: float = 0.03, min_edge_support: float = 0.55
 ) -> list[tuple[float, np.ndarray, np.ndarray]]:
@@ -558,6 +670,10 @@ def quad_candidates(
         if quad_area < min_area_frac * img_area or quad_area > 0.995 * img_area:
             continue
 
+        # A card being measured cannot touch or run along the sensor borders.
+        if touches_frame_boundary(quad, h, w):
+            continue
+
         # The quad must actually describe the shape, not just bound it.
         if cv2.contourArea(cv2.convexHull(pts)) < 0.80 * quad_area:
             continue
@@ -594,6 +710,7 @@ def find_card_quad(
     image: np.ndarray,
     min_area_frac: float = 0.008,
     prefer_point: Optional[tuple[float, float]] = None,
+    check_viewport: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, float]:
     """Locate a card in the image.
 
@@ -617,6 +734,30 @@ def find_card_quad(
 
     Returns (refined_corners, contour, mean_line_residual_px).
     """
+    if check_viewport:
+        vx, vy, vw, vh = detect_active_viewport(image)
+        h, w = image.shape[:2]
+        if vw < w or vh < h:
+            crop = image[vy : vy + vh, vx : vx + vw]
+            pt = (
+                (prefer_point[0] - vx, prefer_point[1] - vy)
+                if prefer_point is not None
+                else None
+            )
+            refined, contour, res = find_card_quad(
+                crop,
+                min_area_frac=min_area_frac,
+                prefer_point=pt,
+                check_viewport=False,
+            )
+            refined = refined.copy()
+            refined[:, 0] += vx
+            refined[:, 1] += vy
+            contour = contour.copy()
+            contour[..., 0] += vx
+            contour[..., 1] += vy
+            return refined, contour, res
+
     found = quad_candidates(image, min_area_frac=min_area_frac)
     if not found:
         raise DetectionError(

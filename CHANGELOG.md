@@ -8,6 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ---
 
 ## [Unreleased]
+ 
+## [2.10.2] - 2026-09-08
+
+### Fixed
+- **Live AR tracker locked onto digital pillarbox / letterbox webcam flanks**: When using a
+  smartphone camera (such as Pixel 10 Pro) as a webcam via Windows Connected Camera or UVC in
+  portrait mode, the driver delivers a 16:9 landscape video stream with solid black pillarbox
+  bars on the left and right flanks. This corrupted global frame statistics in `_gather_contours`
+  (`np.median = 0`, forcing Canny to `(0, 0)`), and the high-contrast 1.25-aspect ratio boundaries
+  were accepted by `quad_candidates`. Because the center reticle sat within this region,
+  `find_card_quad` prioritized the ~164k px² viewport over the true card, and `track_quad` in
+  `ARSession` remained permanently glued to the stationary black bars with SPRT frozen at `UNDECIDED`.
+- **Sensor/viewport boundary clipping**: `quad_candidates` now includes `touches_frame_boundary`,
+  rejecting candidate quads whose edges run along or touch the image/viewport boundaries, or that
+  span the full height or width of the sensor. A collectible card being measured must have all four
+  edges visible in frame; boundary-coincident edges are artifacts or clipped objects.
+- **AR tracker drift guard**: `track_quad` in `cardcenter/ar.py` now explicitly rejects tracking if
+  the quad touches or drifts to the sensor boundary, raising `DetectionError` and forcing clean
+  re-detection of the card under the reticle.
+
+### Added
+- **Active viewport detection (`detect_active_viewport`)**: Automatically detects digital black
+  pillarbox (flanks) or letterbox (top/bottom) padding in camera frames while ignoring outer 1px UI
+  border lines. `find_card_quad` now isolates the active camera feed when padding is detected,
+  ensuring Otsu thresholding and edge detection operate on the true scene without statistical
+  corruption, and cleanly translates detected coordinates back into the full stream space.
+- **Unit & regression test suite**: Added tests in `tests/test_geometry.py` and `tests/test_ar.py`
+  covering clean images, pillarboxed/letterboxed viewport detection, 1px border tolerance,
+  boundary-touching quad rejection, and end-to-end `ARSession` tracking in pillarboxed streams.
 
 ## [2.10.1] - 2026-08-25
 
