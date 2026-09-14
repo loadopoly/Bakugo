@@ -8,7 +8,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ---
 
 ## [Unreleased]
- 
+
+## [2.13.0] - 2026-09-14
+
+### Added
+- **Binder-photo OCR/VLM ingestion tool (`ingest/`)**: A standalone offline batch CLI
+  (`python -m ingest.binder_ingest --root <folder> --out <dir>`) that turns a folder of
+  sequentially-photographed trading-card binder pages into per-card identity + price
+  records, implementing Adam's "OCR/VLM Ingestion -- Trading Card Binder Photo Set" work
+  instruction (v2.0, 2026-09-14) end to end: sorts `PXL_YYYYMMDD_xxxxxxxxx`-style filenames
+  by numeric tail, pairs consecutive front/back page photos, segments each into a configured
+  pocket grid (default 3x3), and maps a front pocket to its physically-mirrored back pocket
+  via `back_column = (cols + 1) - front_column` (the page flips about its left/spine edge, so
+  columns reverse and rows don't). `ingest/binder_grid.py` finds the PAGE's own outer quad and
+  rectifies just that rather than trying to detect each pocket's own edges: tested against
+  real binder photos, a card-vs-background quad finder run on a whole page reliably finds the
+  page's outer edge, not the nine inner ones, because adjacent pockets share a faint plastic
+  seam rather than a contrast boundary. Deliberately does not import `cardcenter`'s own
+  card-quad detector (tuned for a single card against background, not a 3x3 sheet of them) or
+  its OCR preprocessing (tuned for digit-only collector numbers, not label text) -- it is
+  self-contained by design, per its own module docstring, and has no runtime dependency on
+  `cardcenter` at all.
+- **`ingest/binder_sticker.py`**: Rotation-searching OCR (0/90/180/270 per crop, scored by
+  regex-plausibility) over a rectified pocket, plus HSV-hue card-back franchise classification
+  for the Work Instruction's mixed-franchise-page check. Rectifying near the source photo's own
+  resolution (`rectify_page`'s `target_px_per_source_px`) rather than to a fixed canvas fixed a
+  total OCR failure found during development: a downscale-then-crop chain lost enough real
+  pixels from a sticker's small print that Tesseract read pure noise, while the identical crop
+  re-rectified near-native resolution read cleanly. `price_usd` is set only from a literal
+  `$X.XX` regex match on the winning OCR text and is never inferred, defaulted, or carried over
+  from a neighbouring pocket -- the same report-ambiguity-rather-than-guess posture already
+  used by `cardcenter/ocr.py` and `cardcenter/catalog.py`.
+- Every exception path in the Work Instruction (S8) is a distinct status rather than a dropped
+  record: `no_card_detected`, `pending_price` (unpaired trailing front page),
+  `price_needs_review`, `pocket_mismatch` (one side of a mirrored pair looks occupied, the
+  other empty), `grid_mismatch` (front/back rectified aspect ratios disagree by more than 15%,
+  the closest available proxy for "these two photos are not really the same physical page"),
+  and `franchise_mismatch` (a back design's classified hue confidently disagrees with its
+  containing folder). Verified end to end against a real page-pair set: the front-to-back
+  column mirroring is confirmed correct on real photos, and the `grid_mismatch` guard correctly
+  refused a synthetic, non-corresponding front/back pairing built specifically to test it
+  rather than silently processing it.
+
+### Known limits
+Requires `pip install pytesseract` plus the Tesseract OCR binary on PATH; neither was present
+on the plain Windows dev checkout this was built on (page/grid detection has no OCR dependency
+and works without them, but identity and sticker text do not). Price-digit OCR (`$X.XX`) did
+not successfully extract on any tested real sticker as of this build, so expect
+`price_needs_review` more often than ideal until this is revisited with more real stickers to
+tune against. `read_front_identity`'s raw OCR of card-front text came back mostly noise in the
+one full-pipeline run tested (9 of 9 occupied pockets) -- treat `card_identity_ocr` as a hint
+for a human, not usable text on its own, in this build. `classify_back_franchise`'s Yugioh
+reference hue is not calibrated against a real sample (none was available in the source photo
+set) and is explicitly flagged in-code as less trustworthy than the Pokemon reference, which
+was measured from real photos; a real test run produced one plausible false-positive
+`franchise_mismatch` at a confidence just over the reporting threshold, consistent with that
+caveat. Grid dimensions are configured (`--rows`/`--cols`, default 3x3), not auto-detected per
+page -- two different auto-detection approaches (edge-projection seam profiling, per-pocket
+quad detection) were tried and failed on real photos; see `binder_grid.py`'s module docstring
+for the specific measured failure modes. Per Adam's own closing note on the Work Instruction,
+every price/identity/group value this tool emits is meant to be spot-checked by a human before
+being treated as authoritative.
+
 ## [2.12.0] - 2026-09-14
 
 ### Added
