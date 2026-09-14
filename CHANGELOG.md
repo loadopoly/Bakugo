@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
  
+## [2.12.0] - 2026-09-14
+
+### Added
+- **Interstitial-margin confidence gate (`cardcenter/confidence.py`)**: An auto-accept /
+  review / reject gate for the grade decision, keyed to the shot-noise information floor
+  already computed in `information.py` rather than a raw score margin. It reads
+  `cramer_rao_ratio_pp` (the Cramér-Rao lower bound on the centering ratio) and
+  `shot_noise_consistency`, and fires "accept" only when the measurement sits `k_sigma`
+  (default 3) CR-sigmas clear of the boundary on a photon-limited frame. `max_shot_ratio`
+  is taken directly from `information.py`'s own shot-noise-limited band; multi-frame fusion
+  enters only through the effective independent-row count, never by multiplying Fisher
+  information. `gate_from_channel(...)` plugs into the per-frame `ChannelConditions` /
+  `SensorModel` the AR loop already produces.
+- **Standalone recognition evaluator (`eval/recognition_eval.py`)**: An offline harness that
+  imports `cardcenter` read-only and measures the recognition path — Tesseract OCR + species
+  snap + collector-number read — against a labeled set. Reports the accept/abstain curve
+  ("auto-accepts N% at M% accuracy"), the QUIPU-prior contribution (enabled vs disabled
+  delta), and every metric sliced by capture resolution (px/mm) to expose the AR distance
+  dependence. Confirms the current path is OCR-only (no VLM, by design) and is built to
+  measure a VLM/embedding recognizer against the Tesseract baseline if one is added.
+
 ## [2.11.0] - 2026-09-08
 
 ### Added
