@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.13.1] - 2026-09-15
+
+### Fixed
+- **Live AR never ran recognition**: the capture button posted only to `/measure`, and the
+  `/ar/push` stream is downscaled to 540 px, where collector-number glyphs are ~4-5 px
+  (below the 12 px `MIN_PX_TO_READ` floor). The full-resolution still is now also posted to
+  `/identify` in parallel and the result is shown under the measurement, including when
+  `/measure` refuses the frame. Camera request raised to 1920x1080 ideal; the tracking
+  stream stays at 540 px.
+
 ## [2.13.0] - 2026-09-14
 
 ### Added

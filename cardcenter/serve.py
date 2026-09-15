@@ -567,7 +567,7 @@ async function startARStream() {
   try {
     synth.init();
     videoStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+      video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
       audio: false
     });
     arVideo.srcObject = videoStream;
@@ -884,6 +884,16 @@ function sendStillPhoto(fileOrBlob) {
   fd.append('lens', $('#lens').value);
   fd.append('image', fileOrBlob, 'shot.jpg');
 
+  // Identify runs on the same full-resolution still, in parallel. It has its
+  // own OCR legibility gate, so a frame /measure refuses can still be named.
+  const idFd = new FormData();
+  idFd.append('image', fileOrBlob, 'shot.jpg');
+  const idReq = fetch(backendUrl + '/identify', {
+    method: 'POST',
+    headers: { 'X-Device-ID': deviceId },
+    body: idFd
+  }).then(r => r.json()).catch(e => ({ ok: false, error: String(e) }));
+
   fetch(backendUrl + '/measure', {
     method: 'POST',
     headers: { 'X-Device-ID': deviceId },
@@ -894,6 +904,8 @@ function sendStillPhoto(fileOrBlob) {
   .catch(e => {
     $('#out').innerHTML = `<div class="empty-card" style="border-color:var(--stop)"><b style="color:var(--stop)">Connection Error</b><div>${esc(String(e))}</div></div>`;
   })
+  .then(() => idReq)
+  .then(renderIdentify)
   .finally(() => {
     $('#btn-action').disabled = false;
     $('#btn-action').textContent = currentMode === 'ar' ? '⚡ Freeze AR Frame' : '📸 Measure Photo';
@@ -940,6 +952,29 @@ function renderResults(d) {
   </table>
   ${d.overlay ? `<img class="ov" alt="Card Metrology" src="data:image/jpeg;base64,${d.overlay}">` : ''}`;
   window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+}
+
+function renderIdentify(d) {
+  const box = document.createElement('div');
+  box.className = 'id-result';
+  let html = '<div class="sect-title">Card Identity (OCR)</div>';
+  if (!d || !d.ok) {
+    html += `<div class="sub-meta" style="color:var(--stop)">Identify failed: ${esc(d && d.error || 'no response')}</div>`;
+  } else if (d.identified) {
+    html += `<table class="mm-table">
+      <tr><td>Name</td><td><b>${esc(d.name)}</b>${d.dex != null ? ' &middot; #' + esc(d.dex) : ''}</td></tr>
+      <tr><td>OCR token</td><td>${esc(d.matched_token || '')} (${esc(d.edits)} edits)</td></tr>
+      <tr><td>Corroborated</td><td>${d.corroborated ? 'yes' : 'no'}</td></tr>
+      <tr><td>Engine</td><td>${esc(d.engine)}</td></tr></table>`;
+  } else {
+    const alts = (d.alternatives || []).slice(0, 5).map(esc).join(', ');
+    html += `<div class="sub-meta">Not identified (engine: ${esc(d.engine)}, ${esc(d.tokens_considered)} tokens)${alts ? ' &middot; candidates: ' + alts : ''}</div>`;
+  }
+  if (d && d.warnings && d.warnings.length) {
+    html += d.warnings.map(w => `<div class="sub-meta" style="color:var(--warn, #e0b341)">&#9888; ${esc(w)}</div>`).join('');
+  }
+  box.innerHTML = html;
+  $('#out').appendChild(box);
 }
 
 function esc(s) { return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
