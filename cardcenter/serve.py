@@ -257,7 +257,9 @@ header.app-bar{padding:calc(10px + env(safe-area-inset-top)) 16px 10px;
 /* AR Viewport */
 #ar-container{position:relative;width:calc(100% - 32px);margin:8px 16px;height:55vh;min-height:360px;border-radius:var(--radius-lg);overflow:hidden;background:#05070A;border:1px solid var(--rule);box-shadow:0 8px 30px rgba(0,0,0,0.5)}
 #ar-video{width:100%;height:100%;object-fit:cover;display:block}
-#ar-canvas{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none}
+#ar-canvas{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;pointer-events:none}
+#ar-debug{position:absolute;right:10px;bottom:56px;width:30%;max-width:180px;border:1px solid #FF5A5A;border-radius:6px;background:#000;z-index:5}
+#ar-debug.hidden{display:none}
 .ar-hud-overlay{position:absolute;top:10px;left:10px;right:10px;display:flex;justify-content:space-between;align-items:center;pointer-events:none}
 .hud-chip{background:rgba(11,15,21,0.85);backdrop-filter:blur(10px);border:1px solid var(--key);padding:4px 10px;border-radius:20px;font-size:11px;font-family:ui-monospace,"SF Mono",monospace;color:#FFF;display:flex;align-items:center;gap:6px}
 .hud-chip .radar{width:7px;height:7px;border-radius:50%;background:var(--key);animation:p 1s infinite alternate}
@@ -375,6 +377,7 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
   <div id="ar-container">
     <video id="ar-video" playsinline muted autoplay></video>
     <canvas id="ar-canvas"></canvas>
+    <canvas id="ar-debug" title="Detector view (540px frame sent to server). Tap to hide."></canvas>
     <div class="ar-hud-overlay">
       <div class="hud-chip"><span class="radar"></span><span id="hud-status">SEARCHING</span></div>
       <div class="hud-verdict" id="hud-verdict">SPRT IDLE</div>
@@ -561,6 +564,33 @@ let lastHUDData = null, currentQuad = null, targetQuad = null;
 
 const arVideo = $('#ar-video'), arCanvas = $('#ar-canvas'), ctx = arCanvas.getContext('2d');
 const offscreenCanvas = document.createElement('canvas'), offCtx = offscreenCanvas.getContext('2d');
+// Debug inset: the exact frame the server analysed, with the raw quad it
+// returned in that frame's own pixel coordinates. If the red box is right here
+// but the teal overlay is wrong, the fault is display mapping; if the red box
+// is also wrong, the fault is the detector.
+const arDebug = $('#ar-debug'), dbgCtx = arDebug.getContext('2d');
+arDebug.style.pointerEvents = 'auto';
+arDebug.onclick = () => arDebug.classList.add('hidden');
+function drawDebugInset(d) {
+  if (arDebug.classList.contains('hidden')) return;
+  arDebug.width = offscreenCanvas.width;
+  arDebug.height = offscreenCanvas.height;
+  dbgCtx.drawImage(offscreenCanvas, 0, 0);
+  if (d && d.quad && d.quad.length === 4) {
+    dbgCtx.strokeStyle = '#FF3B3B';
+    dbgCtx.lineWidth = 3;
+    dbgCtx.beginPath();
+    dbgCtx.moveTo(d.quad[0][0], d.quad[0][1]);
+    for (let i = 1; i < 4; i++) dbgCtx.lineTo(d.quad[i][0], d.quad[i][1]);
+    dbgCtx.closePath();
+    dbgCtx.stroke();
+  }
+  dbgCtx.fillStyle = 'rgba(0,0,0,0.6)';
+  dbgCtx.fillRect(0, 0, arDebug.width, 22);
+  dbgCtx.fillStyle = '#fff';
+  dbgCtx.font = '14px monospace';
+  dbgCtx.fillText(`${offscreenCanvas.width}x${offscreenCanvas.height} ${d && d.tracking ? 'TRACK' : 'none'}`, 6, 16);
+}
 
 async function startARStream() {
   if (videoStream) return;
@@ -618,6 +648,7 @@ async function arTick() {
       body: fd
     });
     const d = await res.json();
+    drawDebugInset(d);
     drawARHUD(d);
   } catch(e) {
     // Gracefully handle frame drops

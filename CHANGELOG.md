@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.13.2] - 2026-09-15
+
+### Fixed
+- **Live AR box drawn in the wrong place**: `#ar-video` uses `object-fit: cover` (cropped to
+  fill the portrait viewport) but `#ar-canvas` was stretched to 100%x100%, so quad corners
+  were squashed toward the centre on one axis relative to the video under them. The canvas
+  now uses the same `object-fit: cover`, so both crop identically.
+
+### Added
+- **Detector debug inset** in Live AR: shows the 540 px frame actually sent to `/ar/push`
+  with the raw returned quad in red. Separates detector errors from display-mapping errors.
+  Tap to hide.
+
 ## [2.13.1] - 2026-09-15
 
 ### Fixed
