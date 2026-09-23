@@ -312,22 +312,19 @@ class FranchiseGuess:
     note: str
 
 
-# Reference hue centres (OpenCV H in 0..180) for card-BACK artwork, sampled
-# away from sticker/glare pixels. POKEMON_HUE is measured directly from this
-# session's real sample photos (2026-09-14): the blue swirl back is a tight
-# cluster around hue ~105-115. YUGIOH_HUE is NOT measured from a real sample
-# -- no Yugioh card-back photo was in the sample set, only Yugioh FRONTS
-# (Dimensional Barrier, Krawler Axon, Sky Striker Airspace) -- it is the
-# well-known brown/tan-with-maroon-swirl Yu-Gi-Oh back, encoded from general
-# knowledge of the card, not calibrated. Treat a "yugioh" guess from this
-# function as materially less trustworthy than a "pokemon" one until it can
-# be checked against real photos.
+# Reference hues are no longer constants here: cardcenter.hue_reference
+# resolves them from the released `back_hue` artifact or BAKUGO_HUE_REFERENCES
+# (both learned from confirmed backs) and falls back to the values below,
+# which are kept for reference and marked uncalibrated where they were never
+# measured. POKEMON 108 was measured on the 2026-09-14 session; YUGIOH 12 was
+# not (no Yu-Gi-Oh back was in that sample).
 _POKEMON_HUE = 108.0
 _YUGIOH_HUE = 12.0
 _HUE_TOLERANCE = 18.0
 
 
-def classify_back_franchise(card_back_bgr: np.ndarray) -> FranchiseGuess:
+def classify_back_franchise(card_back_bgr: np.ndarray, registry=None,
+                            profile=None) -> FranchiseGuess:
     """Best-effort back-design franchise check for Work Instruction v2.0 S7.
 
     This is a soft, abstaining signal, never a source of truth: the group a
@@ -336,39 +333,19 @@ def classify_back_franchise(card_back_bgr: np.ndarray) -> FranchiseGuess:
     franchise cues read by a human/VLM elsewhere in the pipeline. This
     function only answers "does the BACK design look like a confident
     mismatch", which is what franchise_mismatch (S7/S8) needs -- it returns
-    guess=None (abstain) far more often than it commits, on purpose, per the
-    same reporting-ambiguity-rather-than-guessing approach cardcenter.ocr
-    and cardcenter.catalog already use elsewhere in this codebase.
+    guess=None (abstain) whenever the hue is not clearly nearer one
+    reference, per the same reporting-ambiguity-rather-than-guessing approach
+    cardcenter.ocr and cardcenter.catalog use.
+
+    ``registry``: a ``cardcenter.hue_reference.HueRegistry`` (default: the
+    resolved one). ``profile``: a ``LabelProfile`` describing this capture
+    set's price labels (default: white labels plus the orange price-gun bar
+    of the original binder set, excluded only while it is label-sized).
     """
-    if card_back_bgr.size == 0:
+    from cardcenter.hue_reference import LabelProfile, classify_back, measure_back_hue
+
+    if card_back_bgr is None or card_back_bgr.size == 0:
         return FranchiseGuess(None, 0.0, "empty crop")
-    hsv = cv2.cvtColor(card_back_bgr, cv2.COLOR_BGR2HSV)
-    h_, s_, v_ = cv2.split(hsv)
-    # Exclude sticker pixels (low saturation/white, or the orange price bar)
-    # and very dark/glare-blown pixels so the remaining hue is dominated by
-    # the actual card-back print rather than what's stuck on top of it.
-    sticker_like = ((s_ < 60) & (v_ > 150)) | ((h_ < 25) & (s_ > 80) & (v_ > 80))
-    valid = (~sticker_like) & (v_ > 25) & (v_ < 250) & (s_ > 25)
-    if valid.mean() < 0.15:
-        return FranchiseGuess(None, 0.0, "too little non-sticker, non-glare area to classify")
-    hues = h_[valid].astype(np.float64)
-    # Circular mean, since hue wraps at 180 in OpenCV's convention.
-    ang = hues / 180.0 * 2 * np.pi
-    mean_ang = np.arctan2(np.sin(ang).mean(), np.cos(ang).mean())
-    mean_hue = (mean_ang / (2 * np.pi) * 180.0) % 180.0
-
-    def circ_dist(a, b):
-        d = abs(a - b) % 180.0
-        return min(d, 180.0 - d)
-
-    d_poke = circ_dist(mean_hue, _POKEMON_HUE)
-    d_yugi = circ_dist(mean_hue, _YUGIOH_HUE)
-    if d_poke <= _HUE_TOLERANCE and d_poke < d_yugi:
-        conf = max(0.0, 1.0 - d_poke / _HUE_TOLERANCE)
-        return FranchiseGuess("pokemon", conf, f"mean hue {mean_hue:.0f} near Pokemon reference")
-    if d_yugi <= _HUE_TOLERANCE and d_yugi < d_poke:
-        conf = max(0.0, 1.0 - d_yugi / _HUE_TOLERANCE) * 0.6  # discounted: uncalibrated reference
-        return FranchiseGuess(
-            "yugioh", conf, f"mean hue {mean_hue:.0f} near (uncalibrated) Yugioh reference"
-        )
-    return FranchiseGuess(None, 0.0, f"mean hue {mean_hue:.0f} matches neither reference")
+    meas = measure_back_hue(card_back_bgr, profile or LabelProfile())
+    result = classify_back(meas, registry)
+    return FranchiseGuess(result.guess, float(result.confidence), result.note)

@@ -13,11 +13,17 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import os
 import socket
 import sys
+import hashlib
+import secrets
+import threading
 import time
 import traceback
+from collections import OrderedDict
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 
@@ -26,12 +32,37 @@ import numpy as np
 
 from . import __version__
 from .ar import ARSession, ARStatus
-from .capture import assess_frame
+from .capture import MIN_PX_PER_MM, assess_frame
 from .centering import measure_centering
+from .framing import frame_card_for_measure
 from .grading import available_graders, grade_band, predict_overall_grade
 from .learning import maybe_load_grade_model
 from .render import annotate
 from .types import SLAB_PRESETS, SLAB_STACKS, CaptureSpec, DetectionError, resolve_holder
+
+
+def _finite(obj):
+    """The same structure with every non-finite float replaced by None.
+
+    json.dumps writes float('inf') and NaN as the bare tokens Infinity and
+    NaN. That is not JSON, and JSON.parse in the browser throws on it: one
+    unmeasurable side in a soft frame made every /ar/push answer "HTTP 200 not
+    JSON" and the live view showed PUSH FAILED while the server was working.
+    """
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _finite(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_finite(v) for v in obj]
+    if isinstance(obj, np.generic):
+        return _finite(obj.item())
+    return obj
+
+
+def _dumps(obj, **kw) -> str:
+    """Strict JSON for anything sent to a browser."""
+    return json.dumps(_finite(obj), allow_nan=False, **kw)
 
 # Typical horizontal fields of view for phone cameras.
 LENS_FOV = {
@@ -41,8 +72,84 @@ LENS_FOV = {
     "tele5x": 16.0,
 }
 
-# Multi-tenant in-memory AR sessions keyed by device_id
-_AR_SESSIONS: dict[str, ARSession] = {}
+
+
+# ---------------------------------------------------------------------------
+# Request limits and security settings. Every value can be overridden from the
+# environment; the defaults are what the public deployment runs with.
+# ---------------------------------------------------------------------------
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except ValueError:
+        return default
+
+
+def _flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+# Largest request body accepted, checked against Content-Length before reading.
+MAX_BODY_BYTES = _env_int("CARDCENTER_MAX_BODY_BYTES", 12 * 1024 * 1024)
+# Largest decoded image, checked from the file header before decoding.
+MAX_IMAGE_PIXELS = _env_int("CARDCENTER_MAX_IMAGE_PIXELS", 40_000_000)
+# Per-connection socket timeout, so a slow client cannot hold a thread forever.
+SOCKET_TIMEOUT_S = _env_int("CARDCENTER_SOCKET_TIMEOUT", 30)
+# Concurrent connections served; further connections wait, then are dropped.
+MAX_CONNECTIONS = _env_int("CARDCENTER_MAX_CONNECTIONS", 32)
+# Live AR sessions kept in memory (least recently used are evicted).
+MAX_AR_SESSIONS = _env_int("CARDCENTER_MAX_AR_SESSIONS", 256)
+
+# Browser origins allowed to call the API. Override with a comma-separated
+# CARDCENTER_CORS_ORIGINS. The two localhost entries are the Capacitor shell in
+# mobile/ (androidScheme https -> https://localhost; iOS -> capacitor://localhost).
+DEFAULT_CORS_ORIGINS = (
+    "https://bakugo.loadopoly.com",
+    "https://loadopoly.com",
+    "https://localhost",
+    "capacitor://localhost",
+)
+
+
+def cors_origins() -> frozenset:
+    raw = os.environ.get("CARDCENTER_CORS_ORIGINS")
+    if raw is None:
+        return frozenset(DEFAULT_CORS_ORIGINS)
+    return frozenset(o.strip().rstrip("/") for o in raw.split(",") if o.strip())
+
+
+# ---------------------------------------------------------------------------
+# Tenant identity. The server issues each device a random token (HttpOnly
+# cookie for the web page, Bearer token for cross-origin clients). The tenant
+# key stored with scans is a hash of that token, so a device_id seen in a
+# response or in the database cannot be replayed to read someone's data.
+# ---------------------------------------------------------------------------
+
+DEVICE_COOKIE = "bakugo_device"
+_TOKEN_PREFIX = "bk1_"
+_TOKEN_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+
+
+def new_device_token() -> str:
+    return _TOKEN_PREFIX + secrets.token_urlsafe(32)
+
+
+def _valid_token(tok: Optional[str]) -> bool:
+    if not tok or not tok.startswith(_TOKEN_PREFIX):
+        return False
+    rest = tok[len(_TOKEN_PREFIX):]
+    return 40 <= len(rest) <= 64 and all(c in _TOKEN_CHARS for c in rest)
+
+
+def device_id_for_token(token: str) -> str:
+    return "dev_" + hashlib.sha256(token.encode("ascii")).hexdigest()[:32]
+
+
+# Multi-tenant in-memory AR sessions keyed by device_id, bounded LRU.
+_AR_SESSIONS: "OrderedDict[str, ARSession]" = OrderedDict()
+_AR_LOCK = threading.Lock()
 
 
 def _get_or_create_ar_session(
@@ -52,11 +159,70 @@ def _get_or_create_ar_session(
     boundary: float = 55.0,
 ) -> ARSession:
     fov = LENS_FOV.get(lens, LENS_FOV["main"])
-    session = _AR_SESSIONS.get(device_id)
-    if session is None or session.holder != holder or abs(session.fov_deg - fov) > 1e-3:
-        session = ARSession(holder=holder, fov_deg=fov, boundary=boundary)
-        _AR_SESSIONS[device_id] = session
+    with _AR_LOCK:
+        session = _AR_SESSIONS.get(device_id)
+        if session is None or session.holder != holder or abs(session.fov_deg - fov) > 1e-3:
+            session = ARSession(holder=holder, fov_deg=fov, boundary=boundary)
+            _AR_SESSIONS[device_id] = session
+        _AR_SESSIONS.move_to_end(device_id)
+        while len(_AR_SESSIONS) > max(1, MAX_AR_SESSIONS):
+            _AR_SESSIONS.popitem(last=False)
     return session
+
+
+def _image_dims(buf: bytes) -> Optional[tuple]:
+    """Width and height from a JPEG, PNG or WebP header, without decoding pixels."""
+    if buf[:8] == b"\x89PNG\r\n\x1a\n" and len(buf) >= 24:
+        return int.from_bytes(buf[16:20], "big"), int.from_bytes(buf[20:24], "big")
+    if buf[:4] == b"RIFF" and buf[8:12] == b"WEBP" and len(buf) >= 30:
+        chunk = buf[12:16]
+        if chunk == b"VP8X":
+            return 1 + int.from_bytes(buf[24:27], "little"), 1 + int.from_bytes(buf[27:30], "little")
+        if chunk == b"VP8 ":
+            return (int.from_bytes(buf[26:28], "little") & 0x3FFF,
+                    int.from_bytes(buf[28:30], "little") & 0x3FFF)
+        if chunk == b"VP8L":
+            bits = int.from_bytes(buf[21:25], "little")
+            return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+        return None
+    if buf[:2] == b"\xff\xd8":
+        sof = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
+        i, n = 2, len(buf)
+        while i + 9 <= n:
+            if buf[i] != 0xFF:
+                i += 1
+                continue
+            marker = buf[i + 1]
+            if marker == 0xFF:
+                i += 1
+                continue
+            if marker in (0x01, 0xD8) or 0xD0 <= marker <= 0xD7:
+                i += 2
+                continue
+            seg = int.from_bytes(buf[i + 2:i + 4], "big")
+            if marker in sof:
+                return int.from_bytes(buf[i + 7:i + 9], "big"), int.from_bytes(buf[i + 5:i + 7], "big")
+            if seg < 2:
+                return None
+            i += 2 + seg
+    return None
+
+
+def decode_image(buf: bytes, what: str = "image") -> np.ndarray:
+    """Decode an uploaded image, refusing unknown formats and oversized images before decoding."""
+    dims = _image_dims(buf)
+    if dims is None:
+        raise DetectionError(f"that {what} is not a JPEG, PNG or WebP file")
+    w, h = dims
+    limit_mp = MAX_IMAGE_PIXELS // 1_000_000
+    if w <= 0 or h <= 0 or w * h > MAX_IMAGE_PIXELS:
+        raise DetectionError(f"that {what} is too large ({w}x{h}); the limit is {limit_mp} MP")
+    image = cv2.imdecode(np.frombuffer(buf, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        raise DetectionError(f"that {what} could not be decoded")
+    if image.shape[0] * image.shape[1] > MAX_IMAGE_PIXELS:
+        raise DetectionError(f"that {what} is too large; the limit is {limit_mp} MP")
+    return image
 
 
 def _parse_multipart(body: bytes, content_type: str) -> dict[str, bytes]:
@@ -84,21 +250,67 @@ def _parse_multipart(body: bytes, content_type: str) -> dict[str, bytes]:
     return out
 
 
-def _measure_payload(image_bytes: bytes, holder: str, lens: str) -> dict:
-    data = np.frombuffer(image_bytes, dtype=np.uint8)
-    image = cv2.imdecode(data, cv2.IMREAD_COLOR)
-    if image is None:
-        raise DetectionError("that file could not be read as an image")
+def _field_float(fields: dict, name: str) -> Optional[float]:
+    """A finite number from a form field, or None."""
+    raw = fields.get(name)
+    if not raw:
+        return None
+    try:
+        v = float(raw.decode("ascii", "replace").strip())
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return v if math.isfinite(v) else None
 
-    # Limit maximum dimension for speed without losing metrology accuracy
-    max_side = 2400
-    if max(image.shape[:2]) > max_side:
-        scale = max_side / max(image.shape[:2])
-        image = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
 
+def _parent_crop(fields: dict, image_bytes: bytes):
+    """(x, y, full_w, full_h) when the phone uploaded a crop of its photo.
+
+    The app crops a full-resolution still to the card it was tracking before
+    it uploads (a 12 MP photo over shop Wi-Fi, twice, was the slow part). The
+    lens still belongs to the whole photo, so the crop's place in it comes
+    along. Anything missing or inconsistent means "not a crop": the image is
+    then measured as the whole photo, exactly as before.
+    """
+    keys = ("crop_x", "crop_y", "full_w", "full_h")
+    if not all(fields.get(k) for k in keys):
+        return None
+    try:
+        x, y, fw, fh = (int(float(fields[k].decode("ascii", "replace"))) for k in keys)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    dims = _image_dims(image_bytes)
+    if dims is None:
+        return None
+    w, h = dims
+    if (x < 0 or y < 0 or fw <= 0 or fh <= 0 or x + w > fw + 2 or y + h > fh + 2
+            or fw * fh > 4 * MAX_IMAGE_PIXELS):
+        return None
+    return (x, y, fw, fh)
+
+
+def _measure_payload(image_bytes: bytes, holder: str, lens: str, parent=None) -> dict:
+    source = decode_image(image_bytes, "file")
+
+    # Spend the 2400 px budget on the card, not on the room around it: capping
+    # the whole frame first costs a card photographed across a counter half its
+    # resolution for nothing. framing crops to the card and carries the
+    # intrinsics and the located outline with it.
     fov = LENS_FOV.get(lens, LENS_FOV["main"])
-    capture = CaptureSpec.from_fov(fov, image.shape)
-    result = measure_centering(image, slab=resolve_holder(holder), capture=capture)
+    framed = frame_card_for_measure(source, fov_deg=fov, max_side=2400, parent=parent)
+    if framed.px_per_mm is not None and framed.px_per_mm < MIN_PX_PER_MM:
+        # Measured on synthetic captures: at 4.9 px/mm the ratio came back
+        # 0.08 pp from truth, at 4.0 px/mm it came back 25 pp out with an
+        # error bar that did not cover the miss. Refuse rather than report it.
+        raise DetectionError(
+            f"the card is only {framed.px_per_mm:.1f} px/mm in this photo "
+            f"(needs {MIN_PX_PER_MM:.1f}). Move closer, zoom in, or use the "
+            "telephoto lens -- from this distance the border measurement is "
+            "not trustworthy."
+        )
+    image = framed.image
+    capture = framed.capture
+    result = measure_centering(image, slab=resolve_holder(holder), capture=capture,
+                               card_quad=framed.quad, quad_residual_px=framed.residual_px)
 
     bands = {g: grade_band(result.worst_ratio, g, "front") for g in available_graders()}
     quality = assess_frame(image, result.corners_px, px_per_mm=result.px_per_mm)
@@ -190,7 +402,229 @@ def persist_measure(payload: dict, source: str = "serve", *, cloud: bool = True)
     return extra
 
 
-MANIFEST_JSON = json.dumps(
+def _insitu_store():
+    """The in-situ tables live in the same SQLite file as the scans."""
+    db = os.environ.get("CARDCENTER_DB", "cardcenter.db")
+    if not db:
+        return None
+    from .insitu import InSituStore
+
+    return InSituStore(db)
+
+
+def _json_body(body: bytes) -> dict:
+    try:
+        data = json.loads(body.decode("utf-8")) if body else {}
+    except (UnicodeDecodeError, ValueError):
+        raise DetectionError("request body must be JSON")
+    if not isinstance(data, dict):
+        raise DetectionError("request body must be a JSON object")
+    return data
+
+
+def _identify_payload(image_bytes: bytes, device_id: str, owner: bool) -> dict:
+    """OCR identification of one still, recorded for feedback and the second
+    vote. The outline comes from locate_card (find_card_quad plus the
+    information snap), and its information floor feeds the decision."""
+    from .confidence import IdentificationVote, gate_identification
+    from .edge_information import locate_card
+    from .geometry import rectify
+    from .recognise import recognise_card
+    from .types import STANDARD_CARD_W_MM
+
+    from .framing import card_region, locate_coarse_to_fine, min_area_frac_for
+
+    image = decode_image(image_bytes, "image")
+    # Across a counter the card is a small part of the photo, and a 1400 px
+    # working copy of the whole frame leaves it too small to find or read.
+    # Locate it coarse to fine first (the same search /measure uses), then do
+    # the identification inside a generous crop of the original pixels.
+    work, origin = image, (0, 0)
+    found = locate_coarse_to_fine(image)
+    if found is not None:
+        x0, y0, x1, y1 = card_region(image.shape, found[0])
+        if (x1 - x0) * (y1 - y0) < 0.5 * image.shape[0] * image.shape[1]:
+            work, origin = image[y0:y1, x0:x1], (x0, y0)
+    detect_long = 1400
+    s = min(1.0, detect_long / max(work.shape[:2]))
+    small = (
+        cv2.resize(work, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
+        if s < 1.0
+        else work
+    )
+    ih, iw = small.shape[:2]
+    quad, _, _, info, snapped = locate_card(small, prefer_point=(iw / 2.0, ih / 2.0),
+                                            min_area_frac=min_area_frac_for(work.shape))
+    quad_full = quad / s + np.array(origin, dtype=np.float64)
+    ppm = float(np.linalg.norm(quad_full[1] - quad_full[0])) / STANDARD_CARD_W_MM
+    rect, _ = rectify(image, quad_full, px_per_mm=min(ppm, 24.0))
+    rec = recognise_card(rect)
+    payload = {
+        "ok": True,
+        "identified": rec.resolved,
+        "name": rec.name,
+        "dex": rec.dex,
+        "matched_token": rec.matched_token,
+        "edits": rec.edits,
+        "alternatives": list(rec.alternatives),
+        "corroborated": rec.corroborated,
+        "orientation": rec.orientation,
+        "tokens_considered": rec.tokens_considered,
+        "engine": rec.engine,
+        "warnings": list(rec.warnings),
+        "quad": [[round(float(x), 1) for x in pt] for pt in quad_full],
+        "image_size": [int(image.shape[1]), int(image.shape[0])],
+        "px_per_mm": round(ppm, 3),
+        "outline_snapped": bool(snapped),
+        "resolved_by": "ocr" if rec.resolved else None,
+    }
+    from .embed import status as embed_status
+
+    est = embed_status()
+    if est.get("available"):
+        eh, ew = est["input_size"]
+        crop = cv2.resize(rect, (ew, eh), interpolation=cv2.INTER_AREA)
+        ok_png, png = cv2.imencode(".png", crop)
+        if ok_png:
+            payload["embed_crop"] = base64.b64encode(png.tobytes()).decode("ascii")
+    if info is not None:
+        payload["information"] = info.scaled(1.0 / s).to_dict()
+        payload["shot_ratio"] = round(float(info.shot_ratio), 3)
+        payload["resolvable"] = bool(info.resolvable)
+    store = _insitu_store()
+    if store is None:
+        payload["identification_id"] = None
+        return payload
+    with store:
+        if not rec.resolved and rec.alternatives:
+            tie = store.break_tie(device_id, rec.alternatives)
+            if tie is not None:
+                payload["name"], p = tie
+                payload["resolved_by"] = "device_prior"
+                payload["device_prior_probability"] = round(p, 3)
+                payload["warnings"].append(
+                    f"OCR could not choose between {', '.join(rec.alternatives)}; "
+                    f"this device's confirmed history favours {tie[0]}"
+                )
+        gated = gate_identification(
+            payload["name"], bool(rec.corroborated),
+            IdentificationVote(False, reason="waiting for the second vote"),
+            float(payload.get("shot_ratio", float("inf"))),
+            bool(payload.get("resolvable", False)),
+        )
+        payload["decision"] = gated.decision.value
+        payload["decision_reason"] = gated.reason
+        ident = store.record_identification(device_id, payload)
+    payload["identification_id"] = ident
+    if owner:
+        from .insitu import PENDING
+
+        PENDING.put(ident, bytes(image_bytes))
+    return payload
+
+
+def _vote_payload(data: dict, device_id: str) -> dict:
+    from .confidence import IdentificationVote, gate_identification
+
+    ident_id = str(data.get("identification_id") or "")
+    raw = data.get("vote") or {}
+    if not isinstance(raw, dict):
+        raise DetectionError("vote must be an object")
+    store = _insitu_store()
+    if store is None:
+        raise DetectionError("identification records are disabled on this server")
+    with store:
+        ident = store.get_identification(ident_id, device_id)
+        if ident is None:
+            raise DetectionError("unknown identification for this device")
+
+        def num(key, lo, hi, default=0.0):
+            try:
+                v = float(raw.get(key, default))
+            except (TypeError, ValueError):
+                return default
+            return min(max(v, lo), hi)
+
+        name = raw.get("name")
+        vote = IdentificationVote(
+            available=bool(raw.get("available")),
+            name=str(name)[:120] if name else None,
+            similarity=num("similarity", -1.0, 1.0),
+            margin=num("margin", -2.0, 2.0),
+            index_size=int(num("index_size", 0, 1e9)),
+            model_id=str(raw.get("model_id") or "")[:80],
+            reason=str(raw.get("reason") or "")[:200],
+        )
+        shot = ident.get("shot_ratio")
+        gated = gate_identification(
+            ident.get("name"), bool(ident.get("corroborated")), vote,
+            float(shot) if shot is not None else float("inf"),
+            bool(ident.get("resolvable")),
+        )
+        vote_record = {"available": vote.available, "name": vote.name,
+                       "similarity": vote.similarity, "margin": vote.margin,
+                       "index_size": vote.index_size, "model_id": vote.model_id}
+        store.record_decision(ident_id, device_id, gated.decision.value, gated.reason, vote_record)
+    return {"ok": True, "identification_id": ident_id, "decision": gated.decision.value,
+            "decision_reason": gated.reason, "vote": vote_record}
+
+
+def _feedback_payload(data: dict, device_id: str, owner: bool) -> dict:
+    from .insitu import PENDING, FeedbackError, write_inbox
+    from .pricing import PriceAttribution, PriceError, parse_price_text
+
+    store = _insitu_store()
+    if store is None:
+        raise DetectionError("feedback is disabled on this server")
+    ident_id = data.get("identification_id")
+    price_spec = data.get("price")
+    try:
+        with store:
+            fb = store.add_feedback(
+                device_id, str(data.get("action") or ""),
+                identification_id=str(ident_id) if ident_id else None,
+                scan_id=data.get("scan_id") if isinstance(data.get("scan_id"), int) else None,
+                name=data.get("name"), number=data.get("number"),
+                franchise=data.get("franchise"), note=data.get("note"), owner=owner,
+            )
+            price_out = None
+            if price_spec:
+                if not isinstance(price_spec, dict):
+                    raise FeedbackError("price must be an object")
+                spec = {k: v for k, v in price_spec.items()
+                        if k in ("amount", "currency", "source", "scope", "scope_key", "kind",
+                                 "quantity", "venue", "text")}
+                text = spec.pop("text", None)
+                if text is not None:
+                    parsed = parse_price_text(str(text)[:80])
+                    if parsed is None:
+                        raise FeedbackError(f"no price found in {text!r}")
+                    spec.setdefault("raw_text", str(text)[:80])
+                    for k, v in parsed.items():
+                        spec.setdefault(k, v)
+                spec.setdefault("method", "entered")
+                att = PriceAttribution.from_dict(spec)
+                store.add_price(device_id, att, identification_id=fb["identification"]["id"]
+                                if fb["identification"] else None)
+                price_out = att.to_dict()
+    except (FeedbackError, PriceError, TypeError) as exc:
+        raise DetectionError(str(exc))
+    out = {"ok": True, "feedback_id": fb["feedback_id"], "learned": fb["learned"],
+           "name": fb["name"], "number": fb["number"], "price": price_out, "inbox": False}
+    ident = fb["identification"]
+    if owner and ident is not None and data.get("action") in ("confirm", "correct"):
+        photo = PENDING.pop(ident["id"])
+        if photo is not None:
+            label = {"name": fb["name"], "number": fb["number"],
+                     "franchise": fb["franchise"], "action": data.get("action")}
+            try:
+                out["inbox"] = write_inbox(ident, label, price_out, photo, device_id) is not None
+            except OSError as exc:
+                out["inbox_error"] = str(exc)
+    return out
+
+
+MANIFEST_JSON = _dumps(
     {
         "name": "Bakugo AR Metrology",
         "short_name": "Bakugo",
@@ -323,6 +757,13 @@ img.ov{width:calc(100% - 32px);max-height:44vh;object-fit:contain;margin:12px 16
 .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.7);backdrop-filter:blur(8px);z-index:100;display:flex;align-items:flex-end;justify-content:center}
 .modal-sheet{background:var(--surface);border-top:1px solid var(--rule);border-radius:var(--radius-lg) var(--radius-lg) 0 0;width:100%;max-width:500px;padding:20px 20px calc(24px + env(safe-area-inset-bottom));box-shadow:0 -10px 40px rgba(0,0,0,0.6)}
 .modal-title{font-size:16px;font-weight:700;color:#FFF;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center}
+#zoom-bar{display:flex;align-items:center;gap:10px;padding:8px 16px 0}
+#zoom-bar input[type=range]{flex:1;accent-color:var(--key)}
+#zoom-bar .zoom-read{font-family:ui-monospace,"SF Mono",monospace;font-size:12px;color:var(--key);min-width:74px;text-align:right}
+#zoom-bar button{border:1px solid var(--rule);background:var(--rise);color:var(--paper);border-radius:var(--radius-sm);padding:4px 8px;font-size:12px;cursor:pointer}
+.fb-row{display:flex;flex-wrap:wrap;gap:6px;padding:8px 16px 12px}
+.fb-row input,.fb-row select{flex:1 1 90px;min-width:0;background:var(--rise);border:1px solid var(--rule);border-radius:var(--radius-sm);padding:7px 8px;color:#FFF;font-size:12px}
+.fb-row button{border:1px solid var(--rule);background:var(--rise);color:var(--paper);border-radius:var(--radius-sm);padding:7px 10px;font-size:12px;cursor:pointer}
 .form-row{margin-bottom:14px}
 .form-row label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);margin-bottom:6px;font-weight:600}
 .form-row input{width:100%;background:var(--rise);border:1px solid var(--rule);border-radius:var(--radius-sm);padding:10px 12px;color:#FFF;font-size:13px;font-family:ui-monospace,"SF Mono",monospace;outline:none}
@@ -385,6 +826,14 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
     <div id="hud-guidance" class="hud-banner">Align card inside viewfinder template</div>
     <div id="hud-spirit-level" class="hud-spirit"><span class="spirit-bubble"></span><span id="spirit-deg">0° LEVEL</span></div>
   </div>
+  <!-- Reach: real zoom where the camera supports it, capture-crop where it
+       does not, plus a camera picker so a telephoto module can be chosen. -->
+  <div id="zoom-bar">
+    <button type="button" id="zoom-out" title="Zoom out">&minus;</button>
+    <input type="range" id="zoom" min="1" max="8" step="0.1" value="1" aria-label="Zoom">
+    <button type="button" id="zoom-in" title="Zoom in">+</button>
+    <span class="zoom-read" id="zoom-read">1.0&times;</span>
+  </div>
 </div>
 
 <!-- Output Section -->
@@ -421,6 +870,14 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
       <label>Tenant Device ID</label>
       <input type="text" id="setting-device-id" readonly>
     </div>
+    <div class="form-row">
+      <label>Camera (a telephoto module reaches further than any crop)</label>
+      <select id="setting-camera"><option value="">Default rear camera</option></select>
+    </div>
+    <div class="form-row">
+      <label>Owner Token (your devices only: saves confirmed photos to the private inbox)</label>
+      <input type="password" id="setting-owner-token" autocomplete="off">
+    </div>
     <button type="button" class="btn-save" id="setting-save">Save & Ping Container</button>
   </div>
 </div>
@@ -429,10 +886,37 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
 const $=s=>document.querySelector(s);
 let currentMode = 'ar';
 let backendUrl = localStorage.getItem('bakugo_backend_url') || window.location.origin;
-let deviceId = localStorage.getItem('bakugo_device_id');
-if (!deviceId) {
-  deviceId = 'dev_' + (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 12));
-  localStorage.setItem('bakugo_device_id', deviceId);
+// Tenant identity is issued by the server as an HttpOnly cookie. A Bearer token
+// is stored only when the backend is on another origin (the mobile shell),
+// where that cookie is not sent.
+try { localStorage.removeItem('bakugo_device_id'); } catch (e) {}
+let deviceId = '';
+function isCrossOrigin() {
+  try { return new URL(backendUrl, window.location.href).origin !== window.location.origin; }
+  catch (e) { return false; }
+}
+function tokenKey() { return 'bakugo_device_token:' + backendUrl; }
+function api(path, opts) {
+  opts = Object.assign({ credentials: 'include' }, opts || {});
+  const headers = Object.assign({}, opts.headers || {});
+  if (isCrossOrigin()) {
+    try {
+      const tok = localStorage.getItem(tokenKey());
+      if (tok) headers['Authorization'] = 'Bearer ' + tok;
+    } catch (e) {}
+  }
+  try {
+    const owner = localStorage.getItem('bakugo_owner_token');
+    if (owner) headers['X-Bakugo-Owner'] = owner;
+  } catch (e) {}
+  opts.headers = headers;
+  return fetch(backendUrl + path, opts).then(r => {
+    const issued = r.headers.get('X-Device-Token');
+    if (issued && isCrossOrigin()) {
+      try { localStorage.setItem(tokenKey(), issued); } catch (e) {}
+    }
+    return r;
+  });
 }
 
 // Web Audio API Synthesizer (Sci-Fi Audio Cues)
@@ -504,9 +988,10 @@ function haptic(t) {
 
 // Fetch holders & server config
 function refreshConfig() {
-  fetch(backendUrl + '/config', { headers: { 'X-Device-ID': deviceId } })
+  api('/config')
     .then(r => r.json())
     .then(d => {
+      if (d.device_id) deviceId = d.device_id;
       if (d.holders) {
         $('#holder').innerHTML = d.holders.map(h =>
           `<option value="${h.id}"${h.id==='raw'?' selected':''}>${h.label}</option>`).join('');
@@ -559,7 +1044,34 @@ setupGyroscope();
 
 // Live AR Loop & WebRTC Camera Stream
 let videoStream = null, arInterval = null, arAnimFrame = null, isPushing = false;
+// The loop's own health. A silent catch here is why "SEARCHING" could mean
+// anything; every failure now lands in arStats and on screen.
+let arWatchdog = null, pushCrop = null, pushStartedAt = 0;
+// Reach: optical zoom when the track exposes it, otherwise a capture crop
+// (which is not extra detail, but does spend the 540 px budget on the card).
+let videoTrack = null, zoomCaps = null, zoomLevel = 1, zoomIsOptical = false;
+let cameraId = null;
+try { cameraId = localStorage.getItem('bakugo_camera_id') || null; } catch (e) {}
+const arStats = { pushes: 0, ok: 0, fail: 0, status: 0, ms: 0, bytes: 0, error: '', video: '',
+                  lastOkAt: 0, timeouts: 0, stale: 0, still: '', msAvg: 0, focus: '', aim: '' };
+// One request that never settles used to end the session: isPushing stayed
+// true, the interval kept returning early, and the HUD and inset froze on the
+// last good frame while the camera carried on. Bound the wait, and reset the
+// flag if a request outlives even that.
+const PUSH_TIMEOUT_MS = 4000;
+const PUSH_STUCK_MS = 8000;
+const OVERLAY_STALE_MS = 800;
+// On shop signal a push can take a second or more end to end; a fixed 800 ms
+// limit then drops the box between every pair of answers and it flickers.
+// "Stale" is measured against how long answers are actually taking here.
+function overlayStaleMs() {
+  const typical = arStats.msAvg || 0;
+  return Math.min(PUSH_TIMEOUT_MS, Math.max(OVERLAY_STALE_MS, 2.5 * typical));
+}
 let lastSettled = false, lastLocked = false, autoCaptured = false, autoCaptureTimer = null;
+// Declared here, before anything can start the camera: a still upload in
+// flight, and the screen wake lock held while the camera is up.
+let stillBusy = false, wakeLock = null;
 let lastHUDData = null, currentQuad = null, targetQuad = null;
 
 const arVideo = $('#ar-video'), arCanvas = $('#ar-canvas'), ctx = arCanvas.getContext('2d');
@@ -571,11 +1083,197 @@ const offscreenCanvas = document.createElement('canvas'), offCtx = offscreenCanv
 const arDebug = $('#ar-debug'), dbgCtx = arDebug.getContext('2d');
 arDebug.style.pointerEvents = 'auto';
 arDebug.onclick = () => arDebug.classList.add('hidden');
+// WHAT THE USER FRAMES IS WHAT THE DETECTOR GETS.
+//
+// #ar-video is object-fit: cover, so a landscape 1920x1080 stream in a
+// portrait viewport shows less than half its width -- but the whole frame was
+// being sent. The card the user lined up inside the guides arrived roughly
+// half its apparent size, surrounded by scene they could not see. coverCrop()
+// is the visible rectangle in video pixels; arTick sends exactly that, and
+// drawARHUD maps the returned quad back through it.
+// A 2.16.0 server wrote float('inf') as the bare token Infinity (one side of
+// a soft frame had no finite information floor), JSON.parse threw on every
+// answer, and the live view said PUSH FAILED while the server was tracking.
+// The server now sends strict JSON; this keeps an older one usable.
+// Returns undefined when the text is not JSON at all.
+function parseReply(text) {
+  try { return JSON.parse(text); } catch (e) { /* fall through */ }
+  let t = text;
+  for (const bad of ['-Infinity', 'Infinity', 'NaN']) {
+    for (const lead of [': ', ', ', '[']) t = t.split(lead + bad).join(lead + 'null');
+  }
+  try { return JSON.parse(t); } catch (e) { return undefined; }
+}
+
+// Focus. Close-up, a phone left to itself hunts or settles behind the card;
+// ask for continuous autofocus where the track offers it, and let a tap on
+// the preview say where to focus.
+function focusCaps() {
+  try { return (videoTrack && videoTrack.getCapabilities && videoTrack.getCapabilities()) || {}; }
+  catch (e) { return {}; }
+}
+async function startContinuousFocus() {
+  const modes = focusCaps().focusMode || [];
+  if (modes.indexOf('continuous') >= 0) {
+    try { await videoTrack.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch (e) {}
+  }
+}
+async function focusAt(clientX, clientY) {
+  if (!videoTrack) return false;
+  const caps = focusCaps();
+  const modes = caps.focusMode || [];
+  if (!('pointsOfInterest' in caps) && modes.indexOf('single-shot') < 0) return false;
+  const vw = arVideo.videoWidth, vh = arVideo.videoHeight;
+  const box = arVideo.getBoundingClientRect();
+  if (!vw || !vh || !box.width || !box.height) return false;
+  // the preview is object-fit: cover -- map the tap into video coordinates
+  const s = Math.max(box.width / vw, box.height / vh);
+  const w = box.width / s, h = box.height / s;
+  const x = ((vw - w) / 2 + (clientX - box.left) / s) / vw;
+  const y = ((vh - h) / 2 + (clientY - box.top) / s) / vh;
+  const c = { pointsOfInterest: [{ x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) }] };
+  if (modes.indexOf('single-shot') >= 0) c.focusMode = 'single-shot';
+  else if (modes.indexOf('continuous') >= 0) c.focusMode = 'continuous';
+  try {
+    await videoTrack.applyConstraints({ advanced: [c] });
+    arStats.focus = 'tap ' + x.toFixed(2) + ',' + y.toFixed(2);
+    // a single-shot lock is right for this card; go back to continuous a
+    // little later so the next card is not stuck at this distance
+    if (c.focusMode === 'single-shot') setTimeout(startContinuousFocus, 4000);
+    return true;
+  } catch (e) {
+    arStats.focus = 'tap refused: ' + ((e && e.name) || e);
+    return false;
+  }
+}
+// Tap a card to pick it. A shop counter has several cards and the one under
+// the reticle is not always the one you want; the tap goes to the server with
+// the next frame (as a point in that frame) and the session starts over on
+// the card there. The same tap sets the focus point.
+let pendingAim = null;
+function videoPointAt(clientX, clientY) {
+  const vw = arVideo.videoWidth, vh = arVideo.videoHeight;
+  const box = arVideo.getBoundingClientRect();
+  if (!vw || !vh || !box.width || !box.height) return null;
+  const s = Math.max(box.width / vw, box.height / vh);
+  const w = box.width / s, h = box.height / s;
+  return { x: (vw - w) / 2 + (clientX - box.left) / s, y: (vh - h) / 2 + (clientY - box.top) / s };
+}
+function selectCardAt(clientX, clientY) {
+  const p = videoPointAt(clientX, clientY);
+  const c = pushCrop || coverCrop();
+  if (!p || !c) return false;
+  const ax = (p.x - c.x) / c.w, ay = (p.y - c.y) / c.h;
+  if (ax < 0 || ax > 1 || ay < 0 || ay > 1) return false;
+  pendingAim = { x: ax, y: ay };
+  targetQuad = null;
+  currentQuad = null;
+  lastLocked = false;
+  arStats.aim = ax.toFixed(2) + ',' + ay.toFixed(2);
+  const chip = $('#hud-status');
+  if (chip) chip.textContent = 'PICKING CARD';
+  return true;
+}
+arVideo.addEventListener('click', (ev) => {
+  haptic('tap');
+  selectCardAt(ev.clientX, ev.clientY);
+  focusAt(ev.clientX, ev.clientY);
+});
+
+function coverCrop() {
+  const vw = arVideo.videoWidth, vh = arVideo.videoHeight;
+  if (!vw || !vh) return null;
+  const bw = arVideo.clientWidth || vw, bh = arVideo.clientHeight || vh;
+  const scale = Math.max(bw / vw, bh / vh);
+  let w = Math.min(vw, Math.round(bw / scale));
+  let h = Math.min(vh, Math.round(bh / scale));
+  // Capture crop when the camera has no zoom of its own. It adds no detail
+  // the sensor did not capture, but the 540 px the detector gets are spent on
+  // the card instead of the table, which is most of the battle at distance.
+  if (!zoomIsOptical && zoomLevel > 1) {
+    w = Math.max(64, Math.round(w / zoomLevel));
+    h = Math.max(64, Math.round(h / zoomLevel));
+  }
+  return { x: Math.round((vw - w) / 2), y: Math.round((vh - h) / 2), w: w, h: h };
+}
+
+async function setZoom(z) {
+  zoomLevel = Math.max(1, Math.min(8, Number(z) || 1));
+  zoomIsOptical = false;
+  if (videoTrack && zoomCaps) {
+    // Map 1..8 onto what this camera actually offers.
+    const span = zoomCaps.max - zoomCaps.min;
+    const want = zoomCaps.min + span * Math.min(1, (zoomLevel - 1) / 7);
+    try {
+      await videoTrack.applyConstraints({ advanced: [{ zoom: want }] });
+      zoomIsOptical = true;
+      const got = videoTrack.getSettings ? videoTrack.getSettings().zoom : want;
+      $('#zoom-read').textContent = (got || want).toFixed(1) + 'x cam';
+    } catch (e) {
+      zoomIsOptical = false;
+    }
+  }
+  if (!zoomIsOptical) $('#zoom-read').textContent = zoomLevel.toFixed(1) + 'x crop';
+  sizeARCanvases();
+}
+
+async function listCameras() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+  const sel = $('#setting-camera');
+  if (!sel) return;
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cams = devices.filter(d => d.kind === 'videoinput');
+    sel.innerHTML = '<option value="">Default rear camera</option>' + cams.map((d, i) =>
+      `<option value="${d.deviceId}">${esc(d.label || 'Camera ' + (i + 1))}</option>`).join('');
+    if (cameraId) sel.value = cameraId;
+  } catch (e) {}
+}
+
+function sizeARCanvases() {
+  const crop = coverCrop();
+  if (!crop) return false;
+  arStats.video = arVideo.videoWidth + 'x' + arVideo.videoHeight;
+  if (arCanvas.width !== arVideo.videoWidth || arCanvas.height !== arVideo.videoHeight) {
+    arCanvas.width = arVideo.videoWidth;
+    arCanvas.height = arVideo.videoHeight;
+  }
+  // 540 px ACROSS, not 540 on the long side: the tracking budget has always
+  // been the frame's width, and a portrait camera (1080x1920 here) has a tall
+  // crop, so scaling its long side to 540 would shrink the card below what the
+  // uncropped frame used to carry. Height is capped so an extreme crop cannot
+  // cost more than the old full frame did.
+  const s = Math.min(1, 540 / crop.w, 960 / crop.h);
+  const ow = Math.max(64, Math.round(crop.w * s)), oh = Math.max(64, Math.round(crop.h * s));
+  if (offscreenCanvas.width !== ow || offscreenCanvas.height !== oh) {
+    offscreenCanvas.width = ow;
+    offscreenCanvas.height = oh;
+  }
+  return true;
+}
+
+// Idempotent, and called from several events plus a watchdog: a single
+// loadedmetadata handler is one missed event away from a camera that previews
+// forever without ever pushing a frame.
+function startARLoop() {
+  if (currentMode !== 'ar' || !sizeARCanvases()) return false;
+  if (!arInterval) arInterval = setInterval(arTick, 180);
+  if (!arAnimFrame) arAnimFrame = requestAnimationFrame(renderARHUDContinuous);
+  return true;
+}
+
+function setPushStatus(text) {
+  const chip = $('#hud-status');
+  if (chip && !lastHUDData) chip.textContent = text;
+}
+
 function drawDebugInset(d) {
   if (arDebug.classList.contains('hidden')) return;
-  arDebug.width = offscreenCanvas.width;
-  arDebug.height = offscreenCanvas.height;
-  dbgCtx.drawImage(offscreenCanvas, 0, 0);
+  arDebug.width = offscreenCanvas.width || 300;
+  arDebug.height = offscreenCanvas.height || 150;
+  dbgCtx.fillStyle = '#000';
+  dbgCtx.fillRect(0, 0, arDebug.width, arDebug.height);
+  if (offscreenCanvas.width) dbgCtx.drawImage(offscreenCanvas, 0, 0);
   if (d && d.quad && d.quad.length === 4) {
     dbgCtx.strokeStyle = '#FF3B3B';
     dbgCtx.lineWidth = 3;
@@ -585,42 +1283,79 @@ function drawDebugInset(d) {
     dbgCtx.closePath();
     dbgCtx.stroke();
   }
-  dbgCtx.fillStyle = 'rgba(0,0,0,0.6)';
-  dbgCtx.fillRect(0, 0, arDebug.width, 22);
+  dbgCtx.fillStyle = 'rgba(0,0,0,0.65)';
+  dbgCtx.fillRect(0, 0, arDebug.width, 40);
+  dbgCtx.font = '13px monospace';
   dbgCtx.fillStyle = '#fff';
-  dbgCtx.font = '14px monospace';
-  dbgCtx.fillText(`${offscreenCanvas.width}x${offscreenCanvas.height} ${d && d.tracking ? 'TRACK' : 'none'}`, 6, 16);
+  dbgCtx.fillText(`${offscreenCanvas.width}x${offscreenCanvas.height} of ${arStats.video} ${d && d.tracking ? 'TRACK' : 'none'}`, 5, 15);
+  const age = arStats.lastOkAt ? (Date.now() - arStats.lastOkAt) / 1000 : 0;
+  dbgCtx.fillStyle = arStats.error ? '#FF6B6B' : (age > 1 ? '#E0B341' : '#9FE8DF');
+  dbgCtx.fillText(arStats.error
+    ? arStats.error.slice(0, 40)
+    : `${arStats.ok}/${arStats.pushes} ok  ${arStats.status}  ${arStats.ms}ms  ` +
+      `${Math.round(arStats.bytes / 1024)}k  ${age > 1 ? age.toFixed(1) + 's old' : 'live'}`, 5, 32);
 }
 
 async function startARStream() {
   if (videoStream) return;
   try {
     synth.init();
-    videoStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
-      audio: false
-    });
+    const video = cameraId
+      ? { deviceId: { exact: cameraId }, width: { ideal: 3840 }, height: { ideal: 2160 } }
+      : { facingMode: 'environment', width: { ideal: 3840 }, height: { ideal: 2160 } };
+    videoStream = await navigator.mediaDevices.getUserMedia({ video: video, audio: false });
+    videoTrack = videoStream.getVideoTracks()[0] || null;
+    zoomCaps = null;
+    if (videoTrack && videoTrack.getCapabilities) {
+      const caps = videoTrack.getCapabilities();
+      if (caps && caps.zoom && caps.zoom.max > caps.zoom.min) zoomCaps = caps.zoom;
+    }
+    $('#zoom-read').textContent = zoomCaps ? '1.0x cam' : '1.0x crop';
+    startContinuousFocus();
+    listCameras();
     arVideo.srcObject = videoStream;
-    arVideo.onloadedmetadata = () => {
-      arCanvas.width = arVideo.videoWidth;
-      arCanvas.height = arVideo.videoHeight;
-      offscreenCanvas.width = 540;
-      offscreenCanvas.height = Math.round(540 * (arVideo.videoHeight / arVideo.videoWidth));
-      arInterval = setInterval(arTick, 180);
-      if (!arAnimFrame) arAnimFrame = requestAnimationFrame(renderARHUDContinuous);
-    };
+    holdScreenOn();
+    arVideo.onloadedmetadata = startARLoop;
+    arVideo.onplaying = startARLoop;
+    arVideo.onresize = () => { sizeARCanvases(); startARLoop(); };
+    try { await arVideo.play(); } catch (e) { /* autoplay attribute covers this */ }
+    startARLoop();
+    // The camera can be previewing while the loop never started (a missed
+    // event, a late layout, a zero-size video). Keep trying, and say so on
+    // screen rather than sitting on "SEARCHING".
+    if (arWatchdog) clearInterval(arWatchdog);
+    const since = Date.now();
+    arWatchdog = setInterval(() => {
+      if (!videoStream || currentMode !== 'ar') return;
+      startARLoop();
+      if (isPushing && Date.now() - pushStartedAt > PUSH_STUCK_MS) {
+        // belt and braces: the abort above should have fired already
+        isPushing = false;
+        arStats.fail++;
+        arStats.error = 'request stuck; loop restarted';
+        console.warn('[bakugo] /ar/push stuck, resetting');
+      }
+      if (Date.now() - since > 3000 && !arInterval) {
+        setPushStatus(arVideo.videoWidth ? 'LOOP NOT RUNNING' : 'NO CAMERA FRAMES');
+      }
+    }, 500);
   } catch(err) {
     $('#hud-status').textContent = 'CAMERA BLOCKED';
+    arStats.error = 'getUserMedia: ' + (err && err.name || err);
     console.warn("Camera streaming unavailable:", err);
   }
 }
 
 function stopARStream() {
   if (arInterval) { clearInterval(arInterval); arInterval = null; }
+  if (arWatchdog) { clearInterval(arWatchdog); arWatchdog = null; }
   if (arAnimFrame) { cancelAnimationFrame(arAnimFrame); arAnimFrame = null; }
+  releaseScreen();
   if (videoStream) {
     videoStream.getTracks().forEach(t => t.stop());
     videoStream = null;
+    videoTrack = null;
+    zoomCaps = null;
     arVideo.srcObject = null;
   }
   lastHUDData = null;
@@ -630,29 +1365,80 @@ function stopARStream() {
 }
 
 async function arTick() {
-  if (isPushing || !arVideo.videoWidth || currentMode !== 'ar') return;
+  // The still upload gets the whole link while it runs.
+  if (isPushing || stillBusy || currentMode !== 'ar') return;
+  if (!sizeARCanvases()) { setPushStatus('NO CAMERA FRAMES'); return; }
   isPushing = true;
+  const t0 = Date.now();
+  pushStartedAt = t0;
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), PUSH_TIMEOUT_MS);
   try {
-    offCtx.drawImage(arVideo, 0, 0, offscreenCanvas.width, offscreenCanvas.height);
+    const crop = coverCrop();
+    pushCrop = crop;
+    offCtx.drawImage(arVideo, crop.x, crop.y, crop.w, crop.h,
+                     0, 0, offscreenCanvas.width, offscreenCanvas.height);
     const blob = await new Promise(res => offscreenCanvas.toBlob(res, 'image/jpeg', 0.75));
-    if (!blob) return;
+    if (!blob) {
+      arStats.fail++;
+      arStats.error = 'canvas gave no frame';
+      setPushStatus('FRAME CAPTURE FAILED');
+      drawDebugInset(null);
+      return;
+    }
+    arStats.bytes = blob.size;
 
     const fd = new FormData();
     fd.append('holder', $('#holder').value);
     fd.append('lens', $('#lens').value);
     fd.append('image', blob, 'frame.jpg');
+    // camera pixels per pushed pixel: the guidance can then say what a
+    // full-resolution Measure Card photo would have
+    fd.append('source_scale', String(crop.w / (offscreenCanvas.width || crop.w)));
+    if (pendingAim) {
+      fd.append('aim_x', pendingAim.x.toFixed(4));
+      fd.append('aim_y', pendingAim.y.toFixed(4));
+      pendingAim = null;
+    }
 
-    const res = await fetch(backendUrl + '/ar/push', {
+    const res = await api('/ar/push', {
       method: 'POST',
-      headers: { 'X-Device-ID': deviceId },
-      body: fd
+      body: fd,
+      signal: abort.signal
     });
-    const d = await res.json();
+    arStats.pushes++;
+    arStats.status = res.status;
+    arStats.ms = Date.now() - t0;
+    arStats.msAvg = arStats.msAvg ? 0.8 * arStats.msAvg + 0.2 * arStats.ms : arStats.ms;
+    const text = await res.text();
+    const d = parseReply(text);
+    if (d === undefined) throw new Error('HTTP ' + res.status + ' not JSON: ' + text.slice(0, 80));
+    if (d && d.ok) {
+      arStats.ok++;
+      arStats.error = '';
+      arStats.lastOkAt = Date.now();
+    } else {
+      arStats.fail++;
+      arStats.error = (d && d.error ? d.error : 'HTTP ' + res.status).slice(0, 140);
+      setPushStatus('SERVER REFUSED FRAME');
+    }
     drawDebugInset(d);
     drawARHUD(d);
   } catch(e) {
-    // Gracefully handle frame drops
+    // A dropped frame and a broken loop look identical until one of them is
+    // reported: say which, on screen and in the console.
+    arStats.fail++;
+    arStats.ms = Date.now() - t0;
+    const aborted = e && e.name === 'AbortError';
+    if (aborted) arStats.timeouts++;
+    arStats.error = aborted
+      ? `no reply in ${PUSH_TIMEOUT_MS / 1000}s (${arStats.timeouts} timeouts)`
+      : String((e && e.message) || e).slice(0, 140);
+    console.warn('[bakugo] /ar/push failed:', e);
+    setPushStatus(aborted ? 'PUSH TIMED OUT' : 'PUSH FAILED');
+    drawDebugInset(null);
   } finally {
+    clearTimeout(timer);
     isPushing = false;
   }
 }
@@ -665,11 +1451,13 @@ function drawARHUD(d) {
   }
   lastHUDData = d;
 
-  const scaleX = arCanvas.width / offscreenCanvas.width;
-  const scaleY = arCanvas.height / offscreenCanvas.height;
+  // The frame was a crop of the video, so the quad maps back through it.
+  const crop = pushCrop || { x: 0, y: 0, w: arCanvas.width, h: arCanvas.height };
+  const scaleX = crop.w / (offscreenCanvas.width || 1);
+  const scaleY = crop.h / (offscreenCanvas.height || 1);
 
   if (d.tracking && d.quad && d.quad.length === 4) {
-    targetQuad = d.quad.map(pt => [pt[0] * scaleX, pt[1] * scaleY]);
+    targetQuad = d.quad.map(pt => [crop.x + pt[0] * scaleX, crop.y + pt[1] * scaleY]);
     if (!currentQuad) {
       currentQuad = targetQuad.map(p => [...p]);
     }
@@ -745,6 +1533,21 @@ function renderARHUDContinuous() {
   if (currentMode === 'ar') {
     ctx.clearRect(0, 0, arCanvas.width, arCanvas.height);
     const W = arCanvas.width, H = arCanvas.height;
+
+    // A box from an old frame sitting over a live preview is worse than no
+    // box: it looks like a detector fault when the loop has simply stopped
+    // answering. Drop it, and say the tracking went stale.
+    const age = arStats.lastOkAt ? Date.now() - arStats.lastOkAt : 0;
+    if (targetQuad && arStats.lastOkAt && age > overlayStaleMs()) {
+      targetQuad = null;
+      currentQuad = null;
+      lastLocked = false;
+      arStats.stale++;
+      lastHUDData = null;
+      $('#hud-status').textContent = arStats.error ? 'RECONNECTING' : 'SEARCHING';
+      const chipBox = document.querySelector('.hud-chip');
+      if (chipBox) chipBox.classList.remove('settled');
+    }
 
     if (targetQuad && currentQuad) {
       // Smoothly lerp towards target quad corners
@@ -883,13 +1686,136 @@ function renderARHUDContinuous() {
   arAnimFrame = requestAnimationFrame(renderARHUDContinuous);
 }
 
-function triggerARFreeze() {
-  if (!arVideo.videoWidth) return;
-  const freezeCanvas = document.createElement('canvas');
-  freezeCanvas.width = arVideo.videoWidth;
-  freezeCanvas.height = arVideo.videoHeight;
-  freezeCanvas.getContext('2d').drawImage(arVideo, 0, 0);
-  freezeCanvas.toBlob(sendStillPhoto, 'image/jpeg', 0.92);
+// The preview stream is capped well below what the sensor can take, and the
+// measurement wants every pixel the card can get -- the server crops to the
+// card before it caps, so a full-resolution photo is where the reach comes
+// from. takePhoto gives that where it is supported; the video frame is the
+// fallback.
+async function grabStill() {
+  if (videoTrack && typeof ImageCapture !== 'undefined') {
+    try {
+      const shot = await new ImageCapture(videoTrack).takePhoto();
+      if (shot && shot.size > 1024) {
+        arStats.still = 'photo ' + Math.round(shot.size / 1024) + 'k';
+        return shot;
+      }
+    } catch (e) {
+      console.warn('[bakugo] takePhoto unavailable, using the video frame:', e);
+    }
+  }
+  return await new Promise(res => {
+    const c = document.createElement('canvas');
+    c.width = arVideo.videoWidth;
+    c.height = arVideo.videoHeight;
+    c.getContext('2d').drawImage(arVideo, 0, 0);
+    arStats.still = 'frame ' + c.width + 'x' + c.height;
+    c.toBlob(res, 'image/jpeg', 0.92);
+  });
+}
+
+// ---- Shop-floor upload budget ----
+// A full-resolution still is 3-12 MB, and it went up twice (/measure and
+// /identify) over whatever signal the shop has, with no time limit: the button
+// could sit on "Calculating" for minutes. Now the phone crops the photo to the
+// card it was tracking (with a wide margin, so a small mapping error between
+// preview and photo cannot cut the card off), sends where that crop sits in the
+// photo so the server keeps the lens geometry, and gives up with a clear
+// message instead of hanging.
+let STILL_TIMEOUT_MS = 60000;           // let: the browser tests shorten it
+const STILL_CROP_MARGIN = 0.6;          // of the card's long side, each way
+const STILL_MAX_PIXELS = 36000000;      // server refuses above 40 MP
+const STILL_MAX_BYTES = 9 * 1024 * 1024; // server refuses above 12 MB
+
+// The tracked outline in video pixels, if it is fresh enough to trust.
+function freshTrackQuad() {
+  if (currentMode !== 'ar' || !targetQuad || !lastHUDData || !lastHUDData.tracking) return null;
+  if (!arStats.lastOkAt || Date.now() - arStats.lastOkAt > overlayStaleMs() + 700) return null;
+  return { quad: targetQuad.map(p => [p[0], p[1]]), vw: arVideo.videoWidth, vh: arVideo.videoHeight };
+}
+
+function encodeCanvas(c, q) {
+  return new Promise(res => c.toBlob(res, 'image/jpeg', q));
+}
+
+async function prepareStill(blob, track) {
+  let bmp = null;
+  try { bmp = await createImageBitmap(blob); } catch (e) { bmp = null; }
+  if (!bmp) return { blob: blob, parent: null, note: 'sent as taken' };
+  const pw = bmp.width, ph = bmp.height;
+  let box = null;
+  // The preview is (at most) a centred crop of the photo's field of view, so
+  // the photo covers it at the smaller of the two scales. Skip the crop when
+  // the orientations disagree: the mapping would be a guess.
+  if (track && track.vw && track.vh && ((track.vw > track.vh) === (pw > ph))) {
+    const s = Math.min(pw / track.vw, ph / track.vh);
+    const xs = track.quad.map(p => (p[0] - track.vw / 2) * s + pw / 2);
+    const ys = track.quad.map(p => (p[1] - track.vh / 2) * s + ph / 2);
+    const side = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+    const m = STILL_CROP_MARGIN * side;
+    const x0 = Math.max(0, Math.floor(Math.min(...xs) - m));
+    const y0 = Math.max(0, Math.floor(Math.min(...ys) - m));
+    const x1 = Math.min(pw, Math.ceil(Math.max(...xs) + m));
+    const y1 = Math.min(ph, Math.ceil(Math.max(...ys) + m));
+    if (x1 - x0 >= 64 && y1 - y0 >= 64 && (x1 - x0) * (y1 - y0) < 0.6 * pw * ph) {
+      box = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+    }
+  }
+  if (box) {
+    const c = document.createElement('canvas');
+    c.width = box.w; c.height = box.h;
+    c.getContext('2d').drawImage(bmp, box.x, box.y, box.w, box.h, 0, 0, box.w, box.h);
+    if (bmp.close) bmp.close();
+    const out = await encodeCanvas(c, 0.92);
+    if (out) return { blob: out, parent: { x: box.x, y: box.y, w: pw, h: ph },
+                      note: 'card crop ' + box.w + 'x' + box.h + ' of ' + pw + 'x' + ph };
+    return { blob: blob, parent: null, note: 'crop failed; sent as taken' };
+  }
+  if (pw * ph <= STILL_MAX_PIXELS && blob.size <= STILL_MAX_BYTES) {
+    if (bmp.close) bmp.close();
+    return { blob: blob, parent: null, note: 'full photo ' + pw + 'x' + ph };
+  }
+  // Too big for the server as it stands: shrink the whole photo (the server
+  // still crops to the card before its own cap).
+  const k = Math.min(1, Math.sqrt(STILL_MAX_PIXELS / (pw * ph)));
+  const c = document.createElement('canvas');
+  c.width = Math.round(pw * k); c.height = Math.round(ph * k);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  if (bmp.close) bmp.close();
+  let out = await encodeCanvas(c, 0.9);
+  if (out && out.size > STILL_MAX_BYTES) out = await encodeCanvas(c, 0.8);
+  return { blob: out || blob, parent: null, note: 'resized ' + c.width + 'x' + c.height };
+}
+
+// Keep the screen on while the camera is up: a phone that dims mid-shop
+// drops the stream and the tracking with it.
+async function holdScreenOn() {
+  try {
+    if ('wakeLock' in navigator && document.visibilityState === 'visible' && !wakeLock) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    }
+  } catch (e) { wakeLock = null; }
+}
+function releaseScreen() {
+  try { if (wakeLock) wakeLock.release(); } catch (e) {}
+  wakeLock = null;
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && videoStream) holdScreenOn();
+});
+
+async function triggerARFreeze() {
+  if (!arVideo.videoWidth || stillBusy) return;
+  // Take the outline before anything else: the loop pauses for the upload and
+  // the overlay goes stale while the photo is being taken.
+  const track = freshTrackQuad();
+  stillBusy = true;
+  try {
+    const blob = await grabStill();
+    if (blob) await sendStillPhoto(blob, track);
+  } finally {
+    stillBusy = false;
+  }
 }
 
 // Action button
@@ -903,45 +1829,59 @@ $('#btn-action').onclick = () => {
   }
 };
 
-$('#file').onchange = () => { if ($('#file').files[0]) sendStillPhoto($('#file').files[0]); };
+$('#file').onchange = () => { if ($('#file').files[0]) sendStillPhoto($('#file').files[0], null); };
 
-function sendStillPhoto(fileOrBlob) {
+// fetch with a deadline; a hung upload on shop signal says so instead of
+// spinning forever.
+function apiTimed(path, opts, ms) {
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), ms);
+  return api(path, Object.assign({}, opts, { signal: abort.signal }))
+    .then(r => r.text().then(t => {
+      const d = parseReply(t);
+      return d === undefined ? { ok: false, error: 'HTTP ' + r.status + ': ' + t.slice(0, 80) } : d;
+    }))
+    .catch(e => ({ ok: false, error: e && e.name === 'AbortError'
+      ? 'no reply in ' + Math.round(ms / 1000) + 's -- the signal here may be too weak; try again, or step nearer the shop Wi-Fi'
+      : String((e && e.message) || e) }))
+    .finally(() => clearTimeout(timer));
+}
+
+async function sendStillPhoto(fileOrBlob, track) {
   $('#btn-action').disabled = true;
   $('#btn-action').textContent = 'Calculating Metrology…';
   $('#out').innerHTML = '<div class="strip"><div class="seg segL" style="width:50%"></div><div class="seg segR" style="width:50%"></div></div><div class="sub-meta" style="padding:14px 16px;color:var(--key)">🔬 Ray-tracing Snell refraction & calculating confidence intervals…</div>';
-  
-  const fd = new FormData();
-  fd.append('holder', $('#holder').value);
-  fd.append('lens', $('#lens').value);
-  fd.append('image', fileOrBlob, 'shot.jpg');
 
-  // Identify runs on the same full-resolution still, in parallel. It has its
-  // own OCR legibility gate, so a frame /measure refuses can still be named.
-  const idFd = new FormData();
-  idFd.append('image', fileOrBlob, 'shot.jpg');
-  const idReq = fetch(backendUrl + '/identify', {
-    method: 'POST',
-    headers: { 'X-Device-ID': deviceId },
-    body: idFd
-  }).then(r => r.json()).catch(e => ({ ok: false, error: String(e) }));
+  try {
+    const prep = await prepareStill(fileOrBlob, track);
+    arStats.still = (arStats.still ? arStats.still + ' -> ' : '') + prep.note + ' ' + Math.round(prep.blob.size / 1024) + 'k';
+    const fd = new FormData();
+    fd.append('holder', $('#holder').value);
+    fd.append('lens', $('#lens').value);
+    fd.append('image', prep.blob, 'shot.jpg');
+    if (prep.parent) {
+      fd.append('crop_x', String(prep.parent.x));
+      fd.append('crop_y', String(prep.parent.y));
+      fd.append('full_w', String(prep.parent.w));
+      fd.append('full_h', String(prep.parent.h));
+    }
 
-  fetch(backendUrl + '/measure', {
-    method: 'POST',
-    headers: { 'X-Device-ID': deviceId },
-    body: fd
-  })
-  .then(r => r.json())
-  .then(renderResults)
-  .catch(e => {
+    // Identify runs on the same still, in parallel. It has its own OCR
+    // legibility gate, so a frame /measure refuses can still be named.
+    const idFd = new FormData();
+    idFd.append('image', prep.blob, 'shot.jpg');
+    const idReq = apiTimed('/identify', { method: 'POST', body: idFd }, STILL_TIMEOUT_MS);
+
+    const d = await apiTimed('/measure', { method: 'POST', body: fd }, STILL_TIMEOUT_MS);
+    renderResults(d);
+    renderIdentify(await secondVote(await idReq));
+  } catch (e) {
     $('#out').innerHTML = `<div class="empty-card" style="border-color:var(--stop)"><b style="color:var(--stop)">Connection Error</b><div>${esc(String(e))}</div></div>`;
-  })
-  .then(() => idReq)
-  .then(renderIdentify)
-  .finally(() => {
+  } finally {
     $('#btn-action').disabled = false;
     $('#btn-action').textContent = currentMode === 'ar' ? '⚡ Freeze AR Frame' : '📸 Measure Photo';
     $('#file').value = '';
-  });
+  }
 }
 
 function renderResults(d) {
@@ -1004,16 +1944,134 @@ function renderIdentify(d) {
   if (d && d.warnings && d.warnings.length) {
     html += d.warnings.map(w => `<div class="sub-meta" style="color:var(--warn, #e0b341)">&#9888; ${esc(w)}</div>`).join('');
   }
+  if (d && d.ok && d.decision) {
+    const v = d.vote || {};
+    const voteTxt = v.available
+      ? `embedding: ${esc(v.name || 'no match')} (similarity ${Number(v.similarity || 0).toFixed(2)}, ${esc(v.index_size)} cards on this device)`
+      : `embedding: ${esc(v.reason || 'unavailable')}`;
+    html += `<div class="sub-meta"><b>${esc(d.decision)}</b> &middot; ${esc(d.decision_reason || '')}<br>${voteTxt}</div>`;
+  }
   box.innerHTML = html;
+  if (d && d.ok && d.identification_id) box.appendChild(feedbackForm(d));
   $('#out').appendChild(box);
 }
+
+// ---- In-situ feedback: confirm / correct, and the price paid or asked ----
+const PRICE_SOURCES = ['manual', 'sticker', 'tag', 'shelf_sign', 'page_label', 'receipt', 'listing', 'verbal'];
+let fbSeq = 0;
+function feedbackForm(d) {
+  const n = ++fbSeq;
+  const row = document.createElement('div');
+  row.className = 'fb-row';
+  row.innerHTML = `
+    <input id="fb-name-${n}" placeholder="Right name">
+    <input id="fb-num-${n}" placeholder="#" inputmode="numeric">
+    <input id="fb-price-${n}" placeholder="Price: $2.50, 3 for $1, 50c">
+    <select id="fb-src-${n}">${PRICE_SOURCES.map(s => `<option value="${s}">${s.replace('_', ' ')}</option>`).join('')}</select>
+    <button type="button" id="fb-ok-${n}">&#10003; Correct</button>
+    <button type="button" id="fb-fix-${n}">Fix name</button>
+    <button type="button" id="fb-no-${n}">Wrong</button>
+    <div class="sub-meta" id="fb-msg-${n}" style="flex-basis:100%;padding:0"></div>`;
+  const go = (action) => submitFeedback(d, action, n);
+  setTimeout(() => {
+    const ok = document.getElementById('fb-ok-' + n);
+    if (ok) {
+      ok.disabled = !d.name;
+      ok.onclick = () => go('confirm');
+      document.getElementById('fb-fix-' + n).onclick = () => go('correct');
+      document.getElementById('fb-no-' + n).onclick = () => go('reject');
+    }
+  }, 0);
+  return row;
+}
+
+function submitFeedback(d, action, n) {
+  const msg = document.getElementById('fb-msg-' + n);
+  const name = document.getElementById('fb-name-' + n).value.trim();
+  const numTxt = document.getElementById('fb-num-' + n).value.trim();
+  const priceTxt = document.getElementById('fb-price-' + n).value.trim();
+  const body = { identification_id: d.identification_id, action: action };
+  if (action === 'correct') body.name = name;
+  if (numTxt) body.number = parseInt(numTxt, 10);
+  if (priceTxt) body.price = { text: priceTxt, source: document.getElementById('fb-src-' + n).value };
+  msg.textContent = 'saving…';
+  api('/feedback', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    .then(r => r.json())
+    .then(async r => {
+      if (!r.ok) { msg.textContent = 'not saved: ' + (r.error || 'error'); return; }
+      let learned = r.learned && r.learned.device_prior ? 'this device now favours ' + r.learned.device_prior : 'recorded';
+      if (action !== 'reject' && d.vote && d.vote.available && r.name) {
+        const l = await swAsk({ type: 'learn', id: d.identification_id, name: r.name, number: r.number });
+        if (l && l.ok) learned += '; on-device index ' + l.index_size + ' cards';
+      }
+      if (r.price) learned += '; price ' + r.price.amount + ' ' + r.price.currency;
+      if (r.inbox) learned += '; photo saved to your private inbox';
+      msg.textContent = learned;
+    })
+    .catch(e => { msg.textContent = 'not saved: ' + e; });
+}
+
+// ---- Second vote: ONNX embedding in the service worker, on-device index ----
+let swReg = null;
+let embedStatus = { available: false, reason: 'service worker not registered' };
+function swAsk(msg) {
+  return new Promise((resolve) => {
+    if (!swReg || !swReg.active) { resolve({ available: false, ok: false, reason: 'service worker not active' }); return; }
+    const ch = new MessageChannel();
+    const timer = setTimeout(() => resolve({ available: false, ok: false, reason: 'service worker timed out' }), 30000);
+    ch.port1.onmessage = (e) => { clearTimeout(timer); resolve(e.data); };
+    swReg.active.postMessage(msg, [ch.port2]);
+  });
+}
+async function setupEmbedWorker() {
+  if (!('serviceWorker' in navigator) || isCrossOrigin()) {
+    embedStatus = { available: false, reason: 'service worker unavailable in this shell' };
+    return;
+  }
+  try {
+    await navigator.serviceWorker.register('/sw.js', { type: 'module', scope: '/' });
+    swReg = await navigator.serviceWorker.ready;
+    embedStatus = await swAsk({ type: 'status' });
+  } catch (e) {
+    embedStatus = { available: false, reason: 'service worker failed: ' + e };
+  }
+}
+async function secondVote(d) {
+  if (!d || !d.ok || !d.identification_id) return d;
+  if (!embedStatus.available || !d.embed_crop) {
+    d.vote = { available: false, reason: embedStatus.reason || 'no crop for the embedding model' };
+    return d;
+  }
+  try {
+    const bin = atob(d.embed_crop);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const bmp = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
+    const c = document.createElement('canvas');
+    c.width = bmp.width; c.height = bmp.height;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(bmp, 0, 0);
+    const image = ctx.getImageData(0, 0, c.width, c.height);
+    const vote = await swAsk({ type: 'vote', id: d.identification_id, image: image });
+    d.vote = vote;
+    const r = await api('/identify/vote', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ identification_id: d.identification_id, vote: vote }),
+    }).then(x => x.json());
+    if (r.ok) { d.decision = r.decision; d.decision_reason = r.decision_reason; }
+  } catch (e) {
+    d.vote = { available: false, reason: String(e) };
+  }
+  return d;
+}
+setupEmbedWorker();
 
 function esc(s) { return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 
 // Settings & Audio buttons
 $('#btn-sound-test').onclick = () => { synth.playSettle(); haptic('settle'); };
 $('#btn-ar-reset').onclick = () => {
-  fetch(backendUrl + '/ar/reset', { method: 'POST', headers: { 'X-Device-ID': deviceId } });
+  api('/ar/reset', { method: 'POST' });
   haptic('tap');
 };
 $('#audio-toggle').onchange = (e) => { synth.enabled = (e.target.value === 'on'); };
@@ -1021,14 +2079,33 @@ $('#audio-toggle').onchange = (e) => { synth.enabled = (e.target.value === 'on')
 $('#btn-host-settings').onclick = () => {
   $('#setting-api-url').value = backendUrl;
   $('#setting-device-id').value = deviceId;
+  try { $('#setting-owner-token').value = localStorage.getItem('bakugo_owner_token') || ''; } catch (e) {}
   $('#modal-settings').classList.remove('hidden');
 };
 $('#modal-close').onclick = () => { $('#modal-settings').classList.add('hidden'); };
 $('#setting-save').onclick = () => {
   backendUrl = $('#setting-api-url').value.trim().replace(/\\/+$/, '');
   localStorage.setItem('bakugo_backend_url', backendUrl);
+  try {
+    const owner = $('#setting-owner-token').value.trim();
+    if (owner) localStorage.setItem('bakugo_owner_token', owner);
+    else localStorage.removeItem('bakugo_owner_token');
+  } catch (e) {}
   $('#modal-settings').classList.add('hidden');
   refreshConfig();
+};
+
+$('#zoom').oninput = (e) => setZoom(e.target.value);
+$('#zoom-in').onclick = () => { $('#zoom').value = Math.min(8, zoomLevel + 0.5); setZoom($('#zoom').value); };
+$('#zoom-out').onclick = () => { $('#zoom').value = Math.max(1, zoomLevel - 0.5); setZoom($('#zoom').value); };
+$('#setting-camera').onchange = (e) => {
+  cameraId = e.target.value || null;
+  try {
+    if (cameraId) localStorage.setItem('bakugo_camera_id', cameraId);
+    else localStorage.removeItem('bakugo_camera_id');
+  } catch (err) {}
+  stopARStream();
+  startARStream();
 };
 
 // Start AR immediately if supported
@@ -1043,42 +2120,155 @@ if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "cardcenter"
+    sys_version = ""
+    # StreamRequestHandler applies this to the socket: reads and writes that
+    # stall longer than this raise instead of pinning the thread.
+    timeout = SOCKET_TIMEOUT_S
+    _minted_token: Optional[str] = None
 
     def log_message(self, fmt, *args):
         pass
+
+    # -- origin / CORS ------------------------------------------------------
+    def _allowed_origin(self) -> Optional[str]:
+        origin = (self.headers.get("Origin") or "").strip().rstrip("/")
+        return origin if origin and origin in cors_origins() else None
+
+    def _is_cross_origin(self) -> bool:
+        from urllib.parse import urlparse
+
+        origin = self.headers.get("Origin")
+        if not origin:
+            return False
+        return urlparse(origin).netloc.lower() != (self.headers.get("Host") or "").lower()
+
+    def _cors_headers(self) -> None:
+        origin = self._allowed_origin()
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Credentials", "true")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD")
+            # X-Device-ID / X-Client-ID stay allowed so older clients pass the
+            # preflight; the server ignores them (see _extract_device_id).
+            self.send_header(
+                "Access-Control-Allow-Headers",
+                "Content-Type, Authorization, Range, X-Device-ID, X-Client-ID, X-Bakugo-Owner",
+            )
+            self.send_header(
+                "Access-Control-Expose-Headers", "Content-Length, Content-Type, X-Device-Token"
+            )
+        self.send_header("Vary", "Origin")
+
+    def _cookie_secure(self) -> bool:
+        mode = os.environ.get("CARDCENTER_COOKIE_SECURE", "auto").strip().lower()
+        if mode in ("1", "true", "yes", "on"):
+            return True
+        if mode in ("0", "false", "no", "off"):
+            return False
+        proto = (self.headers.get("X-Forwarded-Proto") or "").strip().lower()
+        return proto == "https" or '"https"' in (self.headers.get("Cf-Visitor") or "")
 
     def _send(self, code: int, body: bytes, ctype: str) -> None:
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        # Full CORS support for Mobile Native and WebApp clients
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD")
-        self.send_header(
-            "Access-Control-Allow-Headers",
-            "Content-Type, X-Device-ID, X-Client-ID, Authorization, Range",
-        )
-        self.send_header(
-            "Access-Control-Expose-Headers", "Content-Length, Content-Type, X-Device-ID"
-        )
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        self._cors_headers()
+        if self._minted_token:
+            cookie = (
+                f"{DEVICE_COOKIE}={self._minted_token}; Path=/; Max-Age=63072000; "
+                "HttpOnly; SameSite=Lax"
+            )
+            if self._cookie_secure():
+                cookie += "; Secure"
+            self.send_header("Set-Cookie", cookie)
+            # Cross-origin clients (mobile shell) never see the cookie, so they
+            # get the token once in a header and send it back as a Bearer token.
+            if self._is_cross_origin() and self._allowed_origin():
+                self.send_header("X-Device-Token", self._minted_token)
         self.end_headers()
-        self.wfile.write(body)
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _send_static(self, body: bytes, ctype: str, cache: str, extra: Optional[dict] = None) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", cache)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _send_json(self, code: int, obj: dict) -> None:
+        self._send(code, _dumps(obj).encode(), "application/json")
+
+    def _reject(self, code: int, message: str) -> None:
+        self.close_connection = True
+        self._send_json(code, {"ok": False, "error": message})
+
+    def _internal_error(self, path: str) -> dict:
+        ref = secrets.token_hex(4)
+        sys.stderr.write(f"[cardcenter] internal error ref={ref} path={path}\n")
+        traceback.print_exc()
+        return {"ok": False, "error": "internal error", "ref": ref}
 
     def do_OPTIONS(self) -> None:
-        """Handle CORS preflight requests for mobile and cross-origin clients."""
+        """Handle CORS preflight requests for allowed cross-origin clients."""
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD")
-        self.send_header(
-            "Access-Control-Allow-Headers",
-            "Content-Type, X-Device-ID, X-Client-ID, Authorization, Range",
-        )
-        self.send_header("Access-Control-Max-Age", "86400")
+        self._cors_headers()
+        if self._allowed_origin():
+            self.send_header("Access-Control-Max-Age", "86400")
+        self.send_header("Content-Length", "0")
         self.end_headers()
 
+    # -- identity -----------------------------------------------------------
+    def _request_token(self) -> Optional[str]:
+        auth = (self.headers.get("Authorization") or "").strip()
+        if auth[:7].lower() == "bearer ":
+            tok = auth[7:].strip()
+            if _valid_token(tok):
+                return tok
+        raw = self.headers.get("Cookie")
+        if raw:
+            try:
+                jar = SimpleCookie()
+                jar.load(raw)
+                morsel = jar.get(DEVICE_COOKIE)
+                if morsel is not None and _valid_token(morsel.value):
+                    return morsel.value
+            except CookieError:
+                pass
+        return None
+
     def _extract_device_id(self, fields: Optional[dict] = None) -> str:
-        """Extract persistent tenant device_id from headers, query, or body."""
+        """Resolve the caller's tenant id from its server-issued device token.
+
+        Client-supplied ids (X-Device-ID, ?device_id=, a device_id form field)
+        are ignored: any caller can send any value there, so trusting them let
+        one device read another's scans. Callers without a valid token get a
+        new one (Set-Cookie, plus X-Device-Token for allowed cross-origin
+        clients). CARDCENTER_TRUST_DEVICE_HEADER=1 restores the old behaviour
+        for a private LAN-only server.
+        """
+        if _flag("CARDCENTER_TRUST_DEVICE_HEADER"):
+            legacy = self._legacy_device_id(fields)
+            if legacy:
+                return legacy
+        tok = self._request_token()
+        if tok is None:
+            if self._minted_token is None:
+                self._minted_token = new_device_token()
+            tok = self._minted_token
+        return device_id_for_token(tok)
+
+    def _legacy_device_id(self, fields: Optional[dict] = None) -> Optional[str]:
         from urllib.parse import parse_qs, urlparse
 
         dev = self.headers.get("X-Device-ID") or self.headers.get("X-Client-ID")
@@ -1096,7 +2286,7 @@ class Handler(BaseHTTPRequestHandler):
         dev_list = qs.get("device_id")
         if dev_list and dev_list[0]:
             return dev_list[0].strip()
-        return "anonymous"
+        return None
 
     def do_HEAD(self) -> None:
         self.do_GET()
@@ -1104,6 +2294,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         from urllib.parse import urlparse
 
+        self._minted_token = None
         parsed = urlparse(self.path)
         path = parsed.path
 
@@ -1111,11 +2302,29 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, PAGE.encode(), "text/html; charset=utf-8")
         elif path == "/manifest.json":
             self._send(200, MANIFEST_JSON.encode(), "application/json")
+        elif path == "/sw.js":
+            from .embed import sw_source
+
+            self._send_static(sw_source().encode(), "text/javascript; charset=utf-8",
+                              cache="no-cache", extra={"Service-Worker-Allowed": "/"})
+        elif path == "/embed/status":
+            from .embed import status as embed_status
+
+            self._send(200, _dumps(embed_status()).encode(), "application/json")
+        elif path.startswith("/embed/"):
+            from .embed import served_file
+
+            found = served_file(path[len("/embed/"):])
+            if found is None:
+                self._send(404, b"not found", "text/plain")
+            else:
+                fpath, ctype = found
+                self._send_static(fpath.read_bytes(), ctype, cache="public, max-age=86400")
         elif path == "/health":
             db = os.environ.get("CARDCENTER_DB", "cardcenter.db")
             self._send(
                 200,
-                json.dumps(
+                _dumps(
                     {
                         "status": "healthy",
                         "version": __version__,
@@ -1142,7 +2351,7 @@ class Handler(BaseHTTPRequestHandler):
             ]
             self._send(
                 200,
-                json.dumps(
+                _dumps(
                     {"slabs": slabs, "unit": "mm", "version": __version__}
                 ).encode(),
                 "application/json",
@@ -1160,7 +2369,7 @@ class Handler(BaseHTTPRequestHandler):
             ]
             self._send(
                 200,
-                json.dumps({"holders": holders, "version": __version__}).encode(),
+                _dumps({"holders": holders, "version": __version__}).encode(),
                 "application/json",
             )
         elif path == "/config":
@@ -1176,13 +2385,14 @@ class Handler(BaseHTTPRequestHandler):
             ]
             self._send(
                 200,
-                json.dumps(
+                _dumps(
                     {
                         "ok": True,
                         "version": __version__,
                         "graders": available_graders(),
                         "holders": holders,
                         "ip": local_ip(),
+                        "device_id": self._extract_device_id(),
                         "quipu_enabled": bool(os.environ.get("CARDCENTER_QUIPU_URL")),
                     }
                 ).encode(),
@@ -1197,7 +2407,7 @@ class Handler(BaseHTTPRequestHandler):
                 scans = store.scans_for_device(device_id)
             self._send(
                 200,
-                json.dumps({"ok": True, "device_id": device_id, "scans": scans}).encode(),
+                _dumps({"ok": True, "device_id": device_id, "scans": scans}).encode(),
                 "application/json",
             )
         elif path == "/my-analytics":
@@ -1235,10 +2445,15 @@ class Handler(BaseHTTPRequestHandler):
                         "total_scans": 0,
                         "note": "analytics unavailable",
                     }
-            except Exception as exc:
-                res = {"device_id": device_id, "error": str(exc)}
-            self._send(200, json.dumps(res).encode(), "application/json")
+            except Exception:
+                res = dict(self._internal_error(path), device_id=device_id)
+            self._send(200, _dumps(res).encode(), "application/json")
         elif path == "/quipu":
+            # Mesh guidance, calibration and lexicon are model internals; they
+            # are served only when explicitly enabled.
+            if not _flag("CARDCENTER_EXPOSE_QUIPU"):
+                self._send(404, b"not found", "text/plain")
+                return
             try:
                 from .quipu_client import enabled, guidance
 
@@ -1252,28 +2467,60 @@ class Handler(BaseHTTPRequestHandler):
                         "mesh": g.get("mesh"),
                         "numeric_lexicon": (g.get("numeric_lexicon") or [])[:10],
                     }
-            except Exception as exc:  # pragma: no cover - observer is optional
-                payload = {"enabled": False, "error": str(exc)}
-            self._send(200, json.dumps(payload).encode(), "application/json")
-        elif path == "/marketplace/assets":
+            except Exception:  # pragma: no cover - observer is optional
+                payload = dict(self._internal_error(path), enabled=False)
+            self._send(200, _dumps(payload).encode(), "application/json")
+        elif path == "/marketplace/assets" and _flag("CARDCENTER_ENABLE_MARKETPLACE"):
             try:
                 from .marketplace_client import get_marketplace_assets
                 assets = get_marketplace_assets(axis="touch")
-                self._send(200, json.dumps({"ok": True, "assets": assets}).encode(), "application/json")
-            except Exception as exc:
-                self._send(200, json.dumps({"ok": False, "error": str(exc)}).encode(), "application/json")
+                self._send(200, _dumps({"ok": True, "assets": assets}).encode(), "application/json")
+            except Exception:
+                self._send_json(200, self._internal_error(path))
         else:
             self._send(404, b"not found", "text/plain")
 
     def do_POST(self) -> None:
         from urllib.parse import urlparse
 
+        self._minted_token = None
         parsed = urlparse(self.path)
         path = parsed.path
 
+        routes = {"/measure", "/ar/push", "/identify", "/ar/session", "/ar/reset",
+                  "/identify/vote", "/feedback"}
+        if _flag("CARDCENTER_ENABLE_MARKETPLACE"):
+            routes.add("/marketplace/tokenize")
+        if path not in routes:
+            self.close_connection = True
+            self._send(404, b"not found", "text/plain")
+            return
+
+        # Size is checked from the header before any of the body is read.
+        if self.headers.get("Transfer-Encoding"):
+            self._reject(411, "send a Content-Length; chunked bodies are not accepted")
+            return
         try:
-            length = int(self.headers.get("Content-Length", 0))
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self._reject(400, "invalid Content-Length")
+            return
+        if length < 0:
+            self._reject(400, "invalid Content-Length")
+            return
+        if length > MAX_BODY_BYTES:
+            self._reject(413, f"request body is over the {MAX_BODY_BYTES // (1024 * 1024)} MB limit")
+            return
+        try:
             body = self.rfile.read(length) if length > 0 else b""
+        except OSError:  # includes socket timeout
+            self.close_connection = True
+            return
+        if len(body) != length:
+            self.close_connection = True
+            return
+
+        try:
             ctype = self.headers.get("Content-Type", "")
             fields = _parse_multipart(body, ctype) if "multipart/form-data" in ctype else {}
             device_id = self._extract_device_id(fields)
@@ -1293,6 +2540,7 @@ class Handler(BaseHTTPRequestHandler):
                     image,
                     fields.get("holder", b"raw").decode("utf-8", "replace"),
                     fields.get("lens", b"main").decode("utf-8", "replace"),
+                    _parent_crop(fields, image),
                 )
                 payload["device_id"] = device_id
                 if notes:
@@ -1314,13 +2562,16 @@ class Handler(BaseHTTPRequestHandler):
                 if not image_bytes:
                     raise DetectionError("no frame image provided")
 
-                data = np.frombuffer(image_bytes, dtype=np.uint8)
-                frame = cv2.imdecode(data, cv2.IMREAD_COLOR)
-                if frame is None:
-                    raise DetectionError("frame could not be decoded")
+                frame = decode_image(image_bytes, "frame")
 
                 session = _get_or_create_ar_session(device_id, holder=holder, lens=lens)
-                status: ARStatus = session.push(frame)
+                # A tap on the preview picks the card: a shop counter has
+                # several, and the one under the reticle is not always it.
+                aim = (_field_float(fields, "aim_x"), _field_float(fields, "aim_y"))
+                if None not in aim and all(0.0 <= v <= 1.0 for v in aim):
+                    session.select(aim)
+                status: ARStatus = session.push(
+                    frame, source_scale=_field_float(fields, "source_scale"))
 
                 payload = {
                     "ok": True,
@@ -1351,6 +2602,11 @@ class Handler(BaseHTTPRequestHandler):
                         else str(session.verdict)
                     ),
                     "scale": round(status.scale.value, 2) if status.scale else None,
+                    # Information floor of the tracked outline and the
+                    # auto-accept decision (confidence.gate) for the fused ratio.
+                    "information": status.information,
+                    "decision": status.decision,
+                    "decision_reason": status.decision_reason,
                 }
 
             elif path == "/identify":
@@ -1362,45 +2618,22 @@ class Handler(BaseHTTPRequestHandler):
                 image_bytes = fields.get("image") or (body if not fields else None)
                 if not image_bytes:
                     raise DetectionError("no image provided")
-                data = np.frombuffer(image_bytes, dtype=np.uint8)
-                image = cv2.imdecode(data, cv2.IMREAD_COLOR)
-                if image is None:
-                    raise DetectionError("image could not be decoded")
+                from .insitu import owner_token_matches
 
-                from .geometry import find_card_quad, rectify
-                from .recognise import recognise_card
-                from .types import STANDARD_CARD_W_MM
+                payload = _identify_payload(
+                    image_bytes, device_id, owner_token_matches(self.headers.get("X-Bakugo-Owner"))
+                )
 
-                detect_long = 1400
-                s = min(1.0, detect_long / max(image.shape[:2]))
-                small = (
-                    cv2.resize(image, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
-                    if s < 1.0
-                    else image
+            elif path == "/identify/vote":
+                payload = _vote_payload(_json_body(body), device_id)
+
+            elif path == "/feedback":
+                from .insitu import owner_token_matches
+
+                payload = _feedback_payload(
+                    _json_body(body), device_id,
+                    owner_token_matches(self.headers.get("X-Bakugo-Owner")),
                 )
-                ih, iw = small.shape[:2]
-                quad, _, _ = find_card_quad(small, prefer_point=(iw / 2.0, ih / 2.0))
-                quad_full = quad / s
-                ppm = (
-                    float(np.linalg.norm(quad_full[1] - quad_full[0]))
-                    / STANDARD_CARD_W_MM
-                )
-                rect, _ = rectify(image, quad_full, px_per_mm=min(ppm, 24.0))
-                rec = recognise_card(rect)
-                payload = {
-                    "ok": True,
-                    "identified": rec.resolved,
-                    "name": rec.name,
-                    "dex": rec.dex,
-                    "matched_token": rec.matched_token,
-                    "edits": rec.edits,
-                    "alternatives": list(rec.alternatives),
-                    "corroborated": rec.corroborated,
-                    "orientation": rec.orientation,
-                    "tokens_considered": rec.tokens_considered,
-                    "engine": rec.engine,
-                    "warnings": list(rec.warnings),
-                }
 
             elif path == "/ar/session" or path == "/ar/reset":
                 holder = fields.get("holder", b"raw").decode("utf-8", "replace")
@@ -1410,13 +2643,23 @@ class Handler(BaseHTTPRequestHandler):
                 payload = {"ok": True, "device_id": device_id, "status": "reset"}
 
             elif path == "/marketplace/tokenize":
+                # Only routed when CARDCENTER_ENABLE_MARKETPLACE=1 (see above).
+                # Keep that off on any publicly reachable server.
                 try:
                     data = json.loads(body.decode("utf-8")) if body else {}
+                except ValueError:
+                    raise DetectionError("request body must be JSON")
+                if not isinstance(data, dict):
+                    raise DetectionError("request body must be a JSON object")
+                wallet = str(data.get("wallet") or "").strip()
+                if not wallet:
+                    raise DetectionError("wallet is required")
+                try:
                     from .marketplace_client import tokenize_metrology_scan
                     payload = tokenize_metrology_scan(
                         scan_id=str(data.get("scan_id", f"scan-{int(time.time())}")),
                         title=str(data.get("title", "Centering Metrology Scan")),
-                        contributor_wallet=str(data.get("wallet", "0x89A21B7401B5f6d871C7656EC7ab88b098defB75")),
+                        contributor_wallet=wallet,
                         user_id=device_id,
                         centering_ratio=float(data.get("ratio", 50.0)),
                         ratio_ci=data.get("ratio_ci", [49.5, 50.5]),
@@ -1428,20 +2671,21 @@ class Handler(BaseHTTPRequestHandler):
                         shard_price_base=float(data.get("shard_price_base", 10.0)),
                         metadata=data.get("metadata", {}),
                     )
-                except Exception as exc:
-                    payload = {"ok": False, "error": str(exc)}
+                except Exception:
+                    payload = self._internal_error(path)
 
-            else:
+            else:  # pragma: no cover - guarded by `routes` above
                 self._send(404, b"not found", "text/plain")
                 return
 
         except DetectionError as exc:
             payload = {"ok": False, "error": str(exc)}
-        except Exception as exc:  # pragma: no cover
-            traceback.print_exc()
-            payload = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        except Exception:
+            # Details go to the server log only; the client gets a reference.
+            self._send_json(500, self._internal_error(path))
+            return
 
-        self._send(200, json.dumps(payload).encode(), "application/json")
+        self._send(200, _dumps(payload).encode(), "application/json")
 
 
 def local_ip() -> str:
@@ -1455,10 +2699,41 @@ def local_ip() -> str:
         return "127.0.0.1"
 
 
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with a cap on concurrent connections.
+
+    The stock server starts a thread per connection with no limit. Here a
+    connection waits up to two seconds for a free slot and is then dropped.
+    """
+
+    daemon_threads = True
+    request_queue_size = 64
+
+    def __init__(self, *args, max_connections: int = MAX_CONNECTIONS, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._slots = threading.BoundedSemaphore(max(1, max_connections))
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(timeout=2.0):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+
 def serve(host: str = "0.0.0.0", port: int = 8765) -> None:
     if not os.environ.get("CARDCENTER_DB"):
         os.environ["CARDCENTER_DB"] = "cardcenter.db"
-    httpd = ThreadingHTTPServer((host, port), Handler)
+    httpd = BoundedThreadingHTTPServer((host, port), Handler)
     print()
     print("  ========================================================")
     print("  ⚡ Bakugo AR Metrology Server running")

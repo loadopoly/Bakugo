@@ -64,7 +64,7 @@ class SupabaseTransferEngine:
 
     def __init__(
         self,
-        duckdb_path: str = "supabase_vault.duckdb",
+        duckdb_path: Optional[str] = None,
         parquet_dir: str = "data/parquet/supabase",
         docker_container: str = "supabase_db_agard",
     ) -> None:
@@ -73,7 +73,9 @@ class SupabaseTransferEngine:
                 "duckdb is required for the Supabase transfer engine. "
                 "Install with: pip install cardcenter[analytics]"
             )
-        self.duckdb_path = duckdb_path
+        from .vault import vault_path
+
+        self.duckdb_path = vault_path(duckdb_path)
         self.parquet_dir = Path(parquet_dir)
         self.docker_container = docker_container
         self.parquet_dir.mkdir(parents=True, exist_ok=True)
@@ -374,7 +376,7 @@ class SupabaseTransferEngine:
 
 
 def run_transfer(
-    duckdb_path: str = "supabase_vault.duckdb",
+    duckdb_path: Optional[str] = None,
     parquet_dir: str = "data/parquet/supabase",
     sqlite_path: str = "cardcenter.db",
 ) -> Dict[str, Any]:

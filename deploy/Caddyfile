@@ -1,0 +1,51 @@
+# Reverse proxy in front of the Python server (cardcenter.serve uses
+# http.server, which is not meant to face the internet on its own).
+#
+# BAKUGO_PROXY_PORT  port this proxy listens on        (default 8080)
+# BAKUGO_UPSTREAM    host:port of the cardcenter app  (default bakugo:8765)
+{
+	admin off
+	auto_https off
+	persist_config off
+	servers {
+		timeouts {
+			read_header 10s
+			read_body 60s
+			write 60s
+			idle 60s
+		}
+		max_header_size 32KB
+	}
+}
+
+:{$BAKUGO_PROXY_PORT:8080} {
+	# Matches CARDCENTER_MAX_BODY_BYTES (12 MB). The Content-Length check
+	# answers 413 up front; max_size also stops bodies that lie about length.
+	@too_large expression `{http.request.header.Content-Length}.matches('^[0-9]{1,18}$') && int({http.request.header.Content-Length}) > 12582912`
+	respond @too_large "request body is over the 12 MB limit" 413 {
+		close
+	}
+	request_body {
+		max_size 12MB
+	}
+
+	header {
+		-Server
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+	}
+
+	reverse_proxy {$BAKUGO_UPSTREAM:bakugo:8765} {
+		# Pass Cloudflare's scheme through so the app can mark cookies Secure.
+		header_up X-Forwarded-Proto {http.request.header.X-Forwarded-Proto}
+		transport http {
+			dial_timeout 5s
+			response_header_timeout 60s
+		}
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

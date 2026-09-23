@@ -436,8 +436,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--target-duckdb",
         metavar="PATH",
-        default="supabase_vault.duckdb",
-        help="target DuckDB database path (default: supabase_vault.duckdb)",
+        default=None,
+        help="target DuckDB database path (default: $BAKUGO_VAULT_DB, else supabase_vault.duckdb)",
     )
     p.add_argument(
         "--analytics-summary",
@@ -584,6 +584,9 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
     if args.transfer_supabase:
         from .transfer_supabase import run_transfer
+        from .vault import vault_path
+
+        args.target_duckdb = vault_path(args.target_duckdb)
         print(f"\nInitiating Supabase -> DuckDB transfer into '{args.target_duckdb}'...")
         summary = run_transfer(
             duckdb_path=args.target_duckdb,

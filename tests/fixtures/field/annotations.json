@@ -1,0 +1,224 @@
+{
+ "_about": "Card outlines for the field frames, in the frame's own pixels, TL/TR/BR/BL of the outermost visible boundary (the sleeve edge on sleeved cards), annotated by eye at 2x zoom; expect +/-3 px. state: complete | occluded (under another card) | cut_off (runs out of frame) | finger_over_edge | corner_hidden. null = corner not visible.",
+ "frames": {
+  "desk_spread_inset": {
+   "file": "desk_spread_inset.jpg",
+   "scene": "Store-style spread on a wood desk, camera ~40 deg (phone gyro), 4 cards: two stacked (one under the other), one sleeved, one running off the right edge. The exact 540x632 frame the server received (the app's debug inset), upscaled from the screenshot.",
+   "cards": {
+    "grass_energy_top": {
+     "quad": [
+      [
+       46.5,
+       170
+      ],
+      [
+       159,
+       169
+      ],
+      [
+       133,
+       276
+      ],
+      [
+       19,
+       268.5
+      ]
+     ],
+     "state": "complete"
+    },
+    "meganium_sleeved": {
+     "quad": [
+      [
+       340,
+       180
+      ],
+      [
+       444,
+       197.5
+      ],
+      [
+       420,
+       312.5
+      ],
+      [
+       302.5,
+       289
+      ]
+     ],
+     "state": "complete"
+    },
+    "red_card_under": {
+     "quad": [
+      [
+       60,
+       117.5
+      ],
+      [
+       154,
+       117.5
+      ],
+      null,
+      null
+     ],
+     "state": "occluded"
+    },
+    "right_card_edge": {
+     "quad": [
+      [
+       427.5,
+       181.5
+      ],
+      [
+       525,
+       165
+      ],
+      null,
+      [
+       477.5,
+       284
+      ]
+     ],
+     "state": "cut_off"
+    }
+   }
+  },
+  "desk_pair_inset": {
+   "file": "desk_pair_inset.jpg",
+   "scene": "Two cards touching at ~23 deg, motion-soft; the left one sleeved and the blurriest. Exact server frame (debug inset).",
+   "cards": {
+    "meganium_sleeved": {
+     "quad": [
+      [
+       100,
+       172.5
+      ],
+      [
+       260,
+       202.5
+      ],
+      [
+       220,
+       445
+      ],
+      [
+       39,
+       390
+      ]
+     ],
+     "state": "complete"
+    },
+    "dreepy_card": {
+     "quad": [
+      [
+       242.5,
+       159
+      ],
+      [
+       400,
+       122.5
+      ],
+      [
+       492.5,
+       330
+      ],
+      [
+       320,
+       377.5
+      ]
+     ],
+     "state": "complete"
+    }
+   }
+  },
+  "desk_close_inset": {
+   "file": "desk_close_inset.jpg",
+   "scene": "One sleeved card close up at ~17 deg with a second card cut off at the right. Exact server frame (debug inset).",
+   "cards": {
+    "meganium_sleeved": {
+     "quad": [
+      [
+       155,
+       136
+      ],
+      [
+       385,
+       152.5
+      ],
+      [
+       365,
+       465
+      ],
+      [
+       119,
+       442.5
+      ]
+     ],
+     "state": "complete"
+    },
+    "right_card_edge": {
+     "quad": [
+      null,
+      null,
+      null,
+      null
+     ],
+     "state": "cut_off"
+    }
+   }
+  },
+  "hand_ar1": {
+   "file": "hand_ar1.jpg",
+   "scene": "Card held up in a hand in a car, thumb over the lower right edge. Live preview from a screenshot, HUD, guide lines and viewfinder border inpainted, scaled to 540x632.",
+   "cards": {
+    "miraidon_in_hand": {
+     "quad": [
+      [
+       189.59758551307849,
+       101.04627766599597
+      ],
+      [
+       460.14084507042253,
+       97.7867203219316
+      ],
+      [
+       442.7565392354125,
+       480.784708249497
+      ],
+      [
+       184.7082494969819,
+       468.2897384305835
+      ]
+     ],
+     "state": "finger_over_edge"
+    }
+   }
+  },
+  "hand_ar2": {
+   "file": "hand_ar2.jpg",
+   "scene": "Same card, lower right corner hidden (under the debug inset in the screenshot, inpainted).",
+   "cards": {
+    "miraidon_in_hand": {
+     "quad": [
+      [
+       126.03621730382294,
+       71.16700201207243
+      ],
+      [
+       404.72837022132796,
+       86.9215291750503
+      ],
+      [
+       386.80080482897387,
+       475.3521126760563
+      ],
+      [
+       100.50301810865191,
+       459.0543259557344
+      ]
+     ],
+     "state": "corner_hidden"
+    }
+   }
+  }
+ }
+}

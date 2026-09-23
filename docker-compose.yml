@@ -1,3 +1,12 @@
+# Request path:
+#
+#   Cloudflare Tunnel ──> caddy:8080 ──> bakugo:8765
+#   (host cloudflared via 127.0.0.1:8765, or the `cloudflared` service below)
+#
+# bakugo sits only on the `backend` network, which is `internal: true`: it has
+# no route to the internet or to your LAN (router, NAS, other PCs). Only caddy
+# and cloudflared can reach it.
+
 services:
   bakugo:
     build:
@@ -5,18 +14,239 @@ services:
       dockerfile: Dockerfile
     image: bakugo:dev
     container_name: bakugo
-    ports:
-      # Expose on 0.0.0.0 so mobile phones on WiFi or local native shells can connect
-      - "8765:8765"
+    # No `ports:` here on purpose. caddy is the only way in.
     environment:
       CARDCENTER_DB: /data/cardcenter.db
-      # Point at a running QUIPU Observer to join the learning mesh.
-      # In the combined stack (Loadopoly-OCR/docker-compose.yml) this is
-      # http://quipu:7100; standalone it can be a host-mapped URL.
+      # Browser origins allowed to call the API (comma-separated).
+      CARDCENTER_CORS_ORIGINS: ${CARDCENTER_CORS_ORIGINS:-https://bakugo.loadopoly.com,https://loadopoly.com,https://localhost,capacitor://localhost}
+      # auto = mark the device cookie Secure when the request came in over HTTPS.
+      CARDCENTER_COOKIE_SECURE: ${CARDCENTER_COOKIE_SECURE:-auto}
+      CARDCENTER_MAX_BODY_BYTES: "12582912"
+      # Off on the public server. Set to 1 only on a private instance.
+      CARDCENTER_EXPOSE_QUIPU: "0"
+      CARDCENTER_ENABLE_MARKETPLACE: "0"
+      CARDCENTER_TRUST_DEVICE_HEADER: "0"
+      # QUIPU Observer URL. `backend` is internal, so the observer has to be a
+      # container attached to the `backend` network (e.g. http://quipu:7100);
+      # a host or internet URL is unreachable from here.
       CARDCENTER_QUIPU_URL: ${CARDCENTER_QUIPU_URL:-}
+      # Service-worker second vote: model.json, model.onnx and the self-hosted
+      # onnxruntime-web WASM bundle (see cardcenter/embed.py). Empty -> no vote.
+      CARDCENTER_EMBED_DIR: /embed
+      # In-situ learning from YOUR devices: requests carrying this token in
+      # X-Bakugo-Owner may save confirmed photos to the private inbox. At least
+      # 24 characters; unset disables it. Keep it in .env, never in this file.
+      CARDCENTER_OWNER_TOKEN: ${CARDCENTER_OWNER_TOKEN:-}
+      CARDCENTER_INSITU_INBOX: /inbox
     volumes:
       - bakugo_data:/data
+      # Point BAKUGO_EMBED_DIR_HOST at the folder holding the model files.
+      - ${BAKUGO_EMBED_DIR_HOST:-bakugo_embed}:/embed:ro
+      # Point BAKUGO_INBOX_HOST at <private root>\inbox so the trainer sees
+      # what your devices confirm. Only this subfolder of the private tier is
+      # mounted here.
+      - ${BAKUGO_INBOX_HOST:-bakugo_inbox}:/inbox
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    read_only: true
+    user: "10001:10001"
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 2g
+    memswap_limit: 2g
+    cpus: 2.0
+    pids_limit: 256
+    networks:
+      - backend
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
     restart: unless-stopped
+    # Never mount /var/run/docker.sock into this container.
+
+  # One-shot: an existing bakugo_data volume was written by root. Hand it to
+  # the unprivileged app user (UID 10001) before the app starts.
+  volume-init:
+    image: busybox:1.36
+    command: ["sh", "-c", "mkdir -p /data/parquet && chown -R 10001:10001 /data && (chown -R 10001:10001 /inbox || true)"]
+    volumes:
+      - bakugo_data:/data
+      - ${BAKUGO_INBOX_HOST:-bakugo_inbox}:/inbox
+    network_mode: none
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: bakugo-proxy
+    ports:
+      # Loopback only: reachable by cloudflared running on this PC, not by the
+      # LAN. For phones on Wi-Fi, use https://bakugo.loadopoly.com instead.
+      # BAKUGO_BIND=0.0.0.0 re-opens LAN access if you really need it.
+      - "${BAKUGO_BIND:-127.0.0.1}:8765:8080"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+    tmpfs:
+      - /data:size=16m
+      - /config:size=16m
+    read_only: true
+    cap_drop: [ALL]
+    # The caddy binary carries this file capability; without it exec fails.
+    cap_add: [NET_BIND_SERVICE]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 128
+    networks:
+      - edge
+      - backend
+    depends_on:
+      - bakugo
+    restart: unless-stopped
+
+  # Optional: run the tunnel as a container instead of on the host.
+  #   1. Put TUNNEL_TOKEN=... in a .env file next to this compose file
+  #      (Cloudflare Zero Trust > Networks > Tunnels > your tunnel > Docker).
+  #   2. In the tunnel's public hostname, set the service to http://caddy:8080
+  #   3. docker compose --profile tunnel up -d
+  #   4. Stop the host cloudflared service and set BAKUGO_BIND to nothing, or
+  #      delete caddy's `ports:` entry, so no host port is published at all.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: [tunnel]
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    pids_limit: 128
+    networks:
+      - edge
+      - backend
+    depends_on:
+      - caddy
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Private trainer (profile `trainer`). Not part of `docker compose up`.
+  # Neither service is on `edge` or `backend`, so neither is reachable through
+  # caddy or the tunnel, and neither can reach bakugo.
+  #
+  #   docker compose --profile trainer run --rm trainer-sync   # network, Drive only
+  #   docker compose --profile trainer run --rm trainer day    # offline
+  #   docker compose --profile trainer run --rm trainer night  # offline
+  #   docker compose --profile trainer run --rm trainer dawn   # offline
+  #
+  # BAKUGO_PRIVATE_ROOT_HOST: host folder outside this repo, e.g.
+  #   %LOCALAPPDATA%\Bakugo\private
+  # BAKUGO_RCLONE_CONFIG_HOST: host rclone.conf (remote with scope drive.readonly)
+  # Both go in the shell environment or a .env file, never in this file.
+  trainer-sync:
+    profiles: [trainer]
+    build:
+      context: .
+      dockerfile: Dockerfile.trainer
+    image: bakugo-trainer:dev
+    command: ["sync"]
+    environment:
+      BAKUGO_PRIVATE_ROOT: /private
+      BAKUGO_RCLONE_REMOTE: ${BAKUGO_RCLONE_REMOTE:-bakugo-drive}
+      # Checked by the trainer at run time. A compose "required variable"
+      # would make every `docker compose` command fail, including `up` for the
+      # public app, whenever the trainer is not configured.
+      BAKUGO_DRIVE_FOLDER: ${BAKUGO_DRIVE_FOLDER:-}
+      RCLONE_CONFIG: /secrets/rclone.conf
+      # Windows bind mounts report mode 0777, so the POSIX permission check is
+      # meaningless here; the host ACL (icacls) is the control.
+      BAKUGO_SECRET_PERMS: acl
+    volumes:
+      # Long syntax with create_host_path: false, so an unset or mistyped
+      # path fails instead of Docker creating an empty folder somewhere.
+      - type: bind
+        source: ${BAKUGO_PRIVATE_ROOT_HOST:-/unset/BAKUGO_PRIVATE_ROOT_HOST}
+        target: /private
+        bind:
+          create_host_path: false
+      # read-write: rclone rewrites the file when it refreshes the access token
+      - type: bind
+        source: ${BAKUGO_RCLONE_CONFIG_HOST:-/unset/BAKUGO_RCLONE_CONFIG_HOST}
+        target: /secrets/rclone.conf
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:size=256m
+    read_only: true
+    user: "10002:10002"
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - trainer_egress
+    restart: "no"
+
+  trainer:
+    profiles: [trainer]
+    build:
+      context: .
+      dockerfile: Dockerfile.trainer
+    image: bakugo-trainer:dev
+    command: ["status"]
+    # No network at all: after sync, nothing the trainer does can leave the host.
+    network_mode: none
+    environment:
+      BAKUGO_PRIVATE_ROOT: /private
+      BAKUGO_TRAINER_REQUIRE_OFFLINE: "1"
+      CARDCENTER_QUIPU_DISABLE: "1"
+      # Trainer tables live in the `trainer` schema of the local vault.
+      BAKUGO_VAULT_DB: /vault/${BAKUGO_VAULT_NAME:-supabase_vault.duckdb}
+      # The app's SQLite file, opened read-only, for aggregate public feedback.
+      BAKUGO_APP_DB: /appdata/cardcenter.db
+      # Deliberately absent: CARDCENTER_QUIPU_URL, any SUPABASE_* variable,
+      # QUIPU_ATTEST_KEY_FILE, QUIPU_REALISE_GRANT_REF, the rclone config.
+    volumes:
+      - type: bind
+        source: ${BAKUGO_PRIVATE_ROOT_HOST:-/unset/BAKUGO_PRIVATE_ROOT_HOST}
+        target: /private
+        bind:
+          create_host_path: false
+      # The folder holding supabase_vault.duckdb (DuckDB writes a .wal file
+      # beside it, so the folder is mounted, not the file). Keep it out of the
+      # repository; Run-Trainer.ps1 refuses a vault folder inside it.
+      - type: bind
+        source: ${BAKUGO_VAULT_DIR_HOST:-/unset/BAKUGO_VAULT_DIR_HOST}
+        target: /vault
+        bind:
+          create_host_path: false
+      - bakugo_data:/appdata
+    tmpfs:
+      - /tmp:size=512m
+    read_only: true
+    user: "10002:10002"
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 4g
+    pids_limit: 256
+    restart: "no"
+
+networks:
+  # No external access. bakugo lives only here.
+  backend:
+    internal: true
+  # Normal bridge network for the proxy and the tunnel.
+  edge: {}
+  # Outbound only, for trainer-sync's rclone traffic to Google Drive.
+  trainer_egress: {}
 
 volumes:
   bakugo_data:
+  bakugo_embed:
+  bakugo_inbox:

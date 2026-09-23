@@ -9,6 +9,364 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.17.0] - 2026-09-23
+
+A reader built for the counter, from the owner's own shop-style frames: cards on light
+wood at 17-40 degrees of tilt, sleeved, two or three to a frame, one lying on another, a
+thumb over an edge, motion blur. Those frames are now the regression set
+(`tests/fixtures/field`, with outlines in `annotations.json`); on them the contour detector
+alone found the card under the reticle in 0 of 17 checks.
+
+### Added
+- **`cardcenter/scene.py`: find cards from straight edges, not closed contours.** A silver
+  or sleeve edge on light wood is the weakest edge in the picture, weaker than the artwork
+  inside it, so no threshold gives a closed outline. The scene search takes line segments
+  (LSD on the L, a and b channels -- the edge is faint in brightness and clear in colour),
+  pairs roughly parallel lines around the aim point, and judges every quad on the picture:
+  * edge support with one polarity all the way along each side (texture crossing a line has
+    random polarity; a boundary does not), three sides well seen and the fourth at least
+    partly, so a thumb or an overlapping card over one side is survivable;
+  * card shape through the perspective: the quad is un-projected and must be a 63.5 x 88.9
+    mm rectangle, so a card at 40 degrees (1.1 in the image) is accepted and a 1.1
+    rectangle seen face-on is not;
+  * corners where the edges stop: a quad whose two sides both run on past the ends of the
+    third is half a card (the artwork's lower edge between the card's own sides) and is
+    refused;
+  * a face that is not the counter: lines from the counter's edge, one card's side and
+    another's end can close a big, well-supported quad around bare wood; if most of its middle
+    matches what lies just outside any one of its sides, it is refused;
+  * nesting: the sleeve over the card and the card over its printed frame win when nearly as
+    well supported, and the card around its art window wins when the window sits in it the
+    way card art does (inside the border, starting under the name bar, stopping about half
+    way).
+  Reports per-side support, whether all four sides were seen, the recovered tilt and aspect.
+  On the field frames, end to end the way the phone does it (JPEG at 0.75 and 0.92, a tap on
+  the card, two pushes to the live session): 9 of 9 tap points on every card but one (below),
+  against 0 before. At the full frame size, 156 of 168 aim points (12 per card, JPEG and PNG);
+  every measurable card found by `locate_card` (IoU >= 0.8 with the hand-drawn outline, 0.7
+  for the softest); the nearest complete card when the reticle is on bare counter. On synthetic cards on a light background its corners
+  are 1-2 px out on a 1440 px frame where the contour detector's were 3-23 px.
+- **`locate_card` runs both detectors.** The contour detector's outline is kept when the scene
+  search judges it a card about as well supported and it is the same card (it is sub-pixel on a
+  plain mat); otherwise the scene search's is used. The live tracker, `/measure` (via
+  `framing`) and `/identify` all acquire through it; the live measurement now locates inside its
+  crop with it too and passes the outline on, instead of re-running the contour detector alone.
+- **Tap a card to pick it.** On a counter the card under the reticle is not always the one
+  you want. A tap on the preview sends the point with the next frame (`aim_x`, `aim_y` on
+  `/ar/push`, 0..1 of the pushed frame); the session starts over on the card there
+  (`ARSession.select`). The same tap still sets the focus point.
+- **"Too far" says whether a photo would do.** The live frame is 540 px across, which at a
+  counter is almost always too coarse to measure live, while the Measure Card photo has
+  the camera's full resolution. The phone now sends `source_scale` (camera pixels per pushed
+  pixel) and the guidance says "live view too coarse here (1.5 px/mm) -- hold still and tap
+  Measure Card (photo ~6.0 px/mm)", or that even the photo would be too coarse.
+- `tests/test_field.py` (the field frames, the tap, the photo hint, synthetic corner accuracy
+  on dark and light backgrounds at 0-45 degrees, pose recovery) and a browser test for the
+  tap and `source_scale`.
+
+### Changed
+- When no card is found the guidance says "no card found here -- point the centre of the view
+  at a card, or tap the card on screen" instead of the contour detector's "shoot the card
+  against a plain contrasting background", which nobody can do at a shop.
+
+### Known limits
+- **A card lying exactly on another, sides aligned** (desk_spread's energy card on the card
+  under it): at the live 540 px size the pair is a card-shaped quad better supported than the
+  top card alone, and the reader outlines the pair (0 of 9 tap points; 9-11 of 12 at the full
+  frame size). Tried and dropped: the phone's tilt as a prior (the pair is card-shaped at a
+  plausible tilt too), and refusing quads cut across by a full-width edge (card texture
+  triggers it on single cards). Nudging the top card off the one beneath fixes it. The debug
+  inset shows the exact frame the server saw: a screenshot of a miss is a new fixture.
+- The phone's tilt prior (`SceneSearch(expected_tilt_deg=...)`) is implemented but not sent:
+  on the field frames it found the card from 153 of 168 aim points against 156 without.
+- Acquisition costs 150-700 ms on a 540 px frame (tracking after that is ~20 ms).
+
+## [2.16.1] - 2026-09-23
+
+From three field screenshots (Android Chrome, 2160x3840 camera, cards on a desk at 17-40
+degrees of tilt): the live view said PUSH FAILED on every frame, with the inset reading
+`HTTP 200 not JSON: {"ok": true, "trackin...`.
+
+### Fixed
+- **`/ar/push` answers were not JSON on soft frames.** When a side of the card has no finite
+  information floor (not visible against the background, or too blurred), its capture advice
+  carries `gain = inf`, and `json.dumps` wrote that as the bare token `Infinity`. Browsers'
+  `JSON.parse` rejects it, so every answer failed to parse while the server was tracking.
+  Reproduced on a synthetic 540x632 frame with a 1.5 px blur. Fixed at the source
+  (`QuadInformation.to_dict`, `SideInformation.to_dict` write non-finite values as `null`) and
+  for every response: `serve._dumps` replaces any non-finite float with `null` and writes with
+  `allow_nan=False`, so a future inf fails loudly in tests instead of silently on the phone.
+- **The page tolerates it from an older server:** `parseReply` retries with bare
+  `NaN`/`Infinity` read as `null` before reporting a parse failure.
+
+### Added
+- **Continuous autofocus and tap to focus.** The screenshots were soft close up and the
+  guidance was "hold steadier or let it refocus". The track is asked for
+  `focusMode: continuous` where it offers it, and a tap on the preview sets the focus point
+  (`pointsOfInterest`, single-shot, back to continuous after 4 s). Cameras without focus
+  controls ignore the tap.
+- Tests: strict-JSON parse of `/ar/push` on a soft frame and of `_dumps` (Python); an older
+  server's `Infinity` still tracks, and a tap on a camera without focus controls is a no-op
+  (browser).
+
+## [2.16.0] - 2026-09-23
+
+Shop-floor readiness: what broke, or would have, on a phone at a local card shop.
+
+### Changed
+- **The still upload is the card, not the photo.** A full-resolution still (3-12 MB) went up
+  twice, to `/measure` and `/identify`, with no time limit, over whatever signal the shop has.
+  The app now crops the photo to the card it was tracking, with a margin of 0.6x the card's long
+  side each way so a small preview-to-photo mapping error cannot cut the card off, and sends
+  `crop_x`/`crop_y`/`full_w`/`full_h` so the server keeps the lens geometry: the focal length
+  comes from the whole photo's width and the principal point from its centre, the same rule
+  `framing` already applied to its own crops. Measured on a 650 mm synthetic capture the crop
+  is under a quarter of the whole JPEG and the ratio agrees with the whole-photo measurement to
+  within 0.6 pp. No tracked card (gallery upload, lost lock): the photo goes as taken, shrunk
+  only if it is over the server's 40 MP / 12 MB limits.
+- **Uploads have a deadline.** `/measure` and `/identify` give up after 60 s with a message
+  about the signal, instead of leaving the button on "Calculating" for good. The live loop
+  pauses while a still is uploading so the two do not share a weak uplink.
+- **The live box no longer flickers on a slow link.** It was dropped as stale 800 ms after the
+  last answer; at a second per round trip that is every frame. The limit now follows the
+  measured round trip (2.5x its running average, 800 ms to 4 s).
+- **Card detection floor follows pixels, not frame fraction.** `find_card_quad` ignored regions
+  under 0.8% of the frame, so the same card at the same distance was found on a 12 MP phone and
+  missed on a 50 MP one. The limit is now 80% of a card at the measurable floor (4.5 px/mm),
+  clamped to 0.15-0.8% of the frame (`framing.min_area_frac_for`). On a 27 MP synthetic frame
+  with the card at 5 px/mm the old limit locked onto the wrong region (7.2 px/mm reported);
+  the new one finds the card and measures within 1 pp.
+- **`/identify` locates coarse to fine.** It searched a 1400 px copy of the whole photo, where a
+  card across a counter is too small to find or read; it now uses the same two-pass search as
+  `/measure` and reads the card inside a generous crop of the original pixels. Quad and
+  `image_size` stay in full-photo coordinates.
+
+- **`deploy/Rebuild.ps1` deploys the stack that is actually serving.** On the hideout PC the
+  live server is `bakugo-app` in the parent hideout compose project (which builds `./Bakugo`);
+  the script ran this repo's compose file, collided with that stack's `bakugo` container name
+  and deployed nothing, so the phone kept getting 2.14.0. It now finds the running `bakugo:dev`
+  container, reads the compose file and service that own it, and rebuilds and restarts only
+  that service (`--no-deps`). `-ComposeFile` / `-Service` override it.
+
+### Added
+- Screen wake lock while the camera is up, re-taken when the page becomes visible again.
+- Tests: `tests/test_framing.py` (big-sensor floor, phone-side crop intrinsics, crop placement
+  validation, crop vs whole-photo agreement, identify at distance) and two browser tests (the
+  still upload is the tracked card with its placement, the live loop yields to it; a hung
+  upload reports itself).
+
+## [2.15.0] - 2026-09-22
+
+Shooting from across a counter: a shop, a stand, a display case.
+
+### Added
+- **`cardcenter/framing.py`: crop to the card, then cap.** Both measurement paths capped the
+  whole frame before measuring (2400 px for a photo, 1200 px live), which on a card
+  photographed from a distance discarded exactly the pixels the borders needed. The card is
+  located first -- coarse to fine, and across two detector working sizes, because detection is
+  not monotonic in scale (on a 3000x4000 frame the detector returned the card at 2400 px and
+  the artwork panel at 1400 px) -- and the cap then applies to the crop. Intrinsics travel with
+  it: cropping does not change the lens, so the focal length scales with the resize only and
+  the principal point moves by the crop origin. Measured against ground truth at 313 px of card
+  width: 0.08 pp with the crop, 4.34 pp (or a refusal) without.
+- **A resolution floor on the photo path.** Below `capture.MIN_PX_PER_MM` (4.5) `/measure`
+  refuses and says how many px/mm the card has, instead of reporting a number: at 4.0 px/mm the
+  measurement came back 25 pp from truth with an error bar that did not cover the miss.
+- **Zoom bar in the live view.** Uses the camera's own zoom where the track exposes one
+  (`2.0x cam`, real detail) and falls back to a capture crop otherwise (`2.0x crop`, which
+  spends the 540 px detector budget on a smaller region without adding detail).
+- **Camera picker** (Settings -> Camera). A telephoto module reaches further than any crop; the
+  existing `Lens` dropdown only tells the optics model which field of view to assume and never
+  switched cameras.
+- **Full-resolution stills.** The measurement photo comes from `ImageCapture.takePhoto()` where
+  supported -- the sensor's frame rather than the ~1080p preview -- falling back to the video
+  frame, with the inset footer saying which was used. The stream is now requested at up to 4K.
+- **`docs/FIELD_CAPTURE.md`**: the px/mm table, what the zoom readout means, and what to do at
+  a counter.
+
+### Changed
+- The live loop measures a crop around the tracked card rather than the downscaled frame, and
+  re-detects inside that crop instead of reusing the tracked outline: the 1-euro filtered quad
+  measured up to 4.3 pp from truth where a fresh detection in the crop was within 0.7 pp.
+- The "too far away" gate now judges the resolution the crop will have, not the whole frame, so
+  shots the crop can measure are no longer refused.
+
+## [2.14.2] - 2026-09-22
+
+### Fixed
+- **One hung `/ar/push` killed the session.** The fetch had no timeout, so a request that never
+  settled left `isPushing` true for good: every later tick returned early, and the HUD and the
+  debug inset froze on the last good response while the camera carried on. Seen in the field as
+  a teal box sitting over a scene it no longer described, with an inset frame several seconds
+  old. Requests now abort after 4 s (counted as `timeouts`), the watchdog clears a request still
+  outstanding after 8 s, and both report the reason.
+- **A stale overlay is no longer drawn.** If the last good response is more than 800 ms old the
+  quad is dropped and the chip says `RECONNECTING`, instead of leaving a box from an old frame
+  on a live preview. The inset footer shows the age of the frame it is displaying (`live` or
+  `N.Ns old`).
+- **Tracking detail on portrait cameras.** 2.14.1 scaled the cover-cropped region so its LONG
+  side was 540, which on a portrait stream (1080x1920 here) made the card smaller than the
+  uncropped frame had. The crop is now scaled to 540 across, with the height capped at 960, so
+  detail is unchanged on a portrait camera and about 2x better on a landscape one, in both
+  cases without the scene the user cannot see.
+
+### Added
+- `tests/browser/test_ar_loop.py` covers the two new cases: a request that never answers does
+  not stop the loop, and a stale overlay is dropped.
+
+## [2.14.1] - 2026-09-20
+
+### Fixed
+- **Live AR could preview forever without ever sending a frame.** The push loop was started
+  from a single `loadedmetadata` handler, and every failure inside `arTick` was swallowed by an
+  empty `catch`, so a loop that never started and a loop whose every request failed both looked
+  like "SEARCHING" with an unpainted 300x150 debug inset. The loop now starts from
+  `loadedmetadata`, `playing`, `resize`, an explicit call and a watchdog that retries twice a
+  second, all idempotent; failures land in `arStats` (pushes, ok, fail, HTTP status, round-trip,
+  frame size, last error), on the HUD chip (`NO CAMERA FRAMES`, `LOOP NOT RUNNING`,
+  `FRAME CAPTURE FAILED`, `PUSH FAILED`, `SERVER REFUSED FRAME`), in the inset's footer, and in
+  the console. A non-JSON reply (a tunnel or proxy error page) is reported with its status and
+  first bytes instead of being discarded.
+- **The detector was sent the whole camera frame, not the part the user framed.** `#ar-video`
+  is `object-fit: cover`, so a 1920x1080 stream in a portrait viewport shows about 42% of its
+  width; the card lined up inside the guides arrived at about a fifth of the frame area, with
+  scene the user could not see around it. `arTick` now posts exactly the visible rectangle
+  (`coverCrop()`), long side 540, and `drawARHUD` maps the returned quad back through that crop.
+  On a 1920x1080 stream in a 412x915 viewport the card is now 2.4x larger in the posted frame.
+- **AR guidance repeated a canned line.** When detection refuses, the session now passes the
+  detector's own reason through ("could not locate a card-shaped quadrilateral. Shoot the card
+  against a plain contrasting background with all four edges visible") instead of
+  "point at a card, all four edges in frame".
+
+### Added
+- `tests/browser/test_ar_loop.py`: the live-AR loop in Chromium with a fake camera, against a
+  stub server. Pins that frames are posted, that the posted frame is the cover-cropped region,
+  that the quad maps back through the crop, that the inset is painted, and that a 502 HTML
+  reply surfaces as an error. Skipped where playwright or chromium is not installed.
+
+## [2.14.0] - 2026-09-16
+
+### Added
+- **Private trainer (`trainer/`, `Dockerfile.trainer`, compose profile `trainer`).** Nightly
+  loop against your curated card photos: `trainer-sync` mirrors the Google Drive folder with
+  rclone (`drive.readonly` scope enforced, `copy` never deletes), and the `trainer` service
+  (`network_mode: none`) runs `day` (manifest diff keyed by SHA-256, one-time PDF
+  rasterisation, split, pseudo-labels, review queue), `night` (fit on confirmed train labels,
+  evaluate against the champion on the frozen test set) and `dawn` (one promotion decision:
+  paired-bootstrap gain outside the error bars and no regression in any resolution slice).
+  Splits group by physical card (`card_uid`) and a 256-bit near-duplicate hash; frozen test
+  items never move, and a training item later linked to one is quarantined. Pseudo-labels live
+  in their own table and never count as confirmed. Tasks: `quad_detect`, `back_hue`.
+  `trainer/Run-Trainer.ps1` runs a phase for Task Scheduler. See `docs/PRIVATE_TRAINER.md`.
+- **Trainer tables in the local vault.** The manifest, labels, prices and promotion log are the
+  `trainer` schema of `supabase_vault.duckdb` (`BAKUGO_VAULT_DB`). A vault inside the repository
+  is accepted only while git and `.dockerignore` exclude it and its `.wal`
+  (`cardcenter/vault.py`). `cardcenter --transfer-supabase` now also honours `BAKUGO_VAULT_DB`.
+- **Release guard (`cardcenter/release_guard.py`).** The public `Dockerfile` refuses a build
+  whose package holds a collection-derived or untagged artifact (card index, priced priors,
+  sticker dataset, number priors), a nested payload, a hash mismatch or missing lineage.
+  `python -m trainer release <task>` publishes a promoted generic artifact to
+  `cardcenter/data/released/`.
+- **QUIPU proposals, never realisations.** The trainer writes collector-number priors (confirmed
+  train labels only) to `<private>/outbox/quipu/` with `realised: false`, and refuses to run
+  while it can see `QUIPU_ATTEST_KEY_FILE`, `QUIPU_REALISE_GRANT_REF` or a readable
+  `attest.key`.
+- **Information floor along the card outline (`cardcenter/edge_information.py`).** The
+  Cramer-Rao and shot-noise bounds from `information.py` are now measured on the camera frame
+  along each side of the detected quad (per colour channel, outermost resolvable edge, local
+  flat bands): per-side contrast, noise, blur, edge offset, corner sigma, the ratio floor, and
+  capture advice ranked by how much each change lowers the floor (closer ~ ppm^-1.5, contrast
+  ~ 1/C, blur ~ sqrt(sigma_p), light). `locate_card` runs `find_card_quad` and then moves each
+  side onto the edge it actually found, kept only if re-measurement confirms it. On synthetic
+  captures at the 540 px tracking size, `find_card_quad` placed the outline about one border
+  width outside the card in 9 of 10 frames (35-40 px at full resolution); after the snap the
+  error was under 3 px.
+- **Card-back hue references (`cardcenter/hue_reference.py`).** Hues are no longer hard-coded:
+  the registry resolves `BAKUGO_HUE_REFERENCES`, then the released `back_hue` artifact, then
+  defaults marked `uncalibrated` where they were never measured. Classification uses the
+  distance in sigmas (reference spread and the crop's own standard error from its measured
+  noise and chroma), abstains between references, and takes price labels from a
+  `LabelProfile`.
+- **General price attribution (`cardcenter/pricing.py`).** Any source (sticker, tag,
+  shelf_sign, page_label, receipt, listing, verbal, manual), any scope (item, page, box, lot,
+  venue) and kind (asking, paid, sold, estimate). `parse_price_text` reads `$2.50`, `2,50 €`,
+  `50c`, `3 for $1`, and refuses bare numbers. `resolve_item_price` picks the most specific
+  attribution and splits lot prices per item. The trainer stores attributions
+  (`confirm-file` `price`, `import-prices`) and exports each test item's resolved price.
+- **In-situ learning (`cardcenter/insitu.py`, `docs/IN_SITU_LEARNING.md`).** `/identify` records
+  each result per device and returns `identification_id`, the outline, its information floor and
+  a decision. `POST /feedback` takes confirm / correct / reject plus a price; it updates that
+  device's own encounter counts, which break OCR ties between species names only on clear
+  history (>= 3 confirmations, >= 3:1). Requests carrying `CARDCENTER_OWNER_TOKEN`
+  (`X-Bakugo-Owner`) also write the confirmed photo, label and price to the private inbox, which
+  the trainer imports as confirmed (`owner-device:<id>`). Other devices' feedback reaches the
+  trainer only as aggregate review items, without images or device ids.
+- **Service-worker second vote (`/sw.js`, `cardcenter/embed.py`).** A module service worker runs
+  an ONNX embedding model with a self-hosted onnxruntime-web WASM bundle
+  (`CARDCENTER_EMBED_DIR`) and compares the rectified crop with the cards this device has
+  confirmed (IndexedDB, never uploaded). `POST /identify/vote` applies
+  `confidence.gate_identification`: accept only when OCR and the embedding name the same card,
+  the match is strong, the device index has at least 3 cards, every side of the outline is
+  resolvable, and the frame is within 1.6x the photon floor. Without a model the worker answers
+  `available: false`. Verified in Chromium with onnxruntime-web 1.30.0.
+- The web app shows the decision and both votes, and has confirm / fix / wrong buttons with a
+  price field and source; Settings has an Owner Token field.
+- `/ar/push` returns `information`, `decision` and `decision_reason`.
+
+### Changed
+- **AR tracking uses measured uncertainty.** `ARSession` acquires with `locate_card`, snaps the
+  tracked outline to its measured edges, sets the 1-euro filter's cutoff and the next normal
+  search radius from the achieved corner sigma (line-fit residuals, bounded below by the
+  Cramer-Rao floor), refuses to measure when a side has no resolvable edge or the floor
+  exceeds the grade gate's limit (with the change that would help most as guidance), and runs
+  `confidence.gate` on the fused ratio. `track_quad(..., return_stats=True)` returns the fit
+  residuals.
+- `ingest.binder_sticker.classify_back_franchise` delegates to `hue_reference`. The orange
+  price-bar band is excluded only while it covers less than 35% of the usable pixels, so a
+  brown Yu-Gi-Oh back brighter than V = 80 is no longer masked out entirely.
+- Package data includes `static/*.js` and `data/released/*/*.json`.
+- `.gitignore` / `.dockerignore` exclude the private tier's files, `*.duckdb.wal` and
+  credentials; local databases stay on disk and are only kept out of the image build upload.
+
+### Fixed
+- **`recognition_eval.py --quipu off` never turned QUIPU off.** `quipu_client.base_url()`
+  falls back to `http://127.0.0.1:7100`, so `enabled()` was always true and removing
+  `QUIPU_URL` changed nothing. `CARDCENTER_QUIPU_DISABLE=1` now disables the client, and the
+  evaluator's off pass sets it.
+- `cardcenter.__version__` said 2.11.0 while the package was 2.13.2; both are now 2.14.0.
+
+### Security
+- **Tenant identity is issued by the server.** `/my-scans`, `/my-analytics`, `/measure` and the
+  AR routes no longer trust `X-Device-ID`, `X-Client-ID`, `?device_id=` or a `device_id` form
+  field, which let any caller read another device's scan history. The server now issues a
+  random token (`bakugo_device` HttpOnly cookie; `X-Device-Token` header plus
+  `Authorization: Bearer` for allowed cross-origin clients such as the mobile shell) and stores
+  scans under `dev_<sha256(token)>`. Scans saved under the old browser-generated ids are not
+  visible to the new identities. `CARDCENTER_TRUST_DEVICE_HEADER=1` restores the old behaviour
+  for a private LAN-only server.
+- **`/marketplace/tokenize` and `/marketplace/assets` are off** unless
+  `CARDCENTER_ENABLE_MARKETPLACE=1`. The hardcoded default wallet is removed; `wallet` is required.
+- **`/quipu` is off** unless `CARDCENTER_EXPOSE_QUIPU=1`.
+- **Request limits.** Bodies over `CARDCENTER_MAX_BODY_BYTES` (12 MB) get 413 before any of the
+  body is read; chunked bodies get 411; bad `Content-Length` gets 400. Images are checked from
+  the JPEG/PNG/WebP header against `CARDCENTER_MAX_IMAGE_PIXELS` (40 MP) before decoding, and
+  other formats are refused. Sockets time out after `CARDCENTER_SOCKET_TIMEOUT` (30 s),
+  concurrent connections are capped at `CARDCENTER_MAX_CONNECTIONS` (32), and in-memory AR
+  sessions at `CARDCENTER_MAX_AR_SESSIONS` (256, LRU). `OPENCV_IO_MAX_IMAGE_PIXELS` is set.
+- **CORS is an allowlist** (`CARDCENTER_CORS_ORIGINS`; default `https://bakugo.loadopoly.com`,
+  `https://loadopoly.com`, and the Capacitor origins `https://localhost`, `capacitor://localhost`)
+  instead of `*`.
+- **Errors are generic.** Unhandled exceptions return HTTP 500 with `"internal error"` and a
+  `ref`; the traceback goes to the server log only. Responses also carry `nosniff`,
+  `Referrer-Policy: no-referrer` and `X-Frame-Options: DENY`.
+- **Container.** Runs as UID 10001 with a read-only root filesystem, `/tmp` tmpfs, all
+  capabilities dropped, `no-new-privileges`, and memory/CPU/PID limits. The DuckDB `sqlite`
+  extension is installed at build time because the container has no internet access.
+  `docker-compose.yml` puts the app on an `internal` network behind Caddy
+  (`deploy/Caddyfile`), publishes only `127.0.0.1:8765`, and adds a one-shot `volume-init`
+  service that chowns an existing root-owned `/data` volume. An optional `cloudflared`
+  service is available under the `tunnel` profile.
+
 ## [2.13.2] - 2026-09-15
 
 ### Fixed

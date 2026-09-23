@@ -49,6 +49,7 @@ coverage.xml
 *.db
 *.db-*
 *.duckdb
+*.duckdb.wal
 *.parquet
 *.sqlite3
 *.log
@@ -62,6 +63,21 @@ out.png
 out.json
 scan_results/
 uploads/
+
+# Private trainer tier. The real root lives outside the repo
+# (BAKUGO_PRIVATE_ROOT; trainer/paths.py refuses an in-repo root). These
+# patterns only catch accidents.
+bakugo-private/
+private_data/
+trainer_data/
+drive_listing.json
+rclone.conf
+*.rclone.conf
+review-*.jsonl
+*.key
+# Staging directories left by an interrupted `python -m trainer release`
+cardcenter/data/released/*.staging/
+cardcenter/data/released/*.previous/
 
 # IDE and OS
 .vscode/

@@ -11,7 +11,12 @@ between otherwise-ambiguous collector-number readings.
 Everything is best-effort and non-blocking:
   * observations post from a daemon thread with a short timeout
   * guidance is cached with a TTL and returns {} when the Observer is away
-  * disabled entirely unless CARDCENTER_QUIPU_URL is set
+  * disabled entirely when CARDCENTER_QUIPU_DISABLE=1 (the private trainer
+    sets this so its outputs never reach the Observer mesh)
+
+Note: ``base_url`` falls back to http://127.0.0.1:7100, so without the
+disable flag ``enabled()`` is true even when no URL is configured; calls then
+fail fast and return nothing.
 
 Stdlib only, matching the rest of the package.
 """
@@ -43,6 +48,8 @@ def base_url() -> str:
 
 
 def enabled() -> bool:
+    if os.environ.get("CARDCENTER_QUIPU_DISABLE", "").strip() == "1":
+        return False
     return bool(base_url())
 
 

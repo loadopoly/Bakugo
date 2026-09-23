@@ -273,9 +273,12 @@ def evaluate(samples: list, detect: bool, quipu_mode: str) -> dict:
     vocab = list(load_species())
 
     def one_pass(force_quipu):
-        prev = os.environ.get("QUIPU_URL")
+        # quipu_client.enabled() falls back to a localhost URL, so removing
+        # QUIPU_URL alone never turned the integration off; the explicit
+        # disable flag does.
+        prev = os.environ.get("CARDCENTER_QUIPU_DISABLE")
         if force_quipu is False:
-            os.environ.pop("QUIPU_URL", None)
+            os.environ["CARDCENTER_QUIPU_DISABLE"] = "1"
         try:
             try:
                 from cardcenter.quipu_client import enabled
@@ -289,8 +292,10 @@ def evaluate(samples: list, detect: bool, quipu_mode: str) -> dict:
             summary["rows"] = [asdict(r) for r in rows]
             return summary
         finally:
-            if prev is not None:
-                os.environ["QUIPU_URL"] = prev
+            if prev is None:
+                os.environ.pop("CARDCENTER_QUIPU_DISABLE", None)
+            else:
+                os.environ["CARDCENTER_QUIPU_DISABLE"] = prev
 
     result = {"generated": time.strftime("%Y-%m-%dT%H:%M:%S"), "n_samples": len(samples)}
     if quipu_mode == "both":

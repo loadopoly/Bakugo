@@ -122,7 +122,11 @@ def test_session_reports_no_card_cleanly() -> None:
     s = ARSession()
     st = s.push(np.full((600, 800, 3), 120, dtype=np.uint8), now=1.0)
     assert not st.tracking
-    assert any("point at a card" in g for g in st.guidance)
+    # what the user can do about it at a counter: aim at a card or tap one
+    # (not "shoot against a plain contrasting background", which nobody can
+    # do in a shop)
+    assert any("no card found" in g and "tap the card" in g for g in st.guidance)
+    assert all("\n" not in g for g in st.guidance)
 
 
 def test_reset_clears_accumulated_state() -> None:

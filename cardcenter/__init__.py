@@ -8,7 +8,14 @@ grade. Centering sets a ceiling; the other three attributes decide where under
 that ceiling a card actually lands.
 """
 
-__version__ = "2.11.0"
+__version__ = "2.17.0"
+
+import os as _os
+
+# OpenCV reads this once, when cv2 is first imported, so it must be set before
+# any submodule imports cv2. It caps decoded image size (decompression bombs).
+# serve.decode_image also checks the header before decoding.
+_os.environ.setdefault("OPENCV_IO_MAX_IMAGE_PIXELS", str(64_000_000))
 
 from .centering import measure_centering
 from .cloud import CloudConfig, CloudResult, resolve_config, sync_scan_id, sync_store, upsert_scan

@@ -12,3 +12,20 @@ webapp
 install-termux.sh
 validate.py
 CHANGELOG.md
+# Local databases are kept on disk (supabase_vault.duckdb is the local vault
+# under development, and its `trainer` schema holds private collection data);
+# they are only kept out of the image build upload.
+*.duckdb
+*.duckdb.wal
+*.sqlite3
+data
+bakugo-private
+private_data
+trainer_data
+drive_listing.json
+rclone.conf
+*.rclone.conf
+review-*.jsonl
+*.key
+.env
+.env.*

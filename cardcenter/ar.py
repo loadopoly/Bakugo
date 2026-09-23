@@ -53,6 +53,8 @@ import numpy as np
 
 from .capture import FrameQuality, RunningRatio, assess_frame
 from .centering import measure_centering
+from .framing import frame_card_for_measure
+from .edge_information import locate_card
 from .geometry import (
     compute_edge_gradient,
     enforce_portrait,
@@ -71,8 +73,15 @@ from .types import (
     resolve_holder,
 )
 
+def _default_gate_config():
+    from .confidence import GateConfig
+
+    return GateConfig()
+
+
 TRACK_LONG_SIDE = 540
 MEASURE_LONG_SIDE = 1200
+FRAME_MARGIN_FRAC = 0.18
 
 # VIO scale drifts over a session. Widen a calibration's uncertainty with age so
 # a stale one stops being trusted silently.
@@ -464,9 +473,36 @@ def _resize_long(image: np.ndarray, long_side: int) -> tuple[np.ndarray, float]:
     return cv2.resize(image, None, fx=s, fy=s, interpolation=cv2.INTER_AREA), s
 
 
+@dataclass(frozen=True)
+class TrackStats:
+    """How well the tracked sides fit their lines: the *achieved* uncertainty,
+    to set against the Cramer-Rao floor from ``edge_information``."""
+
+    side_rms_px: tuple
+    side_points: tuple
+    search_px: float
+
+    @property
+    def corner_sigma_px(self) -> float:
+        """Worst corner: offset sigma per side (rms / sqrt(n)), extrapolated to
+        the side's end, combined in quadrature for the two sides meeting there.
+        Integer normal-search steps put a 1/sqrt(12) px quantisation floor
+        under each point."""
+        q = 1.0 / math.sqrt(12.0)
+        end = [
+            math.sqrt(max(r, q) ** 2 / max(n, 1)) * math.sqrt(1.0 + 3.0 * (0.5 / 0.38) ** 2)
+            for r, n in zip(self.side_rms_px, self.side_points)
+        ]
+        return max(math.hypot(end[i - 1], end[i]) for i in range(4))
+
+
 def track_quad(
-    image: np.ndarray, previous: np.ndarray, search_px: float = 14.0, samples: int = 22
-) -> np.ndarray:
+    image: np.ndarray,
+    previous: np.ndarray,
+    search_px: float = 14.0,
+    samples: int = 22,
+    return_stats: bool = False,
+):
     """Re-find the card near where it was last frame, by searching edge normals.
 
     Cropping to a window around the previous quad and re-running full detection
@@ -497,6 +533,8 @@ def track_quad(
     offsets = np.arange(-search_px, search_px + 1e-9, 1.0)
 
     lines = []
+    side_rms: list[float] = []
+    side_n: list[int] = []
     for i in range(4):
         a, b = q[i], q[(i + 1) % 4]
         edge = b - a
@@ -537,6 +575,9 @@ def track_quad(
         _, _, Vt = np.linalg.svd(keep - mean, full_matrices=False)
         normal = np.array([-Vt[0][1], Vt[0][0]])
         lines.append((normal[0], normal[1], -float(normal @ mean)))
+        kept_resid = (keep - mean) @ normal
+        side_rms.append(float(np.sqrt(np.mean(kept_resid**2))))
+        side_n.append(int(len(keep)))
 
     corners = []
     for i in range(4):
@@ -555,6 +596,8 @@ def track_quad(
         raise DetectionError("tracking drifted too far; re-detecting")
     if touches_frame_boundary(out, h, w):
         raise DetectionError("tracked quad touches frame boundary; re-detecting")
+    if return_stats:
+        return out, TrackStats(tuple(side_rms), tuple(side_n), float(search_px))
     return out
 
 
@@ -574,6 +617,12 @@ class ARStatus:
     bands: Optional[dict[str, str]] = None
     grade_estimate: Optional[str] = None
     grade_confidence: Optional[float] = None
+    # Information floor of the tracked outline (edge_information.QuadInformation
+    # .to_dict(), full-frame pixels) and the auto-accept decision from
+    # confidence.gate on the fused ratio.
+    information: Optional[dict] = None
+    decision: Optional[str] = None
+    decision_reason: str = ""
 
     def headline(self) -> str:
         if not self.tracking:
@@ -610,6 +659,7 @@ class ARSession:
     fov_deg: float = 68.0
     measure_interval_s: float = 0.35
     boundary: float = 55.0
+    gate_config: "GateConfig" = field(default_factory=lambda: _default_gate_config())
     calibration: Optional[ScaleCalibration] = None
     horizontal: RunningRatio = field(default_factory=RunningRatio)
     vertical: RunningRatio = field(default_factory=RunningRatio)
@@ -620,9 +670,17 @@ class ARSession:
         default_factory=lambda: OneEuroFilter(freq=30.0, min_cutoff=1.2, beta=0.02)
     )
     _last_measure: float = 0.0
+    # Tracker settings driven by the measured uncertainty (see push()).
+    _search_px: float = 14.0
+    _sigma_meas_px: Optional[float] = None
+    _last_info: Optional[object] = None
+    _last_gate: Optional[object] = None
     seen: int = 0
     measured: int = 0
     last_result: Optional[CenteringResult] = None
+    # camera pixels per pushed pixel (see push); 1.0 until the phone says
+    source_scale: float = 1.0
+    _aim_norm: Optional[tuple] = None
 
     def reset(self) -> None:
         """Start a new card. Combining frames across two different cards would
@@ -636,6 +694,19 @@ class ARSession:
         self.last_result = None
         self._measurements = []
         self._sprt = None
+        self._search_px = 14.0
+        self._sigma_meas_px = None
+        self._last_info = None
+        self._last_gate = None
+        # Where the user pointed (0..1 of the pushed frame), when they tapped a
+        # card rather than centring it: a shop counter has several.
+        self._aim_norm = None
+
+    def select(self, aim_norm) -> None:
+        """Start a new card at the point the user tapped (0..1 of the frame)."""
+        self.reset()
+        x, y = (float(v) for v in aim_norm)
+        self._aim_norm = (min(1.0, max(0.0, x)), min(1.0, max(0.0, y)))
 
     @property
     def worst_ratio(self) -> Optional[Measured]:
@@ -684,23 +755,55 @@ class ARSession:
             return False
         return information_value(w, self.boundary) > 0.02
 
-    def push(self, frame: np.ndarray, now: Optional[float] = None) -> ARStatus:
-        """Feed one camera frame. Cheap unless the frame is worth measuring."""
+    def _photo_hint(self, message: str, frame_px_per_mm: float) -> str:
+        """'Too far away' is about the LIVE frame, which the phone sends at
+        540 px across. At a shop that is almost always too coarse to measure
+        live, while the full-resolution photo from Measure Card has 4x the
+        pixels -- so say which of the two it is."""
+        if not message.startswith("too far away") or self.source_scale <= 1.0:
+            return message
+        from .capture import MIN_PX_PER_MM
+
+        photo = frame_px_per_mm * self.source_scale
+        if photo >= MIN_PX_PER_MM:
+            return (f"live view too coarse here ({frame_px_per_mm:.1f} px/mm) -- hold still and "
+                    f"tap Measure Card (photo ~{photo:.1f} px/mm)")
+        return (f"too far even for a photo (~{photo:.1f} px/mm, needs {MIN_PX_PER_MM:.1f}) -- "
+                "move closer or zoom in")
+
+    def push(self, frame: np.ndarray, now: Optional[float] = None,
+             source_scale: Optional[float] = None) -> ARStatus:
+        """Feed one camera frame. Cheap unless the frame is worth measuring.
+
+        ``source_scale`` is how many camera pixels each pushed pixel stands
+        for (the phone downsizes its 4K preview to 540 across). It does not
+        change the live measurement, which can only use what was pushed; it
+        lets the guidance say what a full-resolution photo would have."""
         now = now if now is not None else time.time()
         self.seen += 1
+        if source_scale is not None and 1.0 <= source_scale <= 16.0:
+            self.source_scale = float(source_scale)
 
         track_img, track_scale = _resize_long(frame, TRACK_LONG_SIDE)
         th, tw = track_img.shape[:2]
         frame_centre = (tw / 2.0, th / 2.0)
+        if self._aim_norm is not None:
+            frame_centre = (self._aim_norm[0] * tw, self._aim_norm[1] * th)
         quad_small: Optional[np.ndarray] = None
+        achieved_px: Optional[float] = None
         try:
             if self._last_quad is not None:
-                quad_small = track_quad(track_img, self._last_quad * track_scale)
+                quad_small, stats = track_quad(
+                    track_img, self._last_quad * track_scale,
+                    search_px=self._search_px, return_stats=True,
+                )
+                achieved_px = stats.corner_sigma_px
             else:
                 # Nothing to track yet: a real table is rarely one card, so
                 # acquire whatever is under the reticle (frame centre) rather
                 # than the largest card-shaped thing anywhere in the shot.
-                quad_small, _, _ = find_card_quad(track_img, prefer_point=frame_centre)
+                quad_small, _, resid, _, _ = locate_card(track_img, prefer_point=frame_centre)
+                achieved_px = float(resid)
         except DetectionError:
             # Lost the tracked card -- most likely a glare frame or a momentary
             # occlusion, not the user re-aiming at a different card. Re-acquire
@@ -712,7 +815,8 @@ class ARSession:
                 else frame_centre
             )
             try:
-                quad_small, _, _ = find_card_quad(track_img, prefer_point=anchor)
+                quad_small, _, resid, _, _ = locate_card(track_img, prefer_point=anchor)
+                achieved_px = float(resid)
             except DetectionError as exc2:
                 self._last_quad = None
                 self._quad_filter.reset()
@@ -720,11 +824,13 @@ class ARSession:
                 # all", but the container guard raises something specific and
                 # actionable ("found 9 card-shaped regions...") that the user
                 # should see instead of a canned message.
-                msg = str(exc2).split("\n")[0]
-                guidance = (
-                    (msg[:160],)
-                    if "nested inside" in msg
-                    else ("point at a card, all four edges in frame",)
+                # The detector's own refusal says what is wrong with THIS
+                # frame ("could not locate a card-shaped quadrilateral. Shoot
+                # the card against a plain contrasting background..."); a
+                # canned "point at a card" throws that away.
+                msg = " ".join(str(exc2).split())
+                guidance = (msg[:160],) if msg else (
+                    "point at a card, all four edges in frame",
                 )
                 return ARStatus(
                     tracking=False,
@@ -737,31 +843,120 @@ class ARSession:
                     scale=self.calibration.current(now) if self.calibration else None,
                 )
 
+        # INFORMATION FLOOR ON THE TRACKING FRAME.
+        #
+        # The tracker's measurement noise is what the sides actually achieved
+        # (line-fit residuals), bounded below by the Cramer-Rao floor of the
+        # channel that carried them. That one number sets both the 1-euro
+        # filter's smoothing (noisy corners -> lower cutoff) and the next
+        # frame's normal-search radius (a few sigma plus motion headroom),
+        # instead of fixed constants tuned for one kind of scene.
+        info_small = None
+        try:
+            from .edge_information import snap_to_information
+
+            quad_small, info_small, moved = snap_to_information(
+                track_img, quad_small, samples=24
+            )
+            if moved:
+                quad_small = enforce_portrait(order_quad(quad_small))
+        except ValueError:
+            info_small = None
+        floor_px = info_small.worst_corner_sigma_px if info_small is not None else 0.0
+        sigma_meas = max(achieved_px or 0.0, floor_px, 1.0 / math.sqrt(12.0))
+        self._sigma_meas_px = sigma_meas
+        self._quad_filter.min_cutoff = float(np.clip(0.6 / sigma_meas, 0.3, 3.0))
+        self._search_px = float(np.clip(4.0 * sigma_meas + 3.0, 3.0, 14.0))
+
         smoothed_quad = self._quad_filter.filter(quad_small, timestamp=now)
         self._last_quad = smoothed_quad / track_scale
         # The gate must judge the resolution the MEASUREMENT will have, not the
         # tracker's. Tracking runs at 540 px where a card is ~5 px/mm, which is
         # below the usable floor -- gating on that rejects every frame while the
         # measurement at 1200 px would have been comfortably fine.
-        measure_scale = min(1.0, MEASURE_LONG_SIDE / max(frame.shape[:2]))
         full_px_per_mm = 0.5 * (
             np.linalg.norm(quad_small[1] - quad_small[0]) / STANDARD_CARD_W_MM
             + np.linalg.norm(quad_small[3] - quad_small[0]) / STANDARD_CARD_H_MM
         ) / track_scale
+        # The measurement is taken on a crop around the card, so its resolution
+        # is set by the CROP's long side, not the frame's. Gating on the frame
+        # would refuse shots the crop measures comfortably.
+        card_long_px = max(
+            float(np.linalg.norm(quad_small[2] - quad_small[1])),
+            float(np.linalg.norm(quad_small[1] - quad_small[0])),
+        ) / track_scale
+        crop_long_px = card_long_px * (1.0 + 2.0 * FRAME_MARGIN_FRAC)
+        measure_scale = min(1.0, MEASURE_LONG_SIDE / max(crop_long_px, 1.0))
         quality = assess_frame(
             track_img, quad_small, px_per_mm=float(full_px_per_mm) * measure_scale
         )
 
         due = (now - self._last_measure) >= self.measure_interval_s
+        info_full = None
+        if quality.passed and due:
+            # Judge the outline at MEASUREMENT resolution before spending a
+            # measurement on it: a side with no resolvable edge, or a frame
+            # whose floor already exceeds what the grade gate can use, is
+            # refused with the change that would help most.
+            small, small_scale = _resize_long(frame, MEASURE_LONG_SIDE)
+            try:
+                from .edge_information import quad_information
+
+                info_full = quad_information(small, self._last_quad * small_scale)
+            except ValueError:
+                info_full = None
+            self._last_info = info_full
+            blocked = None
+            if info_full is not None and not info_full.resolvable:
+                blocked = (
+                    f"{', '.join(info_full.unresolved_sides)} edge not visible "
+                    "against the background",
+                )
+            elif info_full is not None and info_full.sigma_cr_pp > self.gate_config.max_sigma_pp:
+                blocked = tuple(a.message for a in info_full.advice[:2]) or (
+                    "frame carries too little edge information to measure",
+                )
+            if blocked:
+                quality = FrameQuality(
+                    sharpness=quality.sharpness,
+                    glare_frac=quality.glare_frac,
+                    clipped_frac=quality.clipped_frac,
+                    dark_frac=quality.dark_frac,
+                    px_per_mm=quality.px_per_mm,
+                    tilt_deg=quality.tilt_deg,
+                    passed=False,
+                    guidance=blocked,
+                )
         if quality.passed and due:
             self._last_measure = now
-            small, _ = _resize_long(frame, MEASURE_LONG_SIDE)
+            # The tracker already knows where the card is, so the measurement
+            # frame is a crop around it rather than the whole downscaled frame.
+            # On a distant card that is the difference between measuring 200 px
+            # of card and measuring 600.
+            framed = frame_card_for_measure(
+                frame, quad=self._last_quad, fov_deg=self.fov_deg,
+                max_side=MEASURE_LONG_SIDE,
+            )
             try:
+                # Detection is re-run INSIDE the crop rather than reusing the
+                # tracked outline: the tracker's quad is 1-euro filtered and
+                # measured worse on every synthetic view tried (err up to 4.3 pp
+                # against 0.7 for a fresh detection in the crop). It is the same
+                # locate_card the tracker acquired with -- the contour detector
+                # alone does not find a card on a light counter.
+                aim = (tuple(np.asarray(framed.quad).mean(axis=0))
+                       if framed.quad is not None else None)
+                try:
+                    q_in, _, resid_in, _, _ = locate_card(framed.image, prefer_point=aim)
+                except DetectionError:
+                    q_in, resid_in = framed.quad, framed.residual_px
                 res = measure_centering(
-                    small,
+                    framed.image,
                     slab=resolve_holder(self.holder),
-                    capture=CaptureSpec.from_fov(self.fov_deg, small.shape),
+                    capture=framed.capture,
                     keep_rectified=False,
+                    card_quad=q_in,
+                    quad_residual_px=float(resid_in or 0.0),
                 )
                 self.horizontal.add(res.horizontal.ratio_pct)
                 self.vertical.add(res.vertical.ratio_pct)
@@ -774,6 +969,7 @@ class ARSession:
                 if self._sprt is None:
                     self._sprt = SequentialBoundaryTest(threshold=self.boundary)
                 self._sprt.update(res.worst_ratio)
+                self._last_gate = self._gate(res, info_full)
             except DetectionError as exc:
                 quality = FrameQuality(
                     sharpness=quality.sharpness,
@@ -819,10 +1015,23 @@ class ARSession:
             except Exception:
                 pass
 
+        info_dict = None
+        shown = self._last_info
+        if shown is None and info_small is not None:
+            shown = info_small.scaled(1.0 / track_scale)
+        if shown is not None:
+            info_dict = shown.to_dict()
+            info_dict["tracking_sigma_px"] = round(sigma_meas / track_scale, 3)
+            info_dict["search_px"] = round(self._search_px, 2)
+        guidance = tuple(self._photo_hint(g, full_px_per_mm) for g in quality.guidance)
+        if quality.passed and shown is not None and shown.advice and not self.settled:
+            guidance = tuple(guidance) + (shown.advice[0].message,)
+        gate = self._last_gate
+
         return ARStatus(
             tracking=True,
             quad=self._last_quad,
-            guidance=quality.guidance,
+            guidance=guidance,
             measured_frames=self.measured,
             seen_frames=self.seen,
             ratio=self.worst_ratio,
@@ -832,4 +1041,31 @@ class ARSession:
             bands=bands_dict,
             grade_estimate=grade_est,
             grade_confidence=grade_conf,
+            information=info_dict,
+            decision=gate.decision.value if gate is not None else None,
+            decision_reason=gate.reason if gate is not None else "",
+        )
+
+    def _gate(self, res: CenteringResult, info) -> Optional[object]:
+        """confidence.gate on the fused worst-axis ratio, with the Cramer-Rao
+        floor from the measured channel and the frame's shot-noise ratio."""
+        from .confidence import gate
+        from .information import cramer_rao_ratio_pp
+
+        fused = self.worst_ratio
+        if fused is None:
+            return None
+        pair = res.worst_axis
+        if res.channel is not None:
+            sigma_cr = cramer_rao_ratio_pp(
+                res.channel, pair.low_mm.value, pair.high_mm.value, res.px_per_mm
+            )
+        elif info is not None:
+            sigma_cr = info.sigma_cr_pp
+        else:
+            return None
+        shot = info.shot_ratio if info is not None else float("inf")
+        return gate(
+            fused.value, self.boundary, sigma_cr, shot,
+            effective_rows=float(self.fusion.n_views), cfg=self.gate_config,
         )

@@ -39,6 +39,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Optional
 
 
 class Decision(str, Enum):
@@ -128,3 +129,67 @@ def gate_from_channel(
 def _squash(x: float) -> float:
     """0 at the boundary, ->1 well past k_sigma. Monotone, for the calibration curve."""
     return 0.0 if x <= 0.0 else round(1.0 - 2.0 ** (-x), 4)
+
+
+@dataclass(frozen=True)
+class IdentificationVote:
+    """The second vote on an identification (the service-worker embedding
+    recognizer). It can corroborate or contradict OCR; it cannot name a card
+    OCR did not."""
+
+    available: bool
+    name: Optional[str] = None
+    similarity: float = 0.0     # cosine similarity of the nearest neighbour
+    margin: float = 0.0         # nearest minus best other-label similarity
+    index_size: int = 0
+    model_id: str = ""
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class IdGateConfig:
+    min_similarity: float = 0.80
+    min_margin: float = 0.05
+    min_index_size: int = 3
+    max_shot_ratio: float = GateConfig.max_shot_ratio
+
+
+def gate_identification(
+    ocr_name: Optional[str],
+    ocr_corroborated: bool,
+    vote: IdentificationVote,
+    shot_ratio: float,
+    edges_resolvable: bool = True,
+    cfg: IdGateConfig = IdGateConfig(),
+) -> Gated:
+    """Accept an identification only when OCR and the second vote agree and
+    the frame passes the same shot-noise check the grade gate uses.
+
+    confidence/margin fields of the returned ``Gated`` carry the vote's
+    similarity and margin (there is no ratio boundary for an identity).
+    """
+    sim, mar = float(vote.similarity), float(vote.margin)
+
+    def out(decision, reason):
+        return Gated(decision, sim if vote.available else 0.0, mar, 0.0, shot_ratio, reason)
+
+    if not ocr_name:
+        hint = f" (second vote suggests {vote.name})" if vote.available and vote.name else ""
+        return out(Decision.REVIEW, "OCR did not name the card" + hint)
+    if not vote.available:
+        return out(Decision.REVIEW, f"no second vote: {vote.reason or 'recognizer unavailable'}")
+    if vote.index_size < cfg.min_index_size:
+        return out(Decision.REVIEW, f"second vote has only {vote.index_size} confirmed cards "
+                   f"on this device (needs {cfg.min_index_size})")
+    if (vote.name or "").strip().lower() != ocr_name.strip().lower():
+        return out(Decision.REVIEW, f"votes disagree: OCR {ocr_name}, embedding {vote.name}")
+    if sim < cfg.min_similarity or mar < cfg.min_margin:
+        return out(Decision.REVIEW, f"votes agree but the embedding match is weak "
+                   f"(similarity {sim:.2f}, margin {mar:.2f})")
+    if not edges_resolvable:
+        return out(Decision.REVIEW, "card outline not resolvable on every side")
+    if not (shot_ratio <= cfg.max_shot_ratio):
+        return out(Decision.REVIEW, f"votes agree, but the frame is not photon-limited "
+                   f"(noise {shot_ratio:.1f}x floor); not auto-accepting")
+    note = "" if ocr_corroborated else " (collector number not read)"
+    return out(Decision.ACCEPT, f"OCR and embedding agree on {ocr_name}{note}")

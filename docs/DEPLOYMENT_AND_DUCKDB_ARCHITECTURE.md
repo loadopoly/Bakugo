@@ -96,7 +96,8 @@ flowchart TB
 When external users interact with the public endpoint:
 
 1. **Client Tenant Tracking**:
-   * Frontend generates a persistent device UUID in `localStorage` and submits it via `X-Device-ID` header.
+   * The server issues each device a random token: an HttpOnly `bakugo_device` cookie for the web page, or an `X-Device-Token` response header that cross-origin clients (the Capacitor shell) send back as `Authorization: Bearer`. Client-supplied `X-Device-ID` values are ignored.
+   * Scans are stored under `dev_<sha256(token)>`, so a device id seen in a response or the database cannot be used to read that device's scans.
    * Scans are stored with index `idx_scans_tenant ON scans(device_id, created_at)`.
 2. **Contamination Firewall**:
    * Ground-truth machine learning models only train on `LabelKind.CERTIFIED` (verified third-party slab cert numbers).
