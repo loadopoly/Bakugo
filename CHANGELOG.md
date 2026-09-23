@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.19.1] - 2026-09-23
+
+### Fixed
+- **Measure Card measured the sleeve, not the card.** Checked live after 2.19.0: the same
+  Meganium preview through `/measure` still read 77.1 (top border 1.4 mm, bottom 4.6). The
+  framing path outlined the penny sleeve itself, ~2.2 mm past the card at the bottom and
+  ~1.5 at the top -- beyond the 1.2 mm the 2.19.0 seating looks. Inside a sleeve's margin (the
+  mat seen through the plastic: its hue, and less than 0.6 of the way to the card's
+  lightness) the card's edge is now looked for as the next step in, up to 3.5 mm, and taken
+  only when that step is stronger than the first: the card's edge is the strongest step in
+  the profile, a sleeve's thin edge is weak. (A shaded silver border beside a green frame
+  passed the colour test on this frame and failed this one.) Asked whatever the holder
+  setting, since a sleeve is easy to forget there. The preview now measures 53.9 through
+  Measure Card with the holder on Penny Sleeve or on Raw. On a synthetic sleeve (2.2 mm
+  below the card, 1.2 above) the ratio was 6.4-8.5 points out and is within 2.5; the 144
+  synthetic raw captures measure exactly as before.
+
 ## [2.19.0] - 2026-09-23
 
 From thirteen screenshots of 2.18.0 on a black mat and a wallet. The reader found the card

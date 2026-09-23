@@ -73,3 +73,44 @@ def test_the_settled_field_frame_measures_near_centred():
     assert 48.0 <= res.vertical.ratio_pct.value <= 60.0, res.vertical.ratio_pct
     assert res.vertical.low_mm.value > 2.0            # the top border, not 0.7
     assert any("outline moved" in w and "top" in w for w in res.quality.warnings)
+
+
+def _sleeve(img, tilt, top_mm, bottom_mm, side_mm=0.2):
+    """A penny sleeve over a card on a dark mat: past the card's edge the mat,
+    lightened and a little blurred by the plastic, out to the sleeve's edge."""
+    size = (img.shape[1], img.shape[0])
+    outer = _quad(tilt, size, (side_mm, top_mm, side_mm, bottom_mm)).astype(np.int32)
+    card = _quad(tilt, size).astype(np.int32)
+    m = np.zeros(img.shape[:2], np.uint8)
+    cv2.fillPoly(m, [outer], 255)
+    cv2.fillPoly(m, [card], 0)
+    out = img.copy()
+    lit = cv2.addWeighted(cv2.GaussianBlur(img, (0, 0), 1.2), 0.55, np.full_like(img, 110), 0.45, 0)
+    out[m > 0] = lit[m > 0]
+    cv2.polylines(out, [outer], True, (150, 150, 150), 1)          # the sleeve's thin edge
+    return out, _quad(tilt, size, (side_mm, top_mm, side_mm, bottom_mm))
+
+
+@pytest.mark.parametrize("tilt", [0, 20])
+@pytest.mark.parametrize("borders", [(3.4, 2.6, 3.0, 3.0), (2.0, 2.0, 2.6, 1.6)])
+def test_the_card_is_found_inside_its_sleeve(borders, tilt):
+    """Outlined on the sleeve, the margin (~2 mm below the card, ~1.2 above)
+    was measured as border: the Meganium photo read 77/23 for a card near
+    54/46."""
+    img = _render(borders, tilt, 0.0, (35, 35, 38))
+    img, outline = _sleeve(img, tilt, top_mm=1.2, bottom_mm=2.2)
+    res = measure_centering(img, card_quad=outline, keep_rectified=False)
+    L, R, T, B = borders
+    assert abs(res.vertical.ratio_pct.value - 100 * max(T, B) / (T + B)) < 2.5, res.vertical
+    assert abs(res.horizontal.ratio_pct.value - 100 * max(L, R) / (L + R)) < 2.5, res.horizontal
+
+
+@pytest.mark.parametrize("holder", ["penny_sleeve", "raw"])
+def test_measure_card_on_the_field_frame(holder):
+    """The Measure Card path (framing crops to the card and outlines it --
+    the sleeve, here), with the holder set right and forgotten."""
+    from cardcenter.serve import _measure_payload
+
+    d = _measure_payload(PREVIEW.read_bytes(), holder, "main")
+    assert d["ok"] and d["ratio"] <= 58.0, d["ratio"]
+    assert d["borders"]["top"] >= 2.5 and d["borders"]["bottom"] <= 3.2, d["borders"]

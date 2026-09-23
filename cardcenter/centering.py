@@ -66,8 +66,77 @@ ASSUMED_TILT_DEG = 20.0
 ASSUMED_TILT_SIGMA_DEG = 15.0
 
 
+def _sleeve_margin(P, prof, g, depth, bg, j, k, s) -> Optional[float]:
+    """Where the card starts inside a sleeve's margin, if the outline is on
+    the sleeve (mm from the outline), else None.
+
+    A penny sleeve runs past the card: ~2 mm below it on the Meganium field
+    frame, ~1.2 mm above at the open end. The detectors outline the sleeve
+    (it is the outermost clean edge), and the border widths measured from it
+    are the sleeve's margin plus the card's border: 4.6 mm at the bottom
+    where the card's is ~2.3, and the photo measured 77/23. Through the
+    plastic the margin is the background, lightened: the background's hue,
+    a lightness less than 0.6 of the way to the card's, then a step onto the
+    card that is stronger than the first. The colour alone is not enough: a
+    silver border in shade beside a green frame passed it on this frame; the
+    step strength is what keeps this off the printed border when the outline
+    is already on the card. Asked whatever holder is selected (a sleeve is
+    easy to forget in the settings): the 144 synthetic raw captures measure
+    as before, and the Meganium frame measures the same with the holder set
+    to raw."""
+    first_end = float(depth[j])
+    w2 = (depth >= first_end + 0.3) & (depth <= 3.5)
+    if not w2.any():
+        return None
+    k2 = int(np.argmax(np.where(w2, g, -1e9)))
+    # The card's own edge is the strongest step in the profile. Outlined on
+    # the card, the step after it (border to printed frame) is weaker; on a
+    # sleeve, the sleeve's thin edge is the weaker one and the card's comes
+    # second. (Meganium: sleeve 38 and 48 then card 42 and 81 at the top and
+    # bottom; on the card already, 67 and 145 then 54 and 77 at the sides.)
+    if g[k2] < max(g[k], 25.0):
+        return None
+    d2 = float(depth[k2])
+    col = np.median(P, axis=1)                                    # depth x 3
+    band_m = (depth >= first_end + 0.05) & (depth <= d2 - 0.25)
+    card_m = (depth >= d2 + 0.25) & (depth <= d2 + 0.55)
+    if band_m.sum() < 3 or card_m.sum() < 2:
+        return None
+    band = np.median(col[band_m], axis=0)
+    card = np.median(col[card_m], axis=0)
+    bg = np.median(np.asarray(bg).reshape(-1, 3), axis=0)         # one colour
+    # the band keeps the background's colour and sits nearer its lightness
+    # than the card's; a card border beside coloured artwork (silver next to
+    # a green frame) is as light as the card and fails this
+    dl_card = float(card[0] - bg[0])
+    dl_band = float(band[0] - bg[0])
+    if not (abs(dl_card) >= 15.0 and dl_band * dl_card > 0
+            and abs(dl_band) <= 0.6 * abs(dl_card)
+            and float(np.linalg.norm(band[1:] - bg[1:])) <= 12.0
+            and float(np.linalg.norm(card - band)) >= 12.0):
+        return None
+    half = 0.5 * float(np.linalg.norm(card - band))
+    near = (depth >= d2 - 0.5) & (depth <= d2 + 0.5)
+
+    def cross(p):
+        idx = np.nonzero((p[:-1] < half) & (p[1:] >= half) & near[:-1])[0]
+        if len(idx) == 0:
+            return float("nan")
+        i = int(idx[0])
+        return float(depth[i] + (half - p[i]) / max(float(p[i + 1] - p[i]), 1e-6) / s)
+
+    db = np.linalg.norm(P - band[None, None, :], axis=2)
+    edge = cross(np.median(db, axis=1))
+    if not np.isfinite(edge):
+        return None
+    per = np.array([cross(db[:, c]) for c in range(db.shape[1])])
+    if float(np.mean(np.abs(per - edge) <= 0.35)) < 0.6:
+        return None
+    return edge
+
+
 def seat_outer_edges(image: np.ndarray, corners: np.ndarray, px_per_mm: float,
-                     pad_mm: float = 1.2) -> tuple[np.ndarray, dict]:
+                     pad_mm: float = 1.2, sleeved: bool = True) -> tuple[np.ndarray, dict]:
     """Put each side of the outline on the card's own edge.
 
     Every border width is measured FROM the outline, so an outline sitting
@@ -119,7 +188,7 @@ def seat_outer_edges(image: np.ndarray, corners: np.ndarray, px_per_mm: float,
     views = {"top": (lab, pos_y), "bottom": (lab[::-1], CH - pos_y[::-1]),
              "left": (lab.transpose(1, 0, 2), pos_x),
              "right": (lab.transpose(1, 0, 2)[::-1], CW - pos_x[::-1])}
-    reach = int(round((pad_mm + 1.6) * s))
+    reach = int(round((pad_mm + 4.2) * s))
     shift: dict = {}
     for side, (v, dd) in views.items():
         n = v.shape[1]
@@ -160,6 +229,9 @@ def seat_outer_edges(image: np.ndarray, corners: np.ndarray, px_per_mm: float,
         # slides out by ~0.14 mm on an outline that was right (synthetic, 1.0
         # and 1.2 mm borders at 3 px of blur).
         shift[side] = edge if ok and (edge >= 0.12 or edge <= -0.25) else 0.0
+        sleeve = _sleeve_margin(P, prof, g, depth, bg, j, k, s) if ok and sleeved else None
+        if sleeve is not None:
+            shift[side] = sleeve
     if not any(shift.values()):
         return corners, shift
     l, t, r, b = (shift.get(k, 0.0) for k in ("left", "top", "right", "bottom"))
