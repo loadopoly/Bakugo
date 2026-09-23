@@ -960,7 +960,11 @@ class SceneSearch:
         need = CARD_ASPECT * ll - ls
         if need < 0.25 * ls:
             return False
-        m = 2.0
+        # The upright card's height is estimated without the perspective (a
+        # tilted card's far end is foreshortened, its near end stretched), so
+        # a completion that ends within 6% of the border counts as running
+        # off: its bottom edge would be too near the border to be seen whole.
+        m = 0.06 * min(self.h, self.w)
         for a_end, b_end in (((0, 1), (3, 2)), ((1, 0), (2, 3))):
             # extend 0->1 and 3->2 past corners 1 and 2 (or back past 0 and 3)
             p1, p2 = q[a_end[1]], q[b_end[1]]

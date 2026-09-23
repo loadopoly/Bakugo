@@ -267,8 +267,13 @@ def test_half_a_card_is_not_a_card(frame):
     assert "whole card not in view" in S.refusal
     with pytest.raises(DetectionError, match="whole card not in view"):
         locate_card(img, prefer_point=(w / 2, h / 2))
-    st = ARSession().push(img, now=1.0)
-    assert not st.tracking and "whole card not in view" in " ".join(st.guidance)
+    # and live, the way the phone sends it (JPEG 0.75, a few pushes)
+    ok, jpg = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+    live = cv2.imdecode(jpg, cv2.IMREAD_COLOR)
+    s = ARSession()
+    for i in range(3):
+        st = s.push(live, now=1.0 + 0.3 * i, source_scale=3.6)
+        assert not st.tracking and "whole card not in view" in " ".join(st.guidance)
 
 
 @pytest.mark.parametrize("frame,card", [("counter_stack", "meganium_sleeved"),
@@ -310,7 +315,8 @@ def test_a_tap_names_a_card_once():
 
 
 def test_a_soft_frame_of_a_close_card_says_to_lift_the_phone():
-    img = _img("counter_meganium_b")
+    # desk_close: the card is ~60% of the frame wide and the frame is soft
+    img = _img("desk_close_inset")
     st = None
     s = ARSession()
     for i in range(2):

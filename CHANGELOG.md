@@ -47,7 +47,8 @@ tracker was holding a place on the screen, not a card.
 - **Half a card is not a card.** Too close, the card's bottom runs out of the view, and its top
   border, sides and the bottom edge of the art window make a clean quad that is card-shaped
   lying sideways (three of the five frames). A sideways card whose sides carry on past its
-  edge, where standing it upright would take it out of the frame, is refused with "whole card
+  edge, where standing it upright would take it out of the frame (or to within 6% of its
+  edge), is refused with "whole card
   not in view -- lift the phone until all four edges of the card show".
 - **The rest of the card is looked for directly.** When the best quad is the top part of a
   card and the card's bottom edge is faint, the scene search now tries the quads that keep
@@ -71,7 +72,8 @@ tracker was holding a place on the screen, not a card.
 - **Two cards in one holder, offset** (counter_meganium_b: Meganium in front of a Rare Candy
   card that sticks out ~45 px above it): the reader outlines the holder -- the Rare Candy
   card's top edge with Meganium's sides and bottom (IoU 0.72-0.75 with Meganium). Recorded,
-  not asserted. As with the stacked pair in 2.17.0, separate the cards to measure one.
+  not asserted. (With OpenCV 5, as in the Docker image, it says the whole card is not in view
+  instead: in that cropped frame the card's bottom is 12 px from the edge.) As with the stacked pair in 2.17.0, separate the cards to measure one.
 - The counter_* frames are the live preview read out of the screenshots (the debug inset was
   hidden), so they are the preview, not the exact server frame, and their bottom 11% was under
   the HUD banner and is cut off. They are all badly out of focus; their outlines are good to
