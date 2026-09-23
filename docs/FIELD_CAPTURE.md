@@ -107,6 +107,15 @@ The banner says which of the two things is wrong:
 * `no card found here` — point the centre of the view at a card or tap one.
 * `whole card not in view` — part of the card is off screen; lift the phone
   until all four edges show.
+* `outline moved onto the card's edge (top +0.43mm)` — not a refusal: the
+  card's edge was soft there (focus, or a sleeve's open end), and the outline
+  was put on the edge before the borders were measured. Worth a second shot
+  if the number matters.
+
+The outline is drawn from an answer that left the phone up to a second or so
+earlier; between answers the page moves it with the preview, so it stays on
+the card while you adjust. If it lags anyway (a blank mat gives the page
+nothing to match), hold still for a moment.
 * `frame is soft -- ... too close to focus` — the card fills most of the view
   and the camera cannot focus that near; lift the phone a little.
 * `could not locate a card-shaped quadrilateral` — the outline is not visible:

@@ -1,5 +1,5 @@
 {
- "_about": "Card outlines for the field frames, in the frame's own pixels, TL/TR/BR/BL of the outermost visible boundary (the sleeve edge on sleeved cards), annotated by eye at 2x zoom; expect +/-3 px. state: complete | occluded (under another card) | cut_off (runs out of frame) | finger_over_edge | corner_hidden. null = corner not visible. soft: frame is heavily defocused, outlines good to about +/-6 px. known_limit: recorded, not asserted (see tests/test_field.py). shown: the outline the 2.17.0 app drew over this frame, read off the screenshot.",
+ "_about": "Card outlines for the field frames, in the frame's own pixels, TL/TR/BR/BL of the outermost visible boundary (the sleeve edge on sleeved cards), annotated by eye at 2x zoom; expect +/-3 px. state: complete | occluded (under another card) | cut_off (runs out of frame) | finger_over_edge | corner_hidden. null = corner not visible. soft: frame is heavily defocused, outlines good to about +/-6 px. known_limit: recorded, not asserted (see tests/test_field.py). shown: the outline the 2.17.0 app drew over this frame, read off the screenshot. reader: the outline is the reader's own, checked by eye (no independent drawing).",
  "frames": {
   "desk_spread_inset": {
    "file": "desk_spread_inset.jpg",
@@ -504,6 +504,151 @@
      505.5
     ]
    ]
+  },
+  "mat_meganium_penny_settled": {
+   "file": "mat_meganium_penny_settled.jpg",
+   "scene": "Meganium in a penny sleeve on a black mat, level, sharp. The frame 2.18.0 settled on at 74.2% (~PSA 6); measured on the preview it is ~51/54 (tests/test_centering_seat.py).",
+   "reader": true,
+   "soft": false,
+   "cards": {
+    "meganium_penny": {
+     "quad": [
+      [
+       107,
+       109
+      ],
+      [
+       421,
+       94
+      ],
+      [
+       440,
+       549
+      ],
+      [
+       105,
+       554
+      ]
+     ],
+     "state": "complete"
+    }
+   }
+  },
+  "mat_drampa_sharp": {
+   "file": "mat_drampa_sharp.jpg",
+   "scene": "Raw Drampa on a black mat, level, in focus.",
+   "reader": true,
+   "soft": false,
+   "cards": {
+    "drampa": {
+     "quad": [
+      [
+       104,
+       158
+      ],
+      [
+       376,
+       158
+      ],
+      [
+       379,
+       551
+      ],
+      [
+       97,
+       547
+      ]
+     ],
+     "state": "complete"
+    }
+   }
+  },
+  "mat_drampa_moved": {
+   "file": "mat_drampa_moved.jpg",
+   "scene": "Raw Drampa on a black mat; the app drew its outline where the card had been a second earlier (latency, not the reader).",
+   "reader": true,
+   "soft": false,
+   "cards": {
+    "drampa": {
+     "quad": [
+      [
+       81,
+       128
+      ],
+      [
+       385,
+       128
+      ],
+      [
+       388,
+       551
+      ],
+      [
+       82,
+       551
+      ]
+     ],
+     "state": "complete"
+    }
+   }
+  },
+  "wallet_meganium_tilt": {
+   "file": "wallet_meganium_tilt.jpg",
+   "scene": "Sleeved Meganium on a black wallet at ~23 deg, soft.",
+   "reader": true,
+   "soft": true,
+   "cards": {
+    "meganium_sleeved": {
+     "quad": [
+      [
+       58,
+       105
+      ],
+      [
+       328,
+       117
+      ],
+      [
+       373,
+       489
+      ],
+      [
+       64,
+       506
+      ]
+     ],
+     "state": "complete"
+    }
+   }
+  },
+  "mat_drampa_tilt33": {
+   "file": "mat_drampa_tilt33.jpg",
+   "scene": "Raw Drampa on a black mat at ~33 deg, a card edge at the left of the frame.",
+   "reader": true,
+   "soft": false,
+   "cards": {
+    "drampa": {
+     "quad": [
+      [
+       139,
+       170
+      ],
+      [
+       350,
+       162
+      ],
+      [
+       379,
+       440
+      ],
+      [
+       124,
+       457
+      ]
+     ],
+     "state": "complete"
+    }
+   }
   }
  }
 }

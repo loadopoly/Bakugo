@@ -19,6 +19,14 @@ motion-soft.
   `annotations.json` is the outline 2.17.0 drew over each. They are badly out
   of focus; outlines are good to about +/-6 px.
 
+* `mat_*`, `wallet_*` are from the owner's screenshots of 2.18.0 (black mat,
+  a wallet), read the same way. Their outlines are the reader's own, checked
+  by eye (`reader: true`), so they guard against regressions rather than
+  measure accuracy.
+* `previews/meganium_penny.jpg` is the live preview at the phone's screen
+  resolution (984 px across) of the frame 2.18.0 settled on at 74.2%; the
+  centering tests measure it.
+
 `annotations.json` holds the card outlines (by eye, about +/-3 px) and what
 each frame shows. On these frames the contour detector alone
 (`geometry.find_card_quad`) found the card under the reticle in 0 of 17

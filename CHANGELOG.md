@@ -9,6 +9,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.19.0] - 2026-09-23
+
+From thirteen screenshots of 2.18.0 on a black mat and a wallet. The reader found the card
+in every usable frame (seven): run again on them it outlines the card each time. Where the
+app's outline was off the card (IoU 0.69-0.86 with the fresh one) it was offset the way the
+phone had moved -- one of them is exactly where the card sat in the screenshot a second
+earlier. What went wrong was around the reader: a settled number that was wrong, and an
+outline that trailed a moving phone.
+
+### Fixed
+- **A settled 74.2% (~PSA 6) that was about 54/51.** Meganium in a penny sleeve, sharp and
+  level: the outline's top side sat 0.4 mm off the card, on the start of a soft edge (the
+  sleeve's open end). Every border is measured from the outline, so the top border's colour
+  was sampled on that ramp, the ramp's end was taken for the printed border, and the top
+  border came out 0.7 mm where it is ~3. `measure_centering` now seats each side of the
+  outline on the card's own edge (`centering.seat_outer_edges`, after the edge-shadow check,
+  which still handles a one-sided shadow band and charges its correction as uncertainty): the colour profile
+  across the edge, median along the side, and the edge put half way from the background to
+  the card past the ramp; a side moves only on a clear step that 60% of the side agrees on,
+  inward from 0.12 mm and outward only from 0.25 (on a thin border under heavy blur the
+  half-way point slides out on an outline that was right). The measurement says when it
+  moved a side. The same preview frame now measures 50.9 / 53.4.
+  On 144 synthetic captures (four border layouts including 1.0 and 1.2 mm borders, 0 and 20
+  degrees, 0-3 px of blur, dark and light backgrounds) with the outline 0.4-0.5 mm off one
+  side, the median error went from 3.6-4.3 points to 1.0-1.3, and captures more than 3
+  points out from 64 to 14; with the outline on the card nothing changed (median 1.05 ->
+  1.13, max 3.38 both).
+  Tried as well and dropped: starting the printed-border search past the end of the ramp.
+  It changed nothing on the Meganium frame and doubled the >3-point captures under blur.
+- **The outline stays on the card between answers.** On shop LTE an answer arrives 0.5-1.5 s
+  after its frame, and in the screenshots the outline sat 40-90 px beside the card, where the
+  card had been. The page keeps a 96 px grey copy of each frame it sends and, while the
+  outline is up, measures how far the live preview has moved from it (block matching, coarse
+  to fine, a few ms; up to 30% of the view; nothing when the view has too little texture or
+  the match is at the edge of the search) and moves the outline with it. The still
+  capture's crop uses the moved outline too. In a browser test with a fake camera sliding
+  over a card and a server answering 0.7 s late, the outline trailed the card by a median
+  0.51 card widths without it and 0.03 with it (90th percentile 0.07).
+
+### Added
+- Six field frames: five from these screenshots (outlines are the reader's own, checked by
+  eye, marked `reader`) and the Meganium preview at screen resolution
+  (`tests/fixtures/field/previews/`).
+- `tests/test_centering_seat.py`: an outline off the card is seated (within 2.5 points on
+  captures that were up to 11 out); an outline on the card is left alone, thin blurred
+  borders included; the settled field frame measures near centred.
+- `tests/browser/test_ar_motion.py`: the fake-camera latency test above.
+
+### Known limits
+- **Modern silver-border cards with a pale face** (Drampa, a colourless Scarlet & Violet
+  card): the top border is refused ("border detection confidence too low ... 'top'"). The
+  silver border and the grey frame inside it differ by dE 7-10, and the name, HP and stage
+  tab break the top border up. The refusal is right; measuring these needs the card's
+  layout, not a colour step.
+- The five new frames are the live preview read out of screenshots, not the exact
+  frames the server got, and the bottom 11% (under the guidance banner) is cut off.
+
 ## [2.18.0] - 2026-09-23
 
 From five screenshots of 2.17.0 at a counter (now `tests/fixtures/field/counter_*`). In

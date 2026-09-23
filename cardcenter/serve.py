@@ -1053,7 +1053,7 @@ let videoTrack = null, zoomCaps = null, zoomLevel = 1, zoomIsOptical = false;
 let cameraId = null;
 try { cameraId = localStorage.getItem('bakugo_camera_id') || null; } catch (e) {}
 const arStats = { pushes: 0, ok: 0, fail: 0, status: 0, ms: 0, bytes: 0, error: '', video: '',
-                  lastOkAt: 0, timeouts: 0, stale: 0, still: '', msAvg: 0, focus: '', aim: '' };
+                  lastOkAt: 0, timeouts: 0, stale: 0, still: '', msAvg: 0, focus: '', aim: '', shift: '' };
 // One request that never settles used to end the session: isPushing stayed
 // true, the interval kept returning early, and the HUD and inset froze on the
 // last good frame while the camera carried on. Bound the wait, and reset the
@@ -1167,6 +1167,7 @@ function selectCardAt(clientX, clientY) {
   if (ax < 0 || ax > 1 || ay < 0 || ay > 1) return false;
   pendingAim = { x: ax, y: ay };
   targetQuad = null;
+  quadBase = null;
   currentQuad = null;
   lastLocked = false;
   arStats.aim = ax.toFixed(2) + ',' + ay.toFixed(2);
@@ -1179,6 +1180,99 @@ arVideo.addEventListener('click', (ev) => {
   selectCardAt(ev.clientX, ev.clientY);
   focusAt(ev.clientX, ev.clientY);
 });
+
+// WHERE THE VIEW HAS GONE SINCE THE FRAME AN ANSWER IS ABOUT.
+//
+// On shop LTE an answer comes back half a second to a second and a half after
+// its frame was taken, and a hand-held phone has moved by then: in the owner's
+// screenshots of 2.18.0 the outline sat 40-90 px beside the card it had found
+// correctly, where the card had been. The page keeps a tiny grey copy of each
+// frame it sends and, while the outline is up, measures how far the live
+// preview has shifted from that copy (block matching on a 96 px thumbnail,
+// coarse to fine, ~2 ms), and moves the outline with it. Translation only;
+// a phone held over a counter mostly slides and tips, which both read as that.
+let MOTION_COMP = true;
+const MOTION_W = 96;
+let quadBase = null, quadThumb = null, lastMotionAt = 0;
+const motionCanvas = document.createElement('canvas');
+const motionCtx = motionCanvas.getContext('2d', { willReadFrequently: true });
+function grabThumb(crop) {
+  if (!crop || !arVideo.videoWidth) return null;
+  const w = MOTION_W, h = Math.max(8, Math.round(MOTION_W * crop.h / crop.w));
+  if (motionCanvas.width !== w || motionCanvas.height !== h) { motionCanvas.width = w; motionCanvas.height = h; }
+  try { motionCtx.drawImage(arVideo, crop.x, crop.y, crop.w, crop.h, 0, 0, w, h); }
+  catch (e) { return null; }
+  const d = motionCtx.getImageData(0, 0, w, h).data;
+  const g = new Float32Array(w * h);
+  let sum = 0;
+  for (let i = 0, j = 0; j < g.length; i += 4, j++) { g[j] = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]; sum += g[j]; }
+  const mean = sum / g.length;
+  for (let j = 0; j < g.length; j++) g[j] -= mean;
+  return { g: g, w: w, h: h, crop: { x: crop.x, y: crop.y, w: crop.w, h: crop.h } };
+}
+function halfThumb(t) {
+  const w = t.w >> 1, h = t.h >> 1, g = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = 2 * y * t.w + 2 * x;
+    g[y * w + x] = 0.25 * (t.g[i] + t.g[i + 1] + t.g[i + t.w] + t.g[i + t.w + 1]);
+  }
+  return { g: g, w: w, h: h };
+}
+// mean |a(x) - b(x + d)| over the overlap; Infinity when it is under half the frame
+function sadAt(a, b, dx, dy) {
+  const x0 = Math.max(0, -dx), x1 = Math.min(a.w, a.w - dx);
+  const y0 = Math.max(0, -dy), y1 = Math.min(a.h, a.h - dy);
+  if ((x1 - x0) * (y1 - y0) < 0.5 * a.w * a.h) return Infinity;
+  let s = 0;
+  for (let y = y0; y < y1; y++) {
+    const ra = y * a.w, rb = (y + dy) * b.w + dx;
+    for (let x = x0; x < x1; x++) s += Math.abs(a.g[ra + x] - b.g[rb + x]);
+  }
+  return s / ((x1 - x0) * (y1 - y0));
+}
+// Shift of b against a, in a's pixels, or null when the view has too little
+// texture to tell (a blank counter, a frame blurred right through).
+function estimateShift(a, b) {
+  if (!a || !b || a.w !== b.w || a.h !== b.h) return null;
+  const A = halfThumb(a), B = halfThumb(b);
+  // up to 30% of the view either way (the screenshots showed 4-9% of it)
+  const R = Math.round(0.3 * A.w);
+  let best = Infinity, bx = 0, by = 0;
+  const costs = [];
+  for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
+    const c = sadAt(A, B, dx, dy);
+    if (!isFinite(c)) continue;
+    costs.push(c);
+    if (c < best) { best = c; bx = dx; by = dy; }
+  }
+  if (!costs.length) return null;
+  // a best match on the edge of the search is a view that moved further
+  // than it reaches, or a wrong match: not a shift to trust
+  if (Math.abs(bx) === R || Math.abs(by) === R) return null;
+  costs.sort((p, q) => p - q);
+  const typical = costs[costs.length >> 1];
+  if (!(best < 0.7 * typical)) return null;
+  let fb = Infinity, fx = 2 * bx, fy = 2 * by;
+  for (let dy = 2 * by - 2; dy <= 2 * by + 2; dy++) for (let dx = 2 * bx - 2; dx <= 2 * bx + 2; dx++) {
+    const c = sadAt(a, b, dx, dy);
+    if (c < fb) { fb = c; fx = dx; fy = dy; }
+  }
+  return { dx: fx, dy: fy };
+}
+function updateMotion(force) {
+  if (!MOTION_COMP || !quadBase || !quadThumb || !targetQuad) return;
+  const now = Date.now();
+  if (!force && now - lastMotionAt < 80) return;
+  lastMotionAt = now;
+  const crop = coverCrop();
+  const c0 = quadThumb.crop;
+  if (!crop || crop.x !== c0.x || crop.y !== c0.y || crop.w !== c0.w || crop.h !== c0.h) return;
+  const s = estimateShift(quadThumb, grabThumb(crop));
+  if (!s) return;
+  const kx = crop.w / quadThumb.w, ky = crop.h / quadThumb.h;
+  targetQuad = quadBase.map(p => [p[0] + s.dx * kx, p[1] + s.dy * ky]);
+  arStats.shift = Math.round(s.dx * kx) + ',' + Math.round(s.dy * ky);
+}
 
 function coverCrop() {
   const vw = arVideo.videoWidth, vh = arVideo.videoHeight;
@@ -1361,6 +1455,7 @@ function stopARStream() {
   lastHUDData = null;
   currentQuad = null;
   targetQuad = null;
+  quadBase = null;
   ctx.clearRect(0, 0, arCanvas.width, arCanvas.height);
 }
 
@@ -1378,6 +1473,7 @@ async function arTick() {
     pushCrop = crop;
     offCtx.drawImage(arVideo, crop.x, crop.y, crop.w, crop.h,
                      0, 0, offscreenCanvas.width, offscreenCanvas.height);
+    const thumb = MOTION_COMP ? grabThumb(crop) : null;
     const blob = await new Promise(res => offscreenCanvas.toBlob(res, 'image/jpeg', 0.75));
     if (!blob) {
       arStats.fail++;
@@ -1423,7 +1519,7 @@ async function arTick() {
       setPushStatus('SERVER REFUSED FRAME');
     }
     drawDebugInset(d);
-    drawARHUD(d);
+    drawARHUD(d, thumb);
   } catch(e) {
     // A dropped frame and a broken loop look identical until one of them is
     // reported: say which, on screen and in the console.
@@ -1443,10 +1539,11 @@ async function arTick() {
   }
 }
 
-function drawARHUD(d) {
+function drawARHUD(d, thumb) {
   if (!d || !d.ok) {
     lastHUDData = null;
     targetQuad = null;
+    quadBase = null;
     return;
   }
   lastHUDData = d;
@@ -1458,6 +1555,10 @@ function drawARHUD(d) {
 
   if (d.tracking && d.quad && d.quad.length === 4) {
     targetQuad = d.quad.map(pt => [crop.x + pt[0] * scaleX, crop.y + pt[1] * scaleY]);
+    // the answer is about the frame sent; move it to where that is now
+    quadBase = targetQuad.map(p => [p[0], p[1]]);
+    quadThumb = thumb || null;
+    updateMotion(true);
     if (!currentQuad) {
       currentQuad = targetQuad.map(p => [...p]);
     }
@@ -1481,6 +1582,7 @@ function drawARHUD(d) {
     }
   } else {
     targetQuad = null;
+    quadBase = null;
     lastLocked = false;
     $('#hud-status').textContent = 'SEARCHING';
     const chipBox = document.querySelector('.hud-chip');
@@ -1540,6 +1642,7 @@ function renderARHUDContinuous() {
     const age = arStats.lastOkAt ? Date.now() - arStats.lastOkAt : 0;
     if (targetQuad && arStats.lastOkAt && age > overlayStaleMs()) {
       targetQuad = null;
+      quadBase = null;
       currentQuad = null;
       lastLocked = false;
       arStats.stale++;
@@ -1549,6 +1652,7 @@ function renderARHUDContinuous() {
       if (chipBox) chipBox.classList.remove('settled');
     }
 
+    updateMotion(false);
     if (targetQuad && currentQuad) {
       // Smoothly lerp towards target quad corners
       for (let i = 0; i < 4; i++) {

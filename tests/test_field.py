@@ -69,7 +69,9 @@ def test_the_contour_detector_alone_misses_these():
     """Why the scene search exists: record the old detector's result, so a
     future 'simplification' back to it is seen for what it is."""
     hits = 0
-    for frame, card in ALL:
+    # the shop-counter frames; on a black mat (the 'reader' frames of
+    # 2.18.0) the contour detector is at home and finds the card
+    for frame, card in [fc for fc in ALL if not ANN[fc[0]].get("reader")]:
         q = _cards(frame)[card]
         try:
             found, _, _ = find_card_quad(_img(frame), prefer_point=tuple(q.mean(0)))

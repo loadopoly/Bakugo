@@ -66,6 +66,108 @@ ASSUMED_TILT_DEG = 20.0
 ASSUMED_TILT_SIGMA_DEG = 15.0
 
 
+def seat_outer_edges(image: np.ndarray, corners: np.ndarray, px_per_mm: float,
+                     pad_mm: float = 1.2) -> tuple[np.ndarray, dict]:
+    """Put each side of the outline on the card's own edge.
+
+    Every border width is measured FROM the outline, so an outline sitting
+    half a millimetre off the card on one side moves that border by half a
+    millimetre -- on a 2 mm border, 10 points of centering. The detectors
+    place a side on the strongest gradient near it, which is the card's edge
+    when that edge is sharp. When it is not -- defocus, a penny sleeve's open
+    end, a soft shadow -- the edge is a ramp up to a millimetre wide and the
+    side can sit anywhere on it. A live frame from a counter (Meganium in a
+    penny sleeve, 2.18.0) had its top side 0.4 mm out, on the start of the
+    ramp; the top border then measured 0.7 mm where it is ~2.5, and the app
+    settled on 74/26 for a card that is about 51/49.
+
+    For each side, the colour profile across the edge (median along the
+    middle 70% of the side) is taken from 1.2 mm outside to 1.6 mm inside,
+    and the edge is put where the colour is half way from the background just
+    outside to the card just past the ramp. A side moves only when the step
+    is clear (the card differs from the background by dE >= 12, the
+    background band is flat) and at least 60% of positions along the side
+    agree to within 0.3 mm. Returns (corners, {side: shift_mm inward}).
+
+    Tried as well: starting the printed-border search past the end of the
+    ramp instead of 0.35 mm in. It made no difference on the Meganium frame
+    and made thin borders under heavy blur worse (31 against 16 of 144
+    synthetic captures more than 3 points out), so it is not done."""
+    from .types import STANDARD_CARD_H_MM as CH, STANDARD_CARD_W_MM as CW
+
+    corners = np.asarray(corners, dtype=np.float64).reshape(4, 2)
+    s = max(float(px_per_mm), 8.0)
+    src = np.float32([[0, 0], [CW, 0], [CW, CH], [0, CH]])
+    try:
+        M = cv2.getPerspectiveTransform(src, corners.astype(np.float32)).astype(np.float64)
+    except cv2.error:
+        return corners, {}
+    T = np.array([[s, 0, pad_mm * s], [0, s, pad_mm * s], [0, 0, 1.0]])
+    size = (int(round((CW + 2 * pad_mm) * s)), int(round((CH + 2 * pad_mm) * s)))
+    rect = cv2.warpPerspective(image, M @ np.linalg.inv(T), size,
+                               flags=cv2.WARP_INVERSE_MAP | cv2.INTER_LINEAR,
+                               borderMode=cv2.BORDER_REPLICATE)
+    lab = cv2.cvtColor(rect, cv2.COLOR_BGR2LAB).astype(np.float32)
+    lab[..., 0] *= 100.0 / 255.0
+    lab[..., 1] -= 128.0
+    lab[..., 2] -= 128.0
+    # each side turned so axis 0 runs inward; depth in mm from the side, from
+    # the pixel's own position (a flipped axis is not the same grid)
+    rows, cols = lab.shape[:2]
+    pos_y = np.arange(rows) / s - pad_mm
+    pos_x = np.arange(cols) / s - pad_mm
+    views = {"top": (lab, pos_y), "bottom": (lab[::-1], CH - pos_y[::-1]),
+             "left": (lab.transpose(1, 0, 2), pos_x),
+             "right": (lab.transpose(1, 0, 2)[::-1], CW - pos_x[::-1])}
+    reach = int(round((pad_mm + 1.6) * s))
+    shift: dict = {}
+    for side, (v, dd) in views.items():
+        n = v.shape[1]
+        P = np.ascontiguousarray(v[:reach, int(0.15 * n):int(0.85 * n)])
+        P = cv2.GaussianBlur(P, (0, 0), sigmaX=max(0.6, 0.3 * s), sigmaY=max(0.5, 0.06 * s))
+        depth = dd[:reach]
+        bgm = (depth >= -0.8) & (depth <= -0.4)
+        bg = np.median(P[bgm], axis=0)
+        de = np.linalg.norm(P - bg[None], axis=2)
+        prof = np.median(de, axis=1)
+        g = np.gradient(prof) * s
+        win = (depth >= -0.4) & (depth <= 1.2)
+        k = int(np.argmax(np.where(win, g, -1e9)))
+        j = k
+        while j < len(g) - 1 and not (g[j] < 0.3 * g[k] and depth[j] - depth[k] > 0.05):
+            j += 1
+        plateau = float(np.median(prof[j:j + max(2, int(0.2 * s))]))
+        noise = float(np.median(prof[bgm]))
+        half = 0.5 * (noise + plateau)
+
+        def cross(p):
+            idx = np.nonzero((p[:-1] < half) & (p[1:] >= half) & win[:-1])[0]
+            if len(idx) == 0:
+                return float("nan")
+            i = int(idx[0])
+            return float(depth[i] + (half - p[i]) / max(float(p[i + 1] - p[i]), 1e-6) / s)
+
+        edge = cross(prof)
+        if not np.isfinite(edge):
+            shift[side] = 0.0
+            continue
+        per = np.array([cross(de[:, c]) for c in range(de.shape[1])])
+        agree = float(np.mean(np.abs(per - edge) <= 0.3))
+        ok = plateau >= 12.0 and noise <= 0.25 * plateau and agree >= 0.6
+        # Inward from 0.12 mm (the outline off the card, the failure seen);
+        # outward only from 0.25: on a thin border under heavy blur the
+        # card's edge ramp runs into the border's own and the half-way point
+        # slides out by ~0.14 mm on an outline that was right (synthetic, 1.0
+        # and 1.2 mm borders at 3 px of blur).
+        shift[side] = edge if ok and (edge >= 0.12 or edge <= -0.25) else 0.0
+    if not any(shift.values()):
+        return corners, shift
+    l, t, r, b = (shift.get(k, 0.0) for k in ("left", "top", "right", "bottom"))
+    mm = np.float32([[l, t], [CW - r, t], [CW - r, CH - b], [l, CH - b]]).reshape(-1, 1, 2)
+    out = cv2.perspectiveTransform(mm, M.astype(np.float32)).reshape(4, 2).astype(np.float64)
+    return out, shift
+
+
 def _solve_apparent_corners(
     image_corners: np.ndarray,
     K: np.ndarray,
@@ -215,6 +317,18 @@ def measure_centering(
             f"{shadow.darker_side} is too wide to subtract reliably -- it "
             "overlaps the printed border. Change your angle relative to the "
             "light, or shoot the card from a different side of the case."
+        )
+    # After the shadow check, which models a one-sided shadow band and
+    # charges its correction as uncertainty; what is left is an outline on a
+    # soft edge (focus, a sleeve's open end).
+    image_corners, seated = seat_outer_edges(image, image_corners, px_per_mm)
+    moved = {k: v for k, v in seated.items() if abs(v) >= 0.2}
+    if moved:
+        px_per_mm = _pick_scale(image_corners)
+        quality.warnings.append(
+            "outline moved onto the card's edge ("
+            + ", ".join(f"{k} {v:+.2f}mm" for k, v in moved.items())
+            + "): the edge there is soft (focus, or a sleeve)"
         )
     if outer_residual_px > 2.0:
         quality.warnings.append(
