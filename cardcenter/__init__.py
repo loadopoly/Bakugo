@@ -8,7 +8,7 @@ grade. Centering sets a ceiling; the other three attributes decide where under
 that ceiling a card actually lands.
 """
 
-__version__ = "2.17.0"
+__version__ = "2.18.0"
 
 import os as _os
 

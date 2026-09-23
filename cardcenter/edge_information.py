@@ -408,7 +408,8 @@ def snap_to_information(image: np.ndarray, quad: np.ndarray, *, samples: int = 4
     return np.asarray(quad, dtype=np.float64).reshape(4, 2), info, False
 
 
-def locate_card(image: np.ndarray, prefer_point=None, min_area_frac: float = 0.008):
+def locate_card(image: np.ndarray, prefer_point=None, min_area_frac: float = 0.008,
+                search=None, judged_only: bool = False):
     """Find the card at ``prefer_point``, then snap it with ``snap_to_information``.
 
     Two detectors, because each fails where the other does not:
@@ -430,6 +431,14 @@ def locate_card(image: np.ndarray, prefer_point=None, min_area_frac: float = 0.0
     540 px tracking size, find_card_quad's outline sat about one border width
     outside the card in 9 of 10 frames; after the snap the same frames were
     within 3 px of the full-resolution detection.
+
+    ``search``: a ``SceneSearch`` already built on this same image (the live
+    session builds one per frame to check its tracked outline, and building
+    it is most of the cost). ``judged_only``: use the contour detector's
+    outline only when the scene search judges it a card too. The live loop
+    asks for this; alone, the contour detector returns shapes on a counter
+    that are not cards.
+
     Returns (quad, contour, residual_px, QuadInformation, moved).
     """
     from .geometry import enforce_portrait, find_card_quad, order_quad
@@ -444,9 +453,9 @@ def locate_card(image: np.ndarray, prefer_point=None, min_area_frac: float = 0.0
     except DetectionError:
         legacy = None
     hit = None
-    search = None
     try:
-        search = SceneSearch(image, long_side=min(1400, max(h, w)))
+        if search is None:
+            search = SceneSearch(image, long_side=min(1400, max(h, w)))
         hit = search.card_at(aim)
     except (DetectionError, cv2.error, np.linalg.LinAlgError, ValueError):
         hit = None
@@ -463,14 +472,16 @@ def locate_card(image: np.ndarray, prefer_point=None, min_area_frac: float = 0.0
         quad = enforce_portrait(order_quad(hit.quad))
         contour = quad.reshape(-1, 1, 2).astype(np.int32)
         residual = float(hit.residual_px)
-    elif legacy is not None:
+    elif legacy is not None and (not judged_only or (
+            search is not None and search.judge(legacy[0]) is not None)):
         quad, contour, residual = legacy
     else:
         # The contour detector's own refusal ("shoot against a plain
         # contrasting background") is advice nobody can take at a shop
         # counter; say what the user can do there.
         raise DetectionError(
-            "no card found here -- point the centre of the view at a card, or tap the card on screen")
+            (search.refusal if search is not None and search.refusal else "")
+            or "no card found here -- point the centre of the view at a card, or tap the card on screen")
     try:
         snapped, info, moved = snap_to_information(image, quad)
     except ValueError:

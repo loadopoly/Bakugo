@@ -62,6 +62,7 @@ CROSS_ANGLE_MIN = math.radians(48.0)
 # costs a card candidate its place (see SceneSearch.expected_tilt_deg).
 TILT_PRIOR_DEG = 25.0
 CHROMA_SIGMA = 1.0
+RUNS_OFF = "whole card not in view -- lift the phone until all four edges of the card show"
 
 
 @dataclass(frozen=True)
@@ -449,6 +450,8 @@ class SceneSearch:
         against 156 without), so the app does not send it yet; it is here
         for when there is a larger set to decide on."""
         self.expected_tilt = expected_tilt_deg
+        # why the last card_at() said no, when it knows better than "nothing"
+        self.refusal = ""
         if image.ndim == 2:
             image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
         self.src_shape = image.shape[:2]
@@ -460,8 +463,17 @@ class SceneSearch:
         self.ev = _Evidence(gx, gy, mag)
         short = min(self.h, self.w)
         self.min_side = MIN_SIDE_FRAC * short
-        self.lines = _LineSet(_segments(lab, max(8.0, 0.4 * self.min_side)),
-                              math.hypot(self.h, self.w))
+        self._lines = None
+
+    @property
+    def lines(self) -> "_LineSet":
+        """Built on first use: judging a given outline (the live tracker, every
+        frame) needs only the gradients, and the lines are two thirds of the
+        cost of a search."""
+        if self._lines is None:
+            self._lines = _LineSet(_segments(self.lab, max(8.0, 0.4 * self.min_side)),
+                                   math.hypot(self.h, self.w))
+        return self._lines
 
     def _candidates(self, p):
         """Quads around p, pre-ranked by how much of each side has segments."""
@@ -803,6 +815,184 @@ class SceneSearch:
                 return cur
             cur = max(outer, key=lambda h: h.score)
 
+    def _extensions(self, hit: CardHit) -> list:
+        """Quads that keep three sides of ``hit`` and move the fourth out to a
+        parallel line further along the other two (working pixels)."""
+        L = self.lines
+        if len(L) == 0:
+            return []
+        Q = hit.quad
+        c = Q.mean(axis=0)
+        ct, st = np.cos(L.theta), np.sin(L.theta)
+        out = []
+        for k in range(4):
+            a, b = Q[k], Q[(k + 1) % 4]
+            d = b - a
+            Ls = float(np.hypot(*d))
+            if Ls < 1e-6:
+                continue
+            u = d / Ls
+            n = np.array([-u[1], u[0]])
+            if np.dot(n, (a + b) / 2 - c) < 0:
+                n = -n
+            # the two neighbouring sides, as point + direction, pointing past side k
+            p1, v1 = a, a - Q[(k - 1) % 4]
+            p2, v2 = b, b - Q[(k + 2) % 4]
+            span = abs(float(np.dot((a + b) / 2 - (Q[(k + 2) % 4] + Q[(k + 3) % 4]) / 2, n)))
+            # lines nearly parallel to side k, beyond it by 0.15-2.5 spans
+            dth = np.abs(((L.theta - math.atan2(n[1], n[0])) + math.pi / 2) % math.pi - math.pi / 2)
+            mid = (a + b) / 2
+            dist = (L.rho - (ct * mid[0] + st * mid[1]))
+            # sign: along n from the side
+            nn = ct * n[0] + st * n[1]
+            dist = dist * np.sign(np.where(np.abs(nn) < 1e-9, 1.0, nn))
+            ok = (dth <= math.radians(12.0)) & (dist >= 0.15 * span) & (dist <= 2.5 * span)
+            for i in np.nonzero(ok)[0]:
+                nr = np.array([ct[i], st[i]])
+                den1, den2 = float(nr @ v1), float(nr @ v2)
+                if abs(den1) < 1e-9 or abs(den2) < 1e-9:
+                    continue
+                t1 = (L.rho[i] - float(nr @ p1)) / den1
+                t2 = (L.rho[i] - float(nr @ p2)) / den2
+                if t1 <= 0 or t2 <= 0:
+                    continue
+                e1, e2 = p1 + t1 * v1, p2 + t2 * v2
+                s1, s2 = e1 + 0.12 * (e2 - e1), e1 + 0.88 * (e2 - e1)
+                tt1 = L.along(np.array([i]), s1[None, :])
+                tt2 = L.along(np.array([i]), s2[None, :])
+                cov = float(L.covered(np.array([i]), tt1, tt2)[0]) / max(abs(float(tt2[0] - tt1[0])), 1.0)
+                if cov < 0.3:
+                    continue
+                q = Q.copy()
+                q[k], q[(k + 1) % 4] = e1, e2
+                if _convex(q):
+                    out.append(q)
+        return out
+
+    def _complete(self, hit: CardHit) -> CardHit:
+        """Part of a card that looks like a whole one, turned 90 degrees.
+
+        A card's top border, its two sides and the bottom edge of its art
+        window make a quad with clean, strong, consistent-polarity sides that
+        is card-shaped as a LANDSCAPE card, and on a soft frame it out-scores
+        the real card, whose bottom edge is a faint sleeve line. The field
+        frames of 2.17.0 (counter_*) are this: the reader locked onto the
+        top half of a sleeved card. The real card is the same three sides and
+        a further line parallel to the fourth; it is found directly here
+        rather than hoping it survived the candidate shortlist, which on busy
+        holo artwork is crowded with small fully-edged quads.
+
+        The whole card wins when it is a card, contains the part, and the part
+        sits in it the way a card's top half does. Not when what it adds is
+        itself card-shaped: two cards side by side make a landscape quad
+        around both, and each card is then half of it -- but there what is
+        added is a whole card, and here it is the text box."""
+        ext = [h for h in self._judge_batch(self._extensions(hit)) if h is not None]
+        if not ext:
+            return hit
+        ha = abs(cv2.contourArea(hit.quad.astype(np.float32)))
+
+        best = None
+        for e in ext:
+            ea = abs(cv2.contourArea(e.quad.astype(np.float32)))
+            if not (1.3 * ha <= ea <= 3.2 * ha) or e.score < hit.score - 0.45:
+                continue
+            inter, _ = cv2.intersectConvexConvex(e.quad.astype(np.float32), hit.quad.astype(np.float32))
+            if inter < 0.9 * ha:
+                continue
+            # laid out in the whole card the way a card's top part is: full
+            # width, from one end, stopping 0.4-0.7 short of the other --
+            # measured in the card's own (un-projected) frame, where "which
+            # way is long" survives a 40 degree tilt that makes the part look
+            # square. A card lying on another reaches much further (0.25-0.36
+            # short, desk_spread) and is left alone.
+            if not _is_window_of(hit.quad, e.quad):
+                continue
+            # the card's own sides run on along what is added (on counter_*
+            # 0.44 each; an extension up across the gap onto the next card
+            # has 0.0-0.3), and what is added is not a card of its own
+            if min(self._added_side_support(hit.quad, e.quad)) < 0.35:
+                continue
+            if self._added_is_card(hit.quad, e.quad):
+                continue
+            if best is None or e.score > best.score:
+                best = e
+        return best if best is not None else hit
+
+    @staticmethod
+    def _added_corners(part, whole):
+        """(corner of part, corner of whole) pairs along the two sides that
+        the whole card adds to the part."""
+        P = np.asarray(part, np.float64)
+        W = np.asarray(whole, np.float64)
+        dmin = np.array([np.min(np.hypot(*(P - w).T)) for w in W])
+        far = np.argsort(-dmin)[:2]
+        return [(P[int(np.argmin(np.hypot(*(P - W[i]).T)))], W[i]) for i in far]
+
+    def _added_side_support(self, part, whole):
+        return [float(self._support(a[None, :], b[None, :], n=16, t0=0.1, t1=0.9)[0])
+                for a, b in self._added_corners(part, whole)]
+
+    def _runs_off(self, hit: CardHit) -> bool:
+        """Is this the visible part of a card that runs out of the frame?
+
+        Too close over a counter, the phone shows a card's top half and cuts
+        off the rest (three of the five counter_* frames). The top border, the
+        sides and the bottom of the art window are then a clean quad that is
+        card-shaped lying SIDEWAYS -- and a sideways card whose sides carry on
+        past its edge, where making it an upright card would take it out of
+        the frame, is that half. It is refused, so the user is told to show
+        the whole card instead of being shown half of one."""
+        q = hit.quad                                # TL, TR, BR, BL; 0-1 short
+        short = q[1] - q[0]
+        long_ = q[2] - q[1]
+        ls = float(np.hypot(*short))
+        ll = float(np.hypot(*long_))
+        if ls < 1e-6 or ll < 1e-6:
+            return False
+        # sideways: the short side runs up the screen
+        if abs(short[1]) / ls < math.cos(math.radians(40.0)):
+            return False
+        # the part's long sides (0-3 and 1-2 run along; ends are 0-1 and 2-3):
+        # an upright card would continue the long sides' neighbours -- which
+        # here are the SHORT sides 0-1 and 2-3 -- past one of the long sides.
+        # Upright, the card is ~1.4 x the part's long side tall.
+        need = CARD_ASPECT * ll - ls
+        if need < 0.25 * ls:
+            return False
+        m = 2.0
+        for a_end, b_end in (((0, 1), (3, 2)), ((1, 0), (2, 3))):
+            # extend 0->1 and 3->2 past corners 1 and 2 (or back past 0 and 3)
+            p1, p2 = q[a_end[1]], q[b_end[1]]
+            v1 = q[a_end[1]] - q[a_end[0]]
+            v2 = q[b_end[1]] - q[b_end[0]]
+            v1 = v1 / max(float(np.hypot(*v1)), 1e-9)
+            v2 = v2 / max(float(np.hypot(*v2)), 1e-9)
+            e1, e2 = p1 + need * v1, p2 + need * v2
+            out = any(not (m <= e[0] <= self.w - 1 - m and m <= e[1] <= self.h - 1 - m)
+                      for e in (e1, e2))
+            if not out:
+                continue
+            reach = 0.15 * need
+            c1 = float(self._support(p1[None, :] + 3 * v1, p1[None, :] + reach * v1,
+                                     n=8, t0=0.0, t1=1.0)[0])
+            c2 = float(self._support(p2[None, :] + 3 * v2, p2[None, :] + reach * v2,
+                                     n=8, t0=0.0, t1=1.0)[0])
+            if max(c1, c2) >= 0.75:
+                return True
+        return False
+
+    def _added_is_card(self, part: np.ndarray, whole: np.ndarray) -> bool:
+        """Is the piece of ``whole`` outside ``part`` card-shaped itself?"""
+        (pa, wa), (pb, wb) = self._added_corners(part, whole)
+        piece = np.array([wa, wb, pb, pa], np.float64)
+        if not _convex(piece):
+            piece = np.array([wa, wb, pa, pb], np.float64)
+            if not _convex(piece):
+                return False
+        asp, _ = card_pose(order_quad(piece), (self.h, self.w), self.fov)
+        return bool(np.isfinite(asp) and abs(asp - CARD_ASPECT) <= ASPECT_TOL)
+
     def card_at(self, point, nearest: bool = True, _scaled: bool = False) -> Optional[CardHit]:
         """The card under ``point`` (source pixels), or with ``nearest`` the
         closest card to it when the point is on the table; None if none."""
@@ -847,7 +1037,10 @@ class SceneSearch:
                 if found:
                     return self._to_source(min(found, key=lambda h: float(np.linalg.norm(h.centre - p))))
             return None
-        best = self._refine(best)
+        best = self._refine(self._complete(best))
+        if self._runs_off(best):
+            self.refusal = RUNS_OFF
+            return None
         return best if _scaled else self._to_source(best)
 
     def all_cards(self, max_cards: int = 16, _scaled: bool = False) -> list[CardHit]:
@@ -864,7 +1057,9 @@ class SceneSearch:
                 best = self._pick(hits)
                 if best is None:
                     continue
-                best = self._refine(best)
+                best = self._refine(self._complete(best))
+                if self._runs_off(best):
+                    continue
                 cv2.fillPoly(covered, [best.quad.astype(np.int32)], 1)
                 found.append(best)
         found.sort(key=lambda h: -h.score)

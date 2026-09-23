@@ -12,6 +12,13 @@ motion-soft.
 * `hand_ar*.jpg` are the live preview from earlier screenshots, with the HUD,
   the viewfinder guide lines and border inpainted, scaled to 540x632.
 
+* `counter_*.jpg`, `cloth_terapagos.jpg` are the live preview read out of the
+  owner's screenshots of 2.17.0 at a counter (the debug inset was hidden):
+  the HUD, the outline the app drew and the chips inpainted, scaled to 540 px
+  across, the bottom 11% (under the guidance banner) cut off. `shown` in
+  `annotations.json` is the outline 2.17.0 drew over each. They are badly out
+  of focus; outlines are good to about +/-6 px.
+
 `annotations.json` holds the card outlines (by eye, about +/-3 px) and what
 each frame shows. On these frames the contour detector alone
 (`geometry.find_card_quad`) found the card under the reticle in 0 of 17

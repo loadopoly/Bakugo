@@ -1,5 +1,5 @@
 {
- "_about": "Card outlines for the field frames, in the frame's own pixels, TL/TR/BR/BL of the outermost visible boundary (the sleeve edge on sleeved cards), annotated by eye at 2x zoom; expect +/-3 px. state: complete | occluded (under another card) | cut_off (runs out of frame) | finger_over_edge | corner_hidden. null = corner not visible.",
+ "_about": "Card outlines for the field frames, in the frame's own pixels, TL/TR/BR/BL of the outermost visible boundary (the sleeve edge on sleeved cards), annotated by eye at 2x zoom; expect +/-3 px. state: complete | occluded (under another card) | cut_off (runs out of frame) | finger_over_edge | corner_hidden. null = corner not visible. soft: frame is heavily defocused, outlines good to about +/-6 px. known_limit: recorded, not asserted (see tests/test_field.py). shown: the outline the 2.17.0 app drew over this frame, read off the screenshot.",
  "frames": {
   "desk_spread_inset": {
    "file": "desk_spread_inset.jpg",
@@ -219,6 +219,291 @@
      "state": "corner_hidden"
     }
    }
+  },
+  "counter_meganium_a": {
+   "file": "counter_meganium_a.jpg",
+   "soft": true,
+   "scene": "Phone ~15 cm over a sleeved card on a grey counter, level; the card runs off the bottom of the view. Soft (too close to focus).",
+   "cards": {
+    "meganium_sleeved": {
+     "quad": [
+      [
+       78,
+       203
+      ],
+      [
+       345,
+       190
+      ],
+      null,
+      null
+     ],
+     "state": "cut_off"
+    },
+    "card_above": {
+     "quad": [
+      null,
+      null,
+      [
+       287,
+       212
+      ],
+      [
+       20,
+       214
+      ]
+     ],
+     "state": "cut_off"
+    }
+   },
+   "shown": [
+    [
+     119.2,
+     201.1
+    ],
+    [
+     356.0,
+     185.9
+    ],
+    [
+     328.9,
+     612.8
+    ],
+    [
+     23.3,
+     598.2
+    ]
+   ]
+  },
+  "counter_stack": {
+   "file": "counter_stack.jpg",
+   "soft": true,
+   "scene": "A column of sleeved cards on a grey counter beside a black box, level, badly defocused.",
+   "cards": {
+    "meganium_sleeved": {
+     "quad": [
+      [
+       199,
+       245
+      ],
+      [
+       354,
+       254
+      ],
+      [
+       339,
+       498
+      ],
+      [
+       161,
+       475
+      ]
+     ],
+     "state": "complete"
+    },
+    "card_above": {
+     "quad": [
+      [
+       183,
+       63
+      ],
+      [
+       331,
+       66
+      ],
+      [
+       318,
+       248
+      ],
+      [
+       176,
+       243
+      ]
+     ],
+     "state": "occluded"
+    },
+    "card_below": {
+     "quad": [
+      [
+       172,
+       510
+      ],
+      [
+       320,
+       520
+      ],
+      null,
+      null
+     ],
+     "state": "cut_off"
+    }
+   },
+   "shown": [
+    [
+     218.4,
+     268.6
+    ],
+    [
+     456.6,
+     271.9
+    ],
+    [
+     411.6,
+     624.7
+    ],
+    [
+     135.1,
+     624.7
+    ]
+   ]
+  },
+  "counter_meganium_blur": {
+   "file": "counter_meganium_blur.jpg",
+   "soft": true,
+   "scene": "The column of counter_stack, closer and very soft; the middle card is all in view, the one above runs off the top.",
+   "cards": {
+    "meganium_sleeved": {
+     "quad": [
+      [
+       112,
+       200
+      ],
+      [
+       310,
+       193
+      ],
+      [
+       290,
+       522
+      ],
+      [
+       88,
+       515
+      ]
+     ],
+     "state": "complete"
+    },
+    "card_above": {
+     "quad": [
+      null,
+      null,
+      [
+       276,
+       183
+      ],
+      [
+       100,
+       190
+      ]
+     ],
+     "state": "cut_off"
+    }
+   },
+   "shown": [
+    [
+     139.0,
+     192.5
+    ],
+    [
+     360.6,
+     205.7
+    ],
+    [
+     274.6,
+     630.0
+    ],
+    [
+     36.5,
+     563.8
+    ]
+   ]
+  },
+  "cloth_terapagos": {
+   "file": "cloth_terapagos.jpg",
+   "soft": true,
+   "scene": "Sleeved card on a dark cloth by a speckled counter, ~30 deg; its lower half is out of view.",
+   "cards": {
+    "terapagos_sleeved": {
+     "quad": [
+      [
+       46,
+       193
+      ],
+      [
+       318,
+       208
+      ],
+      null,
+      null
+     ],
+     "state": "cut_off"
+    }
+   },
+   "shown": [
+    [
+     140.4,
+     189.2
+    ],
+    [
+     358.7,
+     211.0
+    ],
+    [
+     284.6,
+     637.9
+    ],
+    [
+     39.8,
+     538.6
+    ]
+   ]
+  },
+  "counter_meganium_b": {
+   "file": "counter_meganium_b.jpg",
+   "soft": true,
+   "scene": "Meganium in a holder with a Rare Candy card behind it, offset ~45 px up; grey counter, level, soft.",
+   "cards": {
+    "meganium_in_holder": {
+     "quad": [
+      [
+       88,
+       151
+      ],
+      [
+       356,
+       134
+      ],
+      [
+       348,
+       552
+      ],
+      [
+       61,
+       533
+      ]
+     ],
+     "state": "complete",
+     "known_limit": true
+    }
+   },
+   "shown": [
+    [
+     135.7,
+     187.8
+    ],
+    [
+     365.3,
+     209.0
+    ],
+    [
+     291.2,
+     631.3
+    ],
+    [
+     39.8,
+     505.5
+    ]
+   ]
   }
  }
 }

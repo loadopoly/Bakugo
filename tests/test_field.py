@@ -41,9 +41,16 @@ def _iou(a, b):
     return inter / union if union > 0 else 0.0
 
 
-def _cards(name, states=("complete", "finger_over_edge", "corner_hidden")):
+def _cards(name, states=("complete", "finger_over_edge", "corner_hidden"), known_limits=False):
     return {n: np.array(c["quad"], float) for n, c in ANN[name]["cards"].items()
-            if c["state"] in states and None not in c["quad"]}
+            if c["state"] in states and None not in c["quad"]
+            and (known_limits or not c.get("known_limit"))}
+
+
+def _floor(frame, sharp=0.8):
+    """IoU a found outline must reach. The counter_* frames are badly out of
+    focus and their outlines were drawn to about +/-6 px, not +/-3."""
+    return 0.75 if ANN[frame].get("soft") else sharp
 
 
 def _aims(quad):
@@ -78,7 +85,7 @@ def test_locate_card_finds_the_card_it_is_aimed_at(frame, card):
     found, _, _, _, _ = locate_card(_img(frame), prefer_point=tuple(q.mean(0)))
     # the left card of desk_pair is the softest frame in the set (motion
     # blur on a sleeve edge against wood)
-    floor = 0.7 if (frame, card) == ("desk_pair_inset", "meganium_sleeved") else 0.8
+    floor = 0.7 if (frame, card) == ("desk_pair_inset", "meganium_sleeved") else _floor(frame)
     assert _iou(found, q) >= floor
 
 
@@ -93,7 +100,7 @@ def test_aiming_anywhere_on_the_card_finds_the_whole_card():
         n = 0
         for p in _aims(q):
             hit = S.card_at(tuple(p))
-            ok = hit is not None and _iou(hit.quad, q) >= 0.8
+            ok = hit is not None and _iou(hit.quad, q) >= _floor(frame)
             good += ok
             n += ok
             total += 1
@@ -209,6 +216,107 @@ def test_too_far_for_live_points_at_the_photo():
     for i in range(3):
         st2 = s2.push(img, now=1.0 + 0.2 * i)
     assert any(g.startswith("too far away") for g in st2.guidance)
+
+
+# ---- 2.17.0 at the counter: what the app drew, and why -------------------
+#
+# The counter_* frames are the owner's screenshots of 2.17.0 at a counter
+# (tests/fixtures/field/README.md). In every one the app said TRACKING over an
+# outline that was not the card -- and nearly the same outline in four of
+# them, over three different cards on two different surfaces: the tracker was
+# holding a place on the screen, not a card.
+
+COUNTER = [f for f in ANN if "shown" in ANN[f]]
+
+
+def _shift(img, dx, dy):
+    M = np.float32([[1, 0, dx], [0, 1, dy]])
+    return cv2.warpAffine(img, M, (img.shape[1], img.shape[0]), borderMode=cv2.BORDER_REFLECT)
+
+
+@pytest.mark.parametrize("frame", COUNTER)
+def test_an_outline_that_is_not_a_card_is_let_go(frame):
+    """Start the session where 2.17.0 was -- holding the outline it drew --
+    and give it the frame: it must drop that outline, and whatever it shows
+    instead must be a card that is there (or nothing)."""
+    img = _img(frame)
+    shown = np.array(ANN[frame]["shown"], float)
+    s = ARSession()
+    s._last_raw = shown.copy()
+    s._last_quad = shown.copy()
+    s._last_valid_at = s._last_detect_at = 0.9
+    st = s.push(img, now=1.0)
+    if not st.tracking:
+        assert st.quad is None and st.guidance
+        return
+    assert _iou(st.quad, shown) < 0.7
+    cards = _cards(frame, known_limits=True)
+    assert cards and max(_iou(st.quad, q) for q in cards.values()) >= 0.7, st.quad.tolist()
+
+
+@pytest.mark.parametrize("frame", ["counter_meganium_a", "cloth_terapagos"])
+def test_half_a_card_is_not_a_card(frame):
+    """Too close, the bottom of the card is out of view, and the top border,
+    the sides and the bottom of the art window make a clean quad that is
+    card-shaped lying sideways. That is not a card to measure; the user is
+    told to show all of it."""
+    img = _img(frame)
+    h, w = img.shape[:2]
+    S = SceneSearch(img)
+    assert S.card_at((w / 2, h / 2)) is None
+    assert "whole card not in view" in S.refusal
+    with pytest.raises(DetectionError, match="whole card not in view"):
+        locate_card(img, prefer_point=(w / 2, h / 2))
+    st = ARSession().push(img, now=1.0)
+    assert not st.tracking and "whole card not in view" in " ".join(st.guidance)
+
+
+@pytest.mark.parametrize("frame,card", [("counter_stack", "meganium_sleeved"),
+                                        ("desk_close_inset", "meganium_sleeved"),
+                                        ("desk_pair_inset", "dreepy_card")])
+def test_the_outline_follows_the_card_when_the_phone_moves(frame, card):
+    """A few pushes a second from a hand-held phone: the card moves tens of
+    pixels between frames, past the edge search's reach. The outline must go
+    with the card -- not stay where it was, and not jump to its neighbour."""
+    img = _img(frame)
+    q = _cards(frame)[card]
+    h, w = img.shape[:2]
+    c = q.mean(axis=0)
+    s = ARSession()
+    s.select((c[0] / w, c[1] / h))
+    t = 1.0
+    st = s.push(img, now=t)
+    assert st.tracking and _iou(st.quad, q) >= 0.75
+    for dx, dy in [(25, 0), (50, 10), (80, 20), (40, -30), (0, 0)]:
+        t += 0.35
+        st = s.push(_shift(img, dx, dy), now=t)
+        moved = q + np.array([dx, dy], float)
+        assert st.tracking, (dx, dy, st.guidance)
+        assert _iou(st.quad, moved) >= 0.75, (dx, dy, st.quad.tolist())
+
+
+def test_a_tap_names_a_card_once():
+    """The tap is a point in the frame it was made on. Once it has found its
+    card, the session follows the card; it does not keep re-aiming at that
+    spot of the screen as the phone moves."""
+    img = _img("desk_pair_inset")
+    q = _cards("desk_pair_inset")["dreepy_card"]
+    h, w = img.shape[:2]
+    c = q.mean(axis=0)
+    s = ARSession()
+    s.select((c[0] / w, c[1] / h))
+    st = s.push(img, now=1.0)
+    assert st.tracking and s._aim_norm is None
+
+
+def test_a_soft_frame_of_a_close_card_says_to_lift_the_phone():
+    img = _img("counter_meganium_b")
+    st = None
+    s = ARSession()
+    for i in range(2):
+        st = s.push(img, now=1.0 + 0.3 * i)
+    assert st.tracking
+    assert any("too close to focus" in g for g in st.guidance), st.guidance
 
 
 # ---- synthetic: the scene search is as precise as it needs to be ----------

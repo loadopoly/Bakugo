@@ -83,6 +83,13 @@ TRACK_LONG_SIDE = 540
 MEASURE_LONG_SIDE = 1200
 FRAME_MARGIN_FRAC = 0.18
 
+# Live-loop timing. Frames arrive a few times a second from a phone on shop
+# signal, not at video rate, so between two pushes a hand-held phone moves the
+# card well past the tracker's search band.
+REDETECT_S = 1.0   # re-find the card from scratch at least this often
+RECENT_S = 0.7     # a card seen this recently is the first place to look again
+AIM_TTL_S = 3.0    # a tap names a card in the frames just after it, not forever
+
 # VIO scale drifts over a session. Widen a calibration's uncertainty with age so
 # a stale one stops being trusted silently.
 DEFAULT_DRIFT_PER_HOUR = 0.01  # 1% per hour, relative
@@ -681,6 +688,14 @@ class ARSession:
     # camera pixels per pushed pixel (see push); 1.0 until the phone says
     source_scale: float = 1.0
     _aim_norm: Optional[tuple] = None
+    _aim_at: Optional[float] = None
+    # the outline as measured (unsmoothed): where the tracker starts next time
+    _last_raw: Optional[np.ndarray] = None
+    _last_valid_at: float = float("-inf")
+    _last_detect_at: float = float("-inf")
+    _lost_reason: str = ""
+    # the last frame, small and grey, to measure how the view moved since
+    _last_gray: Optional[np.ndarray] = None
 
     def reset(self) -> None:
         """Start a new card. Combining frames across two different cards would
@@ -688,6 +703,9 @@ class ARSession:
         self.horizontal = RunningRatio()
         self.vertical = RunningRatio()
         self._last_quad = None
+        self._last_raw = None
+        self._last_valid_at = float("-inf")
+        self._last_detect_at = float("-inf")
         self._quad_filter.reset()
         self.measured = 0
         self.seen = 0
@@ -701,6 +719,7 @@ class ARSession:
         # Where the user pointed (0..1 of the pushed frame), when they tapped a
         # card rather than centring it: a shop counter has several.
         self._aim_norm = None
+        self._aim_at = None
 
     def select(self, aim_norm) -> None:
         """Start a new card at the point the user tapped (0..1 of the frame)."""
@@ -755,6 +774,128 @@ class ARSession:
             return False
         return information_value(w, self.boundary) > 0.02
 
+    def _new_card(self) -> None:
+        """The outline now on screen is a different card: its views must not
+        be pooled with the last card's."""
+        self.horizontal = RunningRatio()
+        self.vertical = RunningRatio()
+        self.measured = 0
+        self.last_result = None
+        self._measurements = []
+        self._sprt = None
+        self._last_info = None
+        self._last_gate = None
+
+    def _view_motion(self, img: np.ndarray):
+        """How far the view moved since the last frame (tracking pixels), or
+        None when that cannot be told. Phase correlation on a half-size grey
+        frame: ~3 ms, and the phone's own movement is the one motion that
+        moves everything in the frame at once."""
+        g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+        g = cv2.resize(g, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA).astype(np.float32)
+        prev, self._last_gray = self._last_gray, g
+        if prev is None or prev.shape != g.shape:
+            return None
+        win = cv2.createHanningWindow((g.shape[1], g.shape[0]), cv2.CV_32F)
+        (dx, dy), response = cv2.phaseCorrelate(prev, g, win)
+        if response < 0.08 or not (np.isfinite(dx) and np.isfinite(dy)):
+            return None
+        return np.array([2.0 * dx, 2.0 * dy])
+
+    def _acquire(self, img: np.ndarray, scale: float, reticle, now: float, motion=None):
+        """Where the card is in this (tracking-size) frame: (quad, sigma_px),
+        or (None, None) with ``_lost_reason`` set.
+
+        The field frames of 2.17.0 showed the old loop's failure: the tracker
+        only ever asked "is there an edge near where the card was?", and on a
+        soft frame from a moving phone there always is. It held an outline in
+        the same place on the screen while the card moved away, onto a
+        different card, and onto a different table, and called that TRACKING.
+        So every tracked outline is now judged against the frame as a card
+        (the scene search's judge: card-shaped through the perspective, edges
+        along its sides that stop at its corners, a face unlike what is
+        around it), and the card is found afresh at least every REDETECT_S.
+        A frame where neither finds a card is reported as no card."""
+        from .edge_information import _quad_iou
+        from .scene import SceneSearch
+
+        built = []
+
+        def scene():
+            if not built:
+                built.append(SceneSearch(img))
+            return built[0]
+
+        shape = img.shape[:2]
+        prev = self._last_raw * scale if self._last_raw is not None else None
+        if prev is not None and motion is not None:
+            # A phone moves the card tens of pixels between two pushes a few
+            # hundred ms apart; the edge search reaches 14. Start it where
+            # the whole view says the card went.
+            prev = prev + motion[None, :]
+        if prev is not None:
+            try:
+                q, stats = track_quad(img, prev, search_px=self._search_px, return_stats=True)
+                hit = scene().judge(q)
+                if hit is None:
+                    raise DetectionError("the tracked outline is no longer a card")
+                if now - self._last_detect_at >= REDETECT_S:
+                    self._last_detect_at = now
+                    fresh = scene().card_at(tuple(q.mean(axis=0)), nearest=False)
+                    if (fresh is not None and fresh.score > hit.score
+                            and _quad_iou(fresh.quad, q, shape) < 0.75):
+                        q2 = enforce_portrait(order_quad(fresh.quad))
+                        return self._adopt(q2, float(fresh.residual_px), prev, shape, now)
+                self._last_valid_at = now
+                return q, stats.corner_sigma_px
+            except DetectionError:
+                pass
+        # Find it afresh: where it was a moment ago, if it was, else under the
+        # reticle (or where the user tapped).
+        anchors = []
+        if prev is not None and now - self._last_valid_at <= RECENT_S:
+            anchors.append(tuple(prev.mean(axis=0)))
+        anchors.append(tuple(reticle))
+        err = None
+        for a in anchors:
+            try:
+                q, _, resid, _, _ = locate_card(img, prefer_point=a, search=scene(),
+                                                judged_only=True)
+            except DetectionError as exc:
+                err = exc
+                continue
+            self._last_detect_at = now
+            return self._adopt(q, float(resid), prev, shape, now)
+        self._last_raw = None
+        self._last_quad = None
+        self._quad_filter.reset()
+        self._lost_reason = " ".join(str(err).split()) if err is not None else ""
+        return None, None
+
+    def _adopt(self, q, resid, prev, shape, now):
+        from .edge_information import _quad_iou
+
+        if prev is not None and _quad_iou(q, prev, shape) < 0.3:
+            self._new_card()
+        # no smoothing across two different outlines
+        self._quad_filter.reset()
+        self._last_valid_at = now
+        # the tap has done its job: later re-finds follow the card
+        self._aim_norm = None
+        self._aim_at = None
+        return q, resid
+
+    @staticmethod
+    def _focus_hint(message: str, card_frac: float) -> str:
+        """A soft frame with the card filling most of the view is usually the
+        camera failing to focus that close (four of the five counter_* field
+        frames: the card half the frame wide and every edge soft, the phone
+        held still and level). Holding steadier does not fix that; a little
+        more distance does."""
+        if not message.startswith("hold steadier") or card_frac < 0.45:
+            return message
+        return "frame is soft -- if it stays soft the phone is too close to focus: lift it a little"
+
     def _photo_hint(self, message: str, frame_px_per_mm: float) -> str:
         """'Too far away' is about the LIVE frame, which the phone sends at
         540 px across. At a shop that is almost always too coarse to measure
@@ -787,61 +928,26 @@ class ARSession:
         track_img, track_scale = _resize_long(frame, TRACK_LONG_SIDE)
         th, tw = track_img.shape[:2]
         frame_centre = (tw / 2.0, th / 2.0)
+        if self._aim_norm is not None and self._aim_at is None:
+            self._aim_at = now
+        if self._aim_norm is not None and now - self._aim_at > AIM_TTL_S:
+            self._aim_norm = None          # a tap is about the frame it was made on
         if self._aim_norm is not None:
             frame_centre = (self._aim_norm[0] * tw, self._aim_norm[1] * th)
-        quad_small: Optional[np.ndarray] = None
-        achieved_px: Optional[float] = None
-        try:
-            if self._last_quad is not None:
-                quad_small, stats = track_quad(
-                    track_img, self._last_quad * track_scale,
-                    search_px=self._search_px, return_stats=True,
-                )
-                achieved_px = stats.corner_sigma_px
-            else:
-                # Nothing to track yet: a real table is rarely one card, so
-                # acquire whatever is under the reticle (frame centre) rather
-                # than the largest card-shaped thing anywhere in the shot.
-                quad_small, _, resid, _, _ = locate_card(track_img, prefer_point=frame_centre)
-                achieved_px = float(resid)
-        except DetectionError:
-            # Lost the tracked card -- most likely a glare frame or a momentary
-            # occlusion, not the user re-aiming at a different card. Re-acquire
-            # near where it was last seen; only fall back to the reticle if
-            # there was nothing to anchor to.
-            anchor = (
-                tuple((self._last_quad * track_scale).mean(axis=0))
-                if self._last_quad is not None
-                else frame_centre
+        motion = self._view_motion(track_img)
+        quad_small, achieved_px = self._acquire(track_img, track_scale, frame_centre, now, motion)
+        if quad_small is None:
+            msg = self._lost_reason
+            return ARStatus(
+                tracking=False,
+                quad=None,
+                guidance=(msg[:160],) if msg else ("point at a card, all four edges in frame",),
+                measured_frames=self.measured,
+                seen_frames=self.seen,
+                ratio=self.worst_ratio,
+                settled=self.settled,
+                scale=self.calibration.current(now) if self.calibration else None,
             )
-            try:
-                quad_small, _, resid, _, _ = locate_card(track_img, prefer_point=anchor)
-                achieved_px = float(resid)
-            except DetectionError as exc2:
-                self._last_quad = None
-                self._quad_filter.reset()
-                # A generic "point at a card" is right for "nothing found at
-                # all", but the container guard raises something specific and
-                # actionable ("found 9 card-shaped regions...") that the user
-                # should see instead of a canned message.
-                # The detector's own refusal says what is wrong with THIS
-                # frame ("could not locate a card-shaped quadrilateral. Shoot
-                # the card against a plain contrasting background..."); a
-                # canned "point at a card" throws that away.
-                msg = " ".join(str(exc2).split())
-                guidance = (msg[:160],) if msg else (
-                    "point at a card, all four edges in frame",
-                )
-                return ARStatus(
-                    tracking=False,
-                    quad=None,
-                    guidance=guidance,
-                    measured_frames=self.measured,
-                    seen_frames=self.seen,
-                    ratio=self.worst_ratio,
-                    settled=self.settled,
-                    scale=self.calibration.current(now) if self.calibration else None,
-                )
 
         # INFORMATION FLOOR ON THE TRACKING FRAME.
         #
@@ -870,6 +976,11 @@ class ARSession:
 
         smoothed_quad = self._quad_filter.filter(quad_small, timestamp=now)
         self._last_quad = smoothed_quad / track_scale
+        # The tracker starts from what was MEASURED, not from the smoothed
+        # overlay: the filter lags a moving phone, and a tracker fed its own
+        # lagged output searches where the card was, finds something there,
+        # and the lag becomes the track.
+        self._last_raw = quad_small / track_scale
         # The gate must judge the resolution the MEASUREMENT will have, not the
         # tracker's. Tracking runs at 540 px where a card is ~5 px/mm, which is
         # below the usable floor -- gating on that rejects every frame while the
@@ -1023,7 +1134,12 @@ class ARSession:
             info_dict = shown.to_dict()
             info_dict["tracking_sigma_px"] = round(sigma_meas / track_scale, 3)
             info_dict["search_px"] = round(self._search_px, 2)
-        guidance = tuple(self._photo_hint(g, full_px_per_mm) for g in quality.guidance)
+        # how much of the frame's width the card takes: past about half, a
+        # phone's main camera is near the closest it can focus
+        xs = quad_small[:, 0]
+        card_frac = float(xs.max() - xs.min()) / max(float(tw), 1.0)
+        guidance = tuple(self._focus_hint(self._photo_hint(g, full_px_per_mm), card_frac)
+                         for g in quality.guidance)
         if quality.passed and shown is not None and shown.advice and not self.settled:
             guidance = tuple(guidance) + (shown.advice[0].message,)
         gate = self._last_gate

@@ -75,16 +75,23 @@ your data is metered. A still is a few hundred KB when it was tracking.
 3. **Several cards on the counter: tap the one you want.** The reader takes
    the card under the reticle, or the nearest one if the reticle is on bare
    counter. A tap on a card in the preview picks that card instead (and sets
-   the focus there). A card lying on top of another is fine; so is a thumb
-   over one edge.
-4. **Tilt is fine.** Cards lying on the counter at 20-45° are found (the
+   the focus there); after that the outline follows the card as you move,
+   not the spot you tapped. A thumb over one edge is fine. Two cards lying
+   exactly on each other, or two in one holder, get outlined as one: move
+   them apart.
+4. **All four edges in view, and not too close.** Phone main cameras often
+   cannot focus nearer than 10-20 cm; with the card more than half the frame
+   wide the live view usually goes soft. Hold the phone a little
+   higher and zoom in instead. If the bottom of the card is off screen the
+   reader will not take the top half as a card.
+5. **Tilt is fine.** Cards lying on the counter at 20-45° are found (the
    reader un-projects the outline and checks it is card-shaped at that
    tilt). Accuracy still drops with tilt, because the far half of the card
    has fewer pixels; for a measurement, the flatter the view the better.
-5. **Through glass**: shoot at a slight angle to move the reflection off the
+6. **Through glass**: shoot at a slight angle to move the reflection off the
    card, and expect the shot-noise gate to send identifications to review —
    glass plus shop lighting is rarely photon-limited.
-6. **In a sleeve or binder page**: fine, as long as one card fills the reticle
+7. **In a sleeve or binder page**: fine, as long as one card fills the reticle
    and the page's own edges are not closer to the reticle than the card's.
 
 ## If it refuses
@@ -98,6 +105,10 @@ The banner says which of the two things is wrong:
 * `too far even for a photo` / `too far away (N px/mm)` — zoom, switch
   camera, or step in. Nothing else will fix it; the pixels are not there.
 * `no card found here` — point the centre of the view at a card or tap one.
+* `whole card not in view` — part of the card is off screen; lift the phone
+  until all four edges show.
+* `frame is soft -- ... too close to focus` — the card fills most of the view
+  and the camera cannot focus that near; lift the phone a little.
 * `could not locate a card-shaped quadrilateral` — the outline is not visible:
   a gold border against a dark surface, fingers over a corner, or the card
   flush against other cards. Change what is behind the card, not the distance.

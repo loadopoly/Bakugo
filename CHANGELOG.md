@@ -9,6 +9,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.18.0] - 2026-09-23
+
+From five screenshots of 2.17.0 at a counter (now `tests/fixtures/field/counter_*`). In
+every one the app said TRACKING over an outline that was not the card, and in four of them it
+was nearly the same outline, over three different cards on two different surfaces: the live
+tracker was holding a place on the screen, not a card.
+
+### Fixed
+- **The live outline stays on a card, or goes.** The tracker only ever asked "is there an
+  edge near where the card was?", and on a soft frame from a moving phone there always is.
+  Fed the frames with the outlines 2.17.0 drew, it kept all five (moved 3-5 px) where the
+  scene search judged none of them a card. Now every tracked outline is judged against the
+  frame (card-shaped through the perspective, edges along its sides that stop at its
+  corners, a face unlike its surroundings); one that fails is dropped and the card is found
+  afresh, and the card is re-found from scratch at least once a second even when the outline
+  passes. With nothing found the HUD says so instead of showing a box.
+- **The outline follows the card when the phone moves.** Frames arrive a few times a second,
+  and between two of them a hand-held phone moves the card tens of pixels; the edge search
+  reaches 14. The session now measures how the whole view moved (phase correlation on a
+  half-size grey frame, ~3 ms) and starts the search where the card went. On three field
+  frames shifted 25-80 px between pushes, 2.17.0 kept the outline where the card had been
+  (IoU 0.79-0.94 with the old position, 0.30-0.60 with the card) -- the screenshots'
+  symptom, reproduced; now it stays on the card (0.76-0.96).
+- The tracker starts from the last *measured* outline, not the smoothed one on screen: fed its
+  own lagged output it searched where the card had been.
+- A tap names a card once. The tapped point used to stay the aim for the rest of the session,
+  so every later re-find went back to that spot of the screen whatever the phone was now
+  pointing at. It now lasts until its card is found (or 3 s).
+- A new card replaces the old one's views: when the outline is re-found somewhere else
+  entirely (overlap < 0.3), the pooled measurements start over instead of mixing two cards.
+- In the live loop the contour detector's outline is used only if the scene search also judges
+  it a card (`locate_card(judged_only=True)`); alone it returns shapes on a counter that are
+  not cards.
+
+### Added
+- **Half a card is not a card.** Too close, the card's bottom runs out of the view, and its top
+  border, sides and the bottom edge of the art window make a clean quad that is card-shaped
+  lying sideways (three of the five frames). A sideways card whose sides carry on past its
+  edge, where standing it upright would take it out of the frame, is refused with "whole card
+  not in view -- lift the phone until all four edges of the card show".
+- **The rest of the card is looked for directly.** When the best quad is the top part of a
+  card and the card's bottom edge is faint, the scene search now tries the quads that keep
+  three sides and move the fourth out to a parallel line, and takes the whole card when it is
+  judged a card, the part sits in it the way a card's top half does, the card's sides run on
+  along what is added, and what is added is not a card of its own (two cards side by side).
+  On busy holo art the whole card was not in the 400-quad shortlist at all.
+- "frame is soft -- if it stays soft the phone is too close to focus: lift it a little" when
+  the frame is soft and the card is more than half the frame wide (four of the five frames:
+  phone still and level, every edge soft).
+- Five field frames with outlines and the outline 2.17.0 drew over each (`shown`), and tests:
+  a wrong outline is let go; half a card is refused; the outline follows the card through
+  25-80 px moves; a tap is used once; the too-close hint.
+
+### Changed
+- A tracked frame costs ~45 ms on the server instead of ~25 (judging the outline); a full
+  re-find (~250-400 ms here) runs once a second. The scene search now builds its lines only
+  when it needs them.
+
+### Known limits
+- **Two cards in one holder, offset** (counter_meganium_b: Meganium in front of a Rare Candy
+  card that sticks out ~45 px above it): the reader outlines the holder -- the Rare Candy
+  card's top edge with Meganium's sides and bottom (IoU 0.72-0.75 with Meganium). Recorded,
+  not asserted. As with the stacked pair in 2.17.0, separate the cards to measure one.
+- The counter_* frames are the live preview read out of the screenshots (the debug inset was
+  hidden), so they are the preview, not the exact server frame, and their bottom 11% was under
+  the HUD banner and is cut off. They are all badly out of focus; their outlines are good to
+  about +/-6 px and the tests use IoU 0.75 for them.
+
 ## [2.17.0] - 2026-09-23
 
 A reader built for the counter, from the owner's own shop-style frames: cards on light
