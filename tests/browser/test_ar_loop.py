@@ -120,6 +120,12 @@ def stub():
                 self.end_headers()
                 self.wfile.write(page)
                 return
+            if state["mode"] == "settled":
+                return self._json({"ok": True, "tracking": True, "headline": "66.8", "quad": QUAD,
+                                   "guidance": [], "measured_frames": 4, "seen_frames": 9,
+                                   "ratio": 66.8, "settled": True, "grade_estimate": "PSA 8",
+                                   "grade_confidence": 0.52, "grade_ceiling": "6-10",
+                                   "verdict": "ABOVE"})
             self._json({"ok": True, "tracking": True, "headline": "tracking", "quad": QUAD,
                         "guidance": [], "measured_frames": 0, "seen_frames": 1, "ratio": None,
                         "settled": False, "verdict": "UNDECIDED"})
@@ -356,3 +362,31 @@ def test_tap_on_the_preview_picks_the_card(page, stub):
     # every push says how many camera pixels each pushed pixel stands for
     crop = page.evaluate("pushCrop")
     assert stub["pushes"][-1]["source_scale"] == pytest.approx(crop["w"] / 540, rel=0.02)
+
+
+def test_the_still_is_the_video_frame_when_the_video_is_big_enough(page):
+    """2.19.1 field report: Measure Card and Identify found no card in the
+    camera's separate photo while every live frame of those seconds did. A 4K
+    video frame is the still (same pixels the outline was found in); a small
+    video still uses the photo."""
+    assert page.evaluate("stillSource(2160, 3840, true)") == "frame"
+    assert page.evaluate("stillSource(3840, 2160, true)") == "frame"
+    assert page.evaluate("stillSource(1920, 1080, true)") == "photo"
+    assert page.evaluate("stillSource(640, 480, false)") == "frame"
+
+
+def test_a_settled_live_number_the_photo_refused_is_not_shown_as_settled(page, stub):
+    """The chip said '66.8% · ~PSA 8 · range 6-10' and 'Target settled' over
+    'Measurement Refused'. A refused photo now leaves the live number marked
+    as not confirmed."""
+    _wait_pushes(page)
+    page.evaluate("window.ImageCapture = undefined")
+    stub["mode"] = "settled"
+    page.wait_for_function(
+        "() => /PSA 8/.test(document.querySelector('#hud-status').textContent)", timeout=15000)
+    page.evaluate("triggerARFreeze()")
+    page.wait_for_function(
+        "() => /photo refused/.test(document.querySelector('#hud-status').textContent)",
+        timeout=20000)
+    banner = page.evaluate("document.querySelector('#hud-guidance').textContent")
+    assert "refused" in banner and "settled" not in banner.lower()

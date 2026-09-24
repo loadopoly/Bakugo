@@ -9,6 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.20.0] - 2026-09-24
+
+From sixteen screenshots of 2.19.1 (penny-sleeved Meganium and Terapagos on a light wood
+table, Wi-Fi). Freeze came back "could not locate a card-shaped quadrilateral" and Identify
+"no card found here" on cards in plain view, while the live frames of the same seconds found
+the card every time (the debug inset showed the exact frames the server got, outlined).
+
+### Changed
+- **Freeze / Measure Card uses the video frame when the video is big enough.** The still was
+  the camera's separate photo (`ImageCapture.takePhoto`): taken with its own focus and field of
+  view, and cropped to the card by mapping the tracked outline from the preview into it -- a
+  guess about how the two line up. The phone streams 2160x3840 here, so the video frame
+  itself has the card ~1000 px across (~17 px/mm), at the same pixels the outline was found
+  in, and it is now the still whenever the video is 3.5 MP or more (the photo is still used
+  when the video is small). With no mapping to allow for, the crop around the card is 0.25 of
+  its long side each way instead of 0.6. This is the change most likely to fix the refusals;
+  the photos themselves were never seen, which is what the next item is for.
+- **A live number the photo refused is not shown as settled.** The chip read "66.8% · ~PSA 8 ·
+  range 6-10" and the banner "Target settled · Auto-capturing" over "Measurement Refused".
+  After a refused photo the chip says "live 66.8% · photo refused, not confirmed" and the
+  banner asks for another Freeze, until the live estimate unsettles or a photo is measured.
+
+### Added
+- **The server keeps what it measured** (`cardcenter/fieldlog.py`): every still sent to
+  /measure and /identify, and the live frames the AR session measured (at most one every two
+  seconds), each with a JSON of the outcome (ratio, borders, error, outline, holder, version).
+  They go to `field/` beside the database (`/data/field` in the container), newest 200 kept;
+  `CARDCENTER_FIELD_LOG=0` turns it off, `CARDCENTER_FIELD_DIR` moves it. Nothing leaves the
+  server. Every field report so far had to be rebuilt from screenshots; the next one can be
+  replayed from the exact inputs.
+- Tests: the still source decision, the unconfirmed chip, the field log (kept byte for byte,
+  newest N, off means off, measure and identify both recorded).
+
+### Known limits (seen in this report, not fixed)
+- **Holo sheen along a card's top edge can tilt the outline.** On three of the four exact
+  frames in the debug inset the server's outline ran from the sleeve's top-left corner down to
+  the HP: the rainbow along the top of a holo Meganium is a real straight edge at ~6 degrees,
+  and the quad on it is card-shaped at a small tilt. Trying the neighbouring lines for each
+  side of the best candidates found other slanted lines, not the level edge, on frames
+  rebuilt from the inset (they are 291 px across, blown up), so it was not kept; the exact
+  frames the field log now keeps are what that needs.
+- **The live Terapagos reading (66.8%) is probably wrong**: the card looks near 50/50 in the
+  sharp screenshots, and a frame rebuilt from one measures its bottom border at 1.3 mm where
+  the other three are 1.9-2.6 (the holo band along the bottom edge is the suspect). With the photo
+  now able to confirm or refuse it, and the frames kept, this is the next thing to look at.
+
 ## [2.19.1] - 2026-09-23
 
 ### Fixed

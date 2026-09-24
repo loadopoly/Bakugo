@@ -1572,6 +1572,9 @@ function drawARHUD(d, thumb) {
     if (!d.ratio) {
       chip.textContent = 'TRACKING';
       if (chipBox) chipBox.classList.remove('settled');
+    } else if (d.settled && stillRefusedAt) {
+      chip.textContent = `live ${d.ratio.toFixed(1)}% · photo refused, not confirmed`;
+      if (chipBox) chipBox.classList.remove('settled');
     } else if (d.settled) {
       chip.textContent = `${d.ratio.toFixed(1)}%` + (est ? ` · ${est}` : '') + (d.grade_ceiling ? ` · range ${d.grade_ceiling}` : '');
       if (chipBox) chipBox.classList.add('settled');
@@ -1592,7 +1595,10 @@ function drawARHUD(d, thumb) {
   // Guidance banner coaching
   const banner = $('#hud-guidance');
   if (banner) {
-    if (d.settled) {
+    if (d.settled && stillRefusedAt) {
+      banner.textContent = '⚠ the photo was refused -- see below; adjust and tap Freeze again';
+      banner.className = 'hud-banner warn';
+    } else if (d.settled) {
       banner.textContent = '✓ Target settled · Auto-capturing metrology';
       banner.className = 'hud-banner good';
     } else if (d.guidance && d.guidance.length > 0) {
@@ -1624,6 +1630,7 @@ function drawARHUD(d, thumb) {
   } else if (!d.settled) {
     lastSettled = false;
     autoCaptured = false;
+    stillRefusedAt = 0;
     clearTimeout(autoCaptureTimer);
   }
 
@@ -1795,8 +1802,25 @@ function renderARHUDContinuous() {
 // card before it caps, so a full-resolution photo is where the reach comes
 // from. takePhoto gives that where it is supported; the video frame is the
 // fallback.
+// WHICH STILL. The camera's own photo (ImageCapture.takePhoto) is a separate
+// capture: on the owner's phone (2.19.1, 2160x3840 video) Measure Card and
+// Identify both came back "no card here" on cards in plain view, where the
+// live frames of the same seconds found them every time. The photo is taken
+// with its own focus and field of view, and the card is cropped out of it by
+// mapping the tracked outline from the preview -- a guess about how the two
+// line up. The video frame is where the outline was found, at the same
+// pixels. When it is big enough to measure from (4K: the card ~1000 px
+// across, ~17 px/mm), it is the still; the photo is used when the video is
+// small.
+const STILL_VIDEO_MIN_PIXELS = 3500000;
+function stillSource(vw, vh, hasPhoto) {
+  return (!hasPhoto || vw * vh >= STILL_VIDEO_MIN_PIXELS) ? 'frame' : 'photo';
+}
+let lastStillSource = '';
 async function grabStill() {
-  if (videoTrack && typeof ImageCapture !== 'undefined') {
+  const hasPhoto = !!videoTrack && typeof ImageCapture !== 'undefined';
+  lastStillSource = stillSource(arVideo.videoWidth, arVideo.videoHeight, hasPhoto);
+  if (lastStillSource === 'photo') {
     try {
       const shot = await new ImageCapture(videoTrack).takePhoto();
       if (shot && shot.size > 1024) {
@@ -1807,6 +1831,7 @@ async function grabStill() {
       console.warn('[bakugo] takePhoto unavailable, using the video frame:', e);
     }
   }
+  lastStillSource = 'frame';
   return await new Promise(res => {
     const c = document.createElement('canvas');
     c.width = arVideo.videoWidth;
@@ -1827,6 +1852,7 @@ async function grabStill() {
 // message instead of hanging.
 let STILL_TIMEOUT_MS = 60000;           // let: the browser tests shorten it
 const STILL_CROP_MARGIN = 0.6;          // of the card's long side, each way
+const STILL_FRAME_MARGIN = 0.25;        // the same, when the still is the video frame
 const STILL_MAX_PIXELS = 36000000;      // server refuses above 40 MP
 const STILL_MAX_BYTES = 9 * 1024 * 1024; // server refuses above 12 MB
 
@@ -1855,7 +1881,8 @@ async function prepareStill(blob, track) {
     const xs = track.quad.map(p => (p[0] - track.vw / 2) * s + pw / 2);
     const ys = track.quad.map(p => (p[1] - track.vh / 2) * s + ph / 2);
     const side = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
-    const m = STILL_CROP_MARGIN * side;
+    // the video frame is the frame the outline came from: no mapping to allow for
+    const m = (lastStillSource === 'frame' ? STILL_FRAME_MARGIN : STILL_CROP_MARGIN) * side;
     const x0 = Math.max(0, Math.floor(Math.min(...xs) - m));
     const y0 = Math.max(0, Math.floor(Math.min(...ys) - m));
     const x1 = Math.min(pw, Math.ceil(Math.max(...xs) + m));
@@ -1988,7 +2015,12 @@ async function sendStillPhoto(fileOrBlob, track) {
   }
 }
 
+// A live number the photo could not confirm is not a result: say so on the
+// chip rather than leave "settled ~PSA 8" over a refusal (2.19.1 field report:
+// the chip settled on 66.8% while every photo of the card was refused).
+let stillRefusedAt = 0;
 function renderResults(d) {
+  stillRefusedAt = d.ok ? 0 : Date.now();
   if (!d.ok) {
     synth.playWarn();
     $('#out').innerHTML = `<div class="empty-card" style="border-color:var(--stop)"><b style="color:var(--stop)">Measurement Refused</b><div>${esc(d.error)}</div></div>`;
@@ -2624,6 +2656,7 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             return
 
+        field = None                       # (kind, image bytes, meta) to keep
         try:
             ctype = self.headers.get("Content-Type", "")
             fields = _parse_multipart(body, ctype) if "multipart/form-data" in ctype else {}
@@ -2640,6 +2673,11 @@ class Handler(BaseHTTPRequestHandler):
                     if fields.get("notes")
                     else ""
                 )
+                field = ("measure", image, {
+                    "holder": fields.get("holder", b"raw").decode("utf-8", "replace"),
+                    "lens": fields.get("lens", b"main").decode("utf-8", "replace"),
+                    "parent": _parent_crop(fields, image),
+                    "device": str(device_id)[:8]})
                 payload = _measure_payload(
                     image,
                     fields.get("holder", b"raw").decode("utf-8", "replace"),
@@ -2674,8 +2712,24 @@ class Handler(BaseHTTPRequestHandler):
                 aim = (_field_float(fields, "aim_x"), _field_float(fields, "aim_y"))
                 if None not in aim and all(0.0 <= v <= 1.0 for v in aim):
                     session.select(aim)
+                measured_before = session.measured
                 status: ARStatus = session.push(
                     frame, source_scale=_field_float(fields, "source_scale"))
+                # keep the frames that were measured, at most one per 2 s
+                if status.measured_frames > measured_before and \
+                        time.time() - getattr(session, "_field_at", 0.0) >= 2.0:
+                    session._field_at = time.time()
+                    res = session.last_result
+                    field = ("live", image_bytes, {
+                        "holder": holder, "lens": lens, "device": str(device_id)[:8],
+                        "quad": status.quad.tolist() if status.quad is not None else None,
+                        "measured_frames": status.measured_frames,
+                        "ratio": status.ratio.value if status.ratio else None,
+                        "settled": status.settled,
+                        "last_borders_mm": None if res is None else {
+                            "left": res.horizontal.low_mm.value, "right": res.horizontal.high_mm.value,
+                            "top": res.vertical.low_mm.value, "bottom": res.vertical.high_mm.value},
+                        "last_warnings": [] if res is None else list(res.quality.warnings)})
 
                 payload = {
                     "ok": True,
@@ -2724,6 +2778,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise DetectionError("no image provided")
                 from .insitu import owner_token_matches
 
+                field = ("identify", image_bytes, {"device": str(device_id)[:8]})
                 payload = _identify_payload(
                     image_bytes, device_id, owner_token_matches(self.headers.get("X-Bakugo-Owner"))
                 )
@@ -2789,6 +2844,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(500, self._internal_error(path))
             return
 
+        if field is not None:
+            from .fieldlog import record
+
+            kind, data, meta = field
+            outcome = {k: payload.get(k) for k in (
+                "ok", "error", "ratio", "ratio_lo", "ratio_hi", "axis", "borders", "px_per_mm",
+                "inner_confidence", "warnings", "identified", "name") if k in payload}
+            record(kind, data, {**meta, "version": __version__, "outcome": outcome})
         self._send(200, _dumps(payload).encode(), "application/json")
 
 

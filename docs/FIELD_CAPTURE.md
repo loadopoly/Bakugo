@@ -94,6 +94,19 @@ your data is metered. A still is a few hundred KB when it was tracking.
 7. **In a sleeve or binder page**: fine, as long as one card fills the reticle
    and the page's own edges are not closer to the reticle than the card's.
 
+## Freeze and Measure Card
+
+The still is the video frame when the camera streams at 3.5 MP or more (4K
+here): the same pixels the outline was found in, so the crop around the card
+is exact. On a smaller video it is the camera's own photo, cropped by mapping
+the outline across. If a Freeze is refused while the live chip had settled,
+the chip says the live number was not confirmed -- do not read a grade off it.
+
+The server keeps every still it is sent and the live frames it measured, with
+what came of each, in `/data/field` (newest 200; `CARDCENTER_FIELD_LOG=0` in
+the compose file turns it off). When something goes wrong at the counter,
+those files are the exact inputs to look at -- better than a screenshot.
+
 ## If it refuses
 
 The banner says which of the two things is wrong:
