@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.21.1] - 2026-09-24
+
+From eight screenshots of 2.21.0 (Meganium, live view). The card filled 50-80% of the view
+and every frame was out of focus for about two minutes. Nothing was measured live, and the
+one Freeze was refused as "border confidence too low ... even, diffuse lighting". The phone
+was too close for the camera to focus, and the app never said so where it could be read.
+
+### Fixed
+- **The "too close" advice is readable and says how far.** The banner cut off at "frame is soft
+  -- if it stays sof", under the tilt chip. It now wraps, and the tilt chip moved to the top
+  right. With the card over 45% of the view and the frame soft, it reads "too close to focus --
+  lift the phone until the card is about a third of the screen wide" (about 12-15 cm on a main
+  camera, which still gives about 12 px/mm in the Freeze frame).
+- **A soft photo is refused for focus, not for the light.** A soft photo fails whichever check
+  runs first ("border confidence too low", "edge shadow"), and those messages sent the user to
+  change the lighting. The photo's sharpness is now measured on the card at a fixed 8 px/mm:
+  155-267 on the field stills that measured, 6-39 on the ones refused. Below 60, the refusal
+  says the photo is out of focus and what to do, followed by the original reason.
+- **Freeze keeps the sharpest of four frames.** It takes four video frames 110 ms apart and
+  sends the sharpest, ranked by focus over the tracked card. The debug line shows the four
+  scores.
+
+### Added
+- **Server time per push.** Each live push reply carries `server_ms`, and the debug inset
+  shows it beside the round trip (`...ms (srv ...)`). The next "PUSH TIMED OUT" can then be
+  split into server time and network time.
+- **Unmeasured live frames are kept too.** The field log keeps one live frame every 6 s even
+  when nothing is measured (`live_unmeasured`), with the tracking state, the guidance and the
+  server time. A session like this one then leaves frames to replay.
+
 ## [2.21.0] - 2026-09-24
 
 From fourteen screenshots of 2.20.0 ("multi views on Terapagos with no capture", "incorrect

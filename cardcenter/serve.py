@@ -298,6 +298,28 @@ def _parent_crop(fields: dict, image_bytes: bytes):
     return (x, y, fw, fh)
 
 
+# Focus of a still, as the Laplacian variance of the card region resampled to
+# 8 px/mm (so it does not depend on how big the card is in the photo). On the
+# field stills: 155-267 for the ones that measured, 6-39 for the soft ones
+# that were refused (one "edge shadow", three "border confidence too low").
+SOFT_STILL = 60.0
+SHARP_STILL = 150
+
+
+def still_sharpness(image: np.ndarray, quad) -> Optional[float]:
+    if quad is None:
+        return None
+    from .capture import assess_frame
+
+    q = np.asarray(quad, dtype=np.float64).reshape(4, 2)
+    ppm = float(np.linalg.norm(q[1] - q[0])) / 63.0
+    if ppm <= 0:
+        return None
+    s = min(1.0, 8.0 / ppm)
+    small = cv2.resize(image, None, fx=s, fy=s, interpolation=cv2.INTER_AREA) if s < 1.0 else image
+    return float(assess_frame(small, q * s).sharpness)
+
+
 def _measure_payload(image_bytes: bytes, holder: str, lens: str, parent=None) -> dict:
     source = decode_image(image_bytes, "file")
 
@@ -319,8 +341,21 @@ def _measure_payload(image_bytes: bytes, holder: str, lens: str, parent=None) ->
         )
     image = framed.image
     capture = framed.capture
-    result = measure_centering(image, slab=resolve_holder(holder), capture=capture,
-                               card_quad=framed.quad, quad_residual_px=framed.residual_px)
+    try:
+        result = measure_centering(image, slab=resolve_holder(holder), capture=capture,
+                                   card_quad=framed.quad, quad_residual_px=framed.residual_px)
+    except DetectionError as exc:
+        sharp = still_sharpness(image, framed.quad)
+        if sharp is not None and sharp < SOFT_STILL:
+            # A soft photo fails in whatever check comes first -- border
+            # confidence, an "edge shadow" -- and that reason sends the user
+            # after the light. Say what it is.
+            raise DetectionError(
+                f"the photo is out of focus (sharpness {sharp:.0f}; a sharp one "
+                f"is {SHARP_STILL}+), so the card's edges can't be placed. Hold the "
+                "phone a little further back, keep it still, and tap the card to "
+                f"focus before Freeze. (It failed on: {exc})") from exc
+        raise
 
     bands = {g: grade_band(result.worst_ratio, g, "front") for g in available_graders()}
     quality = assess_frame(image, result.corners_px, px_per_mm=result.px_per_mm)
@@ -737,10 +772,10 @@ header.app-bar{padding:calc(10px + env(safe-area-inset-top)) 16px 10px;
 .hud-chip.settled{border-color:var(--pass);color:var(--pass)}
 .hud-chip.settled .radar{background:var(--pass);animation:none;opacity:1;transform:none}
 
-.hud-banner{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);background:rgba(11,15,21,0.85);backdrop-filter:blur(10px);border:1px solid rgba(78,210,198,0.4);border-radius:20px;padding:5px 14px;font-size:11px;font-weight:600;font-family:ui-monospace,"SF Mono",monospace;color:var(--paper);display:flex;align-items:center;gap:6px;pointer-events:none;transition:all .2s;white-space:nowrap;max-width:90%;overflow:hidden;text-overflow:ellipsis;z-index:10;box-shadow:0 4px 16px rgba(0,0,0,0.5)}
+.hud-banner{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);background:rgba(11,15,21,0.85);backdrop-filter:blur(10px);border:1px solid rgba(78,210,198,0.4);border-radius:20px;padding:5px 14px;font-size:11px;font-weight:600;font-family:ui-monospace,"SF Mono",monospace;color:var(--paper);display:flex;align-items:center;gap:6px;pointer-events:none;transition:all .2s;white-space:normal;text-align:center;line-height:1.35;max-width:92%;width:max-content;z-index:10;box-shadow:0 4px 16px rgba(0,0,0,0.5)}
 .hud-banner.warn{border-color:var(--hold);color:var(--hold)}
 .hud-banner.good{border-color:var(--pass);color:var(--pass)}
-.hud-spirit{position:absolute;bottom:14px;right:14px;background:rgba(11,15,21,0.8);backdrop-filter:blur(8px);border:1px solid var(--rule);border-radius:14px;padding:3px 8px;font-size:9.5px;font-family:ui-monospace,"SF Mono",monospace;color:var(--dim);display:flex;align-items:center;gap:5px;pointer-events:none;z-index:10}
+.hud-spirit{position:absolute;top:46px;right:14px;background:rgba(11,15,21,0.8);backdrop-filter:blur(8px);border:1px solid var(--rule);border-radius:14px;padding:3px 8px;font-size:9.5px;font-family:ui-monospace,"SF Mono",monospace;color:var(--dim);display:flex;align-items:center;gap:5px;pointer-events:none;z-index:10}
 .hud-spirit .spirit-bubble{width:6px;height:6px;border-radius:50%;background:var(--pass);transition:background .2s}
 .hud-spirit.tilted{border-color:var(--hold);color:var(--hold)}
 .hud-spirit.tilted .spirit-bubble{background:var(--hold)}
@@ -1421,7 +1456,8 @@ function drawDebugInset(d) {
   dbgCtx.fillStyle = arStats.error ? '#FF6B6B' : (age > 1 ? '#E0B341' : '#9FE8DF');
   dbgCtx.fillText(arStats.error
     ? arStats.error.slice(0, 40)
-    : `${arStats.ok}/${arStats.pushes} ok  ${arStats.status}  ${arStats.ms}ms  ` +
+    : `${arStats.ok}/${arStats.pushes} ok  ${arStats.status}  ${arStats.ms}ms` +
+      `${arStats.serverMs != null ? ' (srv ' + arStats.serverMs + ')' : ''}  ` +
       `${Math.round(arStats.bytes / 1024)}k  ${age > 1 ? age.toFixed(1) + 's old' : 'live'}`, 5, 32);
 }
 
@@ -1548,6 +1584,7 @@ async function arTick() {
       arStats.ok++;
       arStats.error = '';
       arStats.lastOkAt = Date.now();
+      arStats.serverMs = d.server_ms;
     } else if (d && d.busy) {
       // the server is still on the previous frame: not an error, and the
       // next tick sends a newer frame
@@ -1858,7 +1895,7 @@ function stillSource(vw, vh, hasPhoto) {
   return (!hasPhoto || vw * vh >= STILL_VIDEO_MIN_PIXELS) ? 'frame' : 'photo';
 }
 let lastStillSource = '';
-async function grabStill() {
+async function grabStill(track) {
   const hasPhoto = !!videoTrack && typeof ImageCapture !== 'undefined';
   lastStillSource = stillSource(arVideo.videoWidth, arVideo.videoHeight, hasPhoto);
   if (lastStillSource === 'photo') {
@@ -1873,14 +1910,66 @@ async function grabStill() {
     }
   }
   lastStillSource = 'frame';
-  return await new Promise(res => {
-    const c = document.createElement('canvas');
-    c.width = arVideo.videoWidth;
-    c.height = arVideo.videoHeight;
-    c.getContext('2d').drawImage(arVideo, 0, 0);
-    arStats.still = 'frame ' + c.width + 'x' + c.height;
-    c.toBlob(res, 'image/jpeg', 0.92);
-  });
+  const c = await sharpestFrame(track);
+  arStats.still = 'frame ' + c.width + 'x' + c.height + ' best of ' + STILL_BURST +
+    ' (sharp ' + c.sharp.map(v => v.toFixed(0)).join('/') + ')';
+  return await new Promise(res => c.toBlob(res, 'image/jpeg', 0.92));
+}
+
+// A Freeze takes a few video frames a moment apart and keeps the sharpest.
+// One frame is whatever the hand and the focus were doing at that instant;
+// the 2.21.0 field stills measured 2.5 to 26 on the same card (Laplacian
+// variance at 2400 px), and the soft ones were the refusals.
+const STILL_BURST = 4;
+const STILL_BURST_GAP_MS = 110;
+
+// Mean squared Laplacian of the card region (or the middle of the view),
+// drawn at most 480 px wide: ranks frames of one scene by focus.
+function frameSharpness(track) {
+  const vw = arVideo.videoWidth, vh = arVideo.videoHeight;
+  let x = vw * 0.2, y = vh * 0.2, w = vw * 0.6, h = vh * 0.6;
+  if (track && track.quad) {
+    const xs = track.quad.map(p => p[0]), ys = track.quad.map(p => p[1]);
+    x = Math.max(0, Math.min(...xs)); y = Math.max(0, Math.min(...ys));
+    w = Math.min(vw, Math.max(...xs)) - x; h = Math.min(vh, Math.max(...ys)) - y;
+    if (w < 32 || h < 32) { x = vw * 0.2; y = vh * 0.2; w = vw * 0.6; h = vh * 0.6; }
+  }
+  const s = Math.min(1, 480 / w);
+  const cw = Math.max(8, Math.round(w * s)), ch = Math.max(8, Math.round(h * s));
+  const c = document.createElement('canvas');
+  c.width = cw; c.height = ch;
+  const g = c.getContext('2d', { willReadFrequently: true });
+  g.drawImage(arVideo, x, y, w, h, 0, 0, cw, ch);
+  const px = g.getImageData(0, 0, cw, ch).data;
+  const lum = new Float32Array(cw * ch);
+  for (let i = 0, j = 0; j < lum.length; i += 4, j++) lum[j] = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+  let sum = 0, n = 0;
+  for (let yy = 1; yy < ch - 1; yy++) {
+    for (let xx = 1; xx < cw - 1; xx++) {
+      const k = yy * cw + xx;
+      const l = lum[k - 1] + lum[k + 1] + lum[k - cw] + lum[k + cw] - 4 * lum[k];
+      sum += l * l; n++;
+    }
+  }
+  return n ? sum / n : 0;
+}
+
+async function sharpestFrame(track) {
+  const full = document.createElement('canvas');
+  full.width = arVideo.videoWidth;
+  full.height = arVideo.videoHeight;
+  const ctx = full.getContext('2d');
+  let best = -1;
+  const seen = [];
+  for (let i = 0; i < STILL_BURST; i++) {
+    if (i) await new Promise(r => setTimeout(r, STILL_BURST_GAP_MS));
+    // measured and drawn in the same turn: the same video frame
+    const v = frameSharpness(track);
+    seen.push(v);
+    if (v > best) { best = v; ctx.drawImage(arVideo, 0, 0); }
+  }
+  full.sharp = seen;
+  return full;
 }
 
 // ---- Shop-floor upload budget ----
@@ -1983,7 +2072,7 @@ async function triggerARFreeze() {
   const track = freshTrackQuad();
   stillBusy = true;
   try {
-    const blob = await grabStill();
+    const blob = await grabStill(track);
     if (blob) await sendStillPhoto(blob, track);
   } finally {
     stillBusy = false;
@@ -2745,6 +2834,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not image_bytes:
                     raise DetectionError("no frame image provided")
 
+                push_t0 = time.monotonic()
                 frame = decode_image(image_bytes, "frame")
 
                 session = _get_or_create_ar_session(device_id, holder=holder, lens=lens)
@@ -2769,12 +2859,18 @@ class Handler(BaseHTTPRequestHandler):
                 finally:
                     if lock is not None:
                         lock.release()
-                # keep the frames that were measured, at most one per 2 s
-                if status.measured_frames > measured_before and \
-                        time.time() - getattr(session, "_field_at", 0.0) >= 2.0:
+                # keep the frames that were measured, at most one per 2 s,
+                # and one in 6 s of the rest: the 2.21.0 session measured
+                # nothing live, so it left no frames to replay
+                measured_now = status.measured_frames > measured_before
+                since = time.time() - getattr(session, "_field_at", 0.0)
+                if (measured_now and since >= 2.0) or since >= 6.0:
                     session._field_at = time.time()
-                    res = session.last_result
-                    field = ("live", image_bytes, {
+                    res = session.last_result if measured_now else None
+                    field = ("live" if measured_now else "live_unmeasured", image_bytes, {
+                        "tracking": status.tracking,
+                        "guidance": list(status.guidance),
+                        "server_ms": int(1000 * (time.monotonic() - push_t0)),
                         "holder": holder, "lens": lens, "device": str(device_id)[:8],
                         "quad": status.quad.tolist() if status.quad is not None else None,
                         "measured_frames": status.measured_frames,
@@ -2819,6 +2915,9 @@ class Handler(BaseHTTPRequestHandler):
                     "information": status.information,
                     "decision": status.decision,
                     "decision_reason": status.decision_reason,
+                    # time spent here: the phone's round trip minus this is
+                    # the network (the debug inset shows both)
+                    "server_ms": int(1000 * (time.monotonic() - push_t0)),
                 }
 
             elif path == "/identify":

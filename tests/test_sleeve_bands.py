@@ -125,3 +125,25 @@ def test_name_band_covers_a_margin():
     assert match_words(words, VOCAB)[0] is None
     assert match_words(words, VOCAB, name_band=(0.0, 0.24))[0].name == "Meganium"
     assert NAME_BAND < 0.2
+
+
+def test_a_soft_photo_is_refused_for_focus_not_for_the_light():
+    """2.21.0 field still (the Meganium from further back, sharpness 6 at
+    8 px/mm against 155+ for the ones that measured): refused as 'border
+    confidence too low ... even, diffuse lighting', which sent the user after
+    the light. The same refusal now names the focus."""
+    from cardcenter.types import DetectionError
+
+    with pytest.raises(DetectionError, match="out of focus"):
+        _measure("meganium_soft.jpg")
+
+
+def test_sharpness_does_not_depend_on_card_size():
+    from cardcenter.serve import still_sharpness
+
+    img = cv2.imread(str(SLEEVE / "terapagos_shadow.jpg"))
+    q = np.array([[500, 1100], [1700, 1100], [1700, 2780], [500, 2780]], float)
+    a = still_sharpness(img, q)
+    half = cv2.resize(img, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)
+    b = still_sharpness(half, q * 0.5)
+    assert abs(a - b) / a < 0.35

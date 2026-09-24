@@ -234,6 +234,8 @@ def test_still_capture_falls_back_to_the_video_frame(page, stub):
     page.wait_for_function("() => window.__sent > 0", timeout=10000)
     assert page.evaluate("arStats.still").startswith("frame ")
     assert page.evaluate("arStats.still").split(" ")[1] == page.evaluate("arStats.video")
+    # the sharpest of a burst, not whichever frame the button caught
+    assert "best of 4" in page.evaluate("arStats.still")
 
 
 def test_camera_picker_lists_the_cameras(page):
@@ -390,3 +392,16 @@ def test_a_settled_live_number_the_photo_refused_is_not_shown_as_settled(page, s
         timeout=20000)
     banner = page.evaluate("document.querySelector('#hud-guidance').textContent")
     assert "refused" in banner and "settled" not in banner.lower()
+
+
+def test_guidance_wraps_instead_of_being_cut_off(page):
+    """2.21.0 screenshots: 'frame is soft -- if it stays sof' under the tilt
+    chip; the part that said what to do was never seen."""
+    style = page.evaluate("getComputedStyle(document.querySelector('#hud-guidance')).whiteSpace")
+    assert style == "normal"
+
+
+def test_frame_sharpness_is_measured(page):
+    v = page.evaluate("frameSharpness(null)")
+    assert v >= 0 and v == v
+

@@ -894,7 +894,13 @@ class ARSession:
         more distance does."""
         if not message.startswith("hold steadier") or card_frac < 0.45:
             return message
-        return "frame is soft -- if it stays soft the phone is too close to focus: lift it a little"
+        # The 2.21.0 screenshots: the card 50-80% of the view wide and every
+        # frame soft for minutes. "Lift it a little" was cut off on screen
+        # and did not say how far; about a third of the view wide is
+        # 12-15 cm on a phone's main camera, past its closest focus, and
+        # still ~12 px/mm in the Freeze frame.
+        return ("too close to focus -- lift the phone until the card is about "
+                "a third of the screen wide")
 
     def _photo_hint(self, message: str, frame_px_per_mm: float) -> str:
         """'Too far away' is about the LIVE frame, which the phone sends at
