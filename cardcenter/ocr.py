@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import os
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -153,12 +154,28 @@ class TesseractEngine:
             ]
             try:
                 out = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=25, check=False
+                    cmd, capture_output=True, text=True, timeout=25, check=False,
+                    **background_run_kwargs(),
                 )
             except (subprocess.TimeoutExpired, OSError) as exc:
                 raise OcrUnavailable(f"tesseract failed: {exc}") from exc
         text = "".join(out.stdout.split())
         return OcrReading(text=text, confidence=100.0 if text else 0.0, engine=self.name)
+
+
+def background_run_kwargs() -> dict:
+    """subprocess.run keywords for tesseract on the server: one thread and a
+    lower priority. The container has two CPUs, and tesseract by default
+    takes all of them; while it read a Freeze still, the live AR pushes
+    queued behind it and the phone showed "PUSH TIMED OUT" (2.20.0 field
+    report, 9-15 timeouts in a session). The live loop is the part a person
+    is watching, so the OCR yields to it."""
+    env = dict(os.environ)
+    env.setdefault("OMP_THREAD_LIMIT", "1")
+    kw: dict = {"env": env}
+    if os.name == "posix":
+        kw["preexec_fn"] = lambda: os.nice(10)
+    return kw
 
 
 def preprocess_number_crop(crop: np.ndarray, upscale: int = 4) -> np.ndarray:

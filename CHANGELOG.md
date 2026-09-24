@@ -9,6 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.21.0] - 2026-09-24
+
+From fourteen screenshots of 2.20.0 ("multi views on Terapagos with no capture", "incorrect
+association with Meganium") and, for the first time, the exact photos the server received:
+the field log kept every Freeze still and measured live frame, and each result below is from
+replaying those files.
+
+### Fixed
+- **Meganium was named Seaking.** The name vocabulary was a 250-species seed without
+  Meganium or Terapagos, so the best match left was "soaking" in the flavour text, one letter
+  from Seaking. The vocabulary is now the whole National Pokedex (1-1025). Names are matched on
+  letters only, so two-word names ("Mr. Mime", "Iron Valiant") are read too.
+- **A flavour-text word no longer names a card.** OCR now reports where each word sits. A word
+  in the name bar beats any word lower on the card; a word lower down counts only if it reads
+  exactly as a species; the word after "from" ("Evolves from Bayleef") is skipped. When the whole
+  card doesn't give a name, the name bar is read again on its own at twice the size.
+- **The name was cut off the card that OCR saw.** On a sleeved holo card the outline's top edge
+  sometimes sat on the artwork, below the name bar. The card is now straightened for reading
+  with 15% extra above and below it. On the five field stills: Meganium x3 and Terapagos x2 named
+  (was one Seaking and four "no name").
+- **Sleeved cards measured from the sleeve, the shadow, or the printed frame.** The outline
+  often ends up one band off the card. It can sit on the sleeve's seam, with the sleeve's spare
+  length and the card's shadow inside it (Terapagos, 3.2 mm). It can sit on the sleeve's margin
+  (Meganium, right side, 1.3 mm). Or it can sit on the printed frame with the silver border
+  outside it (Meganium, left side, 2.4 mm in). Before measuring, each side is now checked by
+  colour. Through clear plastic, the sleeve's margin keeps the counter's colour, and so does the
+  card's shadow, only darker. A silver border, the green frame and holo foil don't. Each side is
+  moved onto the card's edge where the change of colour is clear along the side.
+  - Replaying the stills: the Meganium that read 68.4/31.6 now reads 56.6/43.4 (L 2.46,
+    R 2.70, T 2.09, B 2.73 mm). A second Meganium photo that was refused now reads 52.6. A
+    Terapagos that was refused ("3.81 mm edge shadow") now reads 57.5, and the live view of it
+    settles at 57.9.
+  - The 144 synthetic captures are unchanged.
+  - A dark mat is left to the previous check.
+  - A band found on both opposite sides at the same width is treated as the card's own border,
+    not a sleeve.
+- **Live pushes piled up behind each other.** The phone stops waiting for a push after 4 s, but
+  the server kept working on it, and the next push started alongside it on the same session.
+  The container has two CPUs, and the OCR for a Freeze took both. Now a session takes one push
+  at a time. If the previous one is still running after 1.5 s the server answers "busy" instead
+  of queueing, and the phone shows SERVER CATCHING UP rather than a failure. Tesseract runs on
+  one thread at lower priority, so the live view is served first.
+
+### Known
+- The outline finder is sensitive to the crop: the same Meganium photo cropped around the card
+  outlined the artwork instead. The side check above repairs the cases it can, not that one.
+- Two photos of the same Meganium read 56.6 and 52.6 vertically. That is closer than before,
+  but not yet as close as two photos of one card should be.
+
 ## [2.20.0] - 2026-09-24
 
 From sixteen screenshots of 2.19.1 (penny-sleeved Meganium and Terapagos on a light wood

@@ -135,6 +135,266 @@ def _sleeve_margin(P, prof, g, depth, bg, j, k, s) -> Optional[float]:
     return edge
 
 
+# --- Sleeve margin, shadow, and the printed frame ------------------------
+#
+# Field stills of 2.20.0 (a Terapagos and a Meganium in penny sleeves on a
+# light wood counter) had outlines one band off the card: on the sleeve's
+# bottom seam with the sleeve's margin and the card's own shadow inside it
+# (Terapagos, 5 mm of sleeve, the outline 3.4 mm below the card), on the
+# sleeve's margin 1.4 mm outside the card (Meganium, right), and on the
+# printed frame 2.8 mm inside the card (Meganium, left: the silver border
+# lay outside the outline). The measurement refused the first ("a 4 mm edge
+# shadow") and reported 68/32 for the second, a card that is about 58/42.
+#
+# What tells these apart is the colour of the light, not its brightness:
+# the sleeve's margin is the counter seen through clear plastic, and a
+# shadow is the counter with less light on it; both keep the counter's
+# chromaticity (r, b as fractions of r+g+b), while a silver or yellow
+# border, a green frame, and holo foil do not. Measured on the stills,
+# counter (40, 27); sleeve margin within 1 of it; the card's shadow within
+# 3.4 of it, and darker than the counter by half; silver border 7-9 away
+# (Terapagos) and green frame 7 away. The Meganium's silver reflects the
+# counter and sits only 2.7 away, which is why the shadow is found by its
+# darkness and the card by the rise in light after it, not by colour alone.
+BAND_MARGIN_CHROMA = 2.0     # sleeve margin: counter through plastic
+BAND_SHADOW_CHROMA = 4.5     # the card's shadow on the counter
+BAND_SHADOW_DARK = 0.75      # a shadow is below this fraction of the counter
+BAND_CARD_CHROMA = 3.5       # a margin ends where the colour moves this far
+BAND_RISE = 1.15             # a shadow ends where the light rises this much
+BAND_MAX_MM = 5.5            # a penny sleeve is ~5 mm longer than a card
+FRAME_BAND_MIN_MM = 1.6      # a border seen outside the outline, at least
+
+
+def _chroma_views(image: np.ndarray, corners: np.ndarray, s: float,
+                  pad: float = 6.0, reach: float = BAND_MAX_MM + 1.0):
+    """Per side: (depth mm, intensity, chromaticity (r%, b%)) as the median
+    along the middle 70% of the side, and the same per column (for
+    agreement). Depth is from the outline, positive inward."""
+    from .types import STANDARD_CARD_H_MM as CH, STANDARD_CARD_W_MM as CW
+
+    src = np.float32([[0, 0], [CW, 0], [CW, CH], [0, CH]])
+    try:
+        M = cv2.getPerspectiveTransform(src, corners.astype(np.float32)).astype(np.float64)
+    except cv2.error:
+        return None
+    T = np.array([[s, 0, pad * s], [0, s, pad * s], [0, 0, 1.0]])
+    size = (int(round((CW + 2 * pad) * s)), int(round((CH + 2 * pad) * s)))
+    rect = cv2.warpPerspective(image, M @ np.linalg.inv(T), size,
+                               flags=cv2.WARP_INVERSE_MAP | cv2.INTER_LINEAR,
+                               borderMode=cv2.BORDER_REPLICATE).astype(np.float32)
+    rect = cv2.GaussianBlur(rect, (0, 0), max(0.6, 0.12 * s))
+    rows, cols = rect.shape[:2]
+    pos_y = np.arange(rows) / s - pad
+    pos_x = np.arange(cols) / s - pad
+    views = {"top": (rect, pos_y), "bottom": (rect[::-1], CH - pos_y[::-1]),
+             "left": (rect.transpose(1, 0, 2), pos_x),
+             "right": (rect.transpose(1, 0, 2)[::-1], CW - pos_x[::-1])}
+    out = {}
+    for side, (v, dd) in views.items():
+        m = dd <= reach
+        n = v.shape[1]
+        cols_ = np.ascontiguousarray(v[m][:, int(0.15 * n):int(0.85 * n)])
+        tot = cols_.sum(axis=2) + 1e-6
+        I = tot / 3.0
+        C = np.stack([100.0 * cols_[..., 2] / tot, 100.0 * cols_[..., 0] / tot], axis=2)
+        out[side] = (dd[m], np.median(I, axis=1), np.median(C, axis=1), I, C)
+    return out
+
+
+def _mix(c, i):
+    return np.concatenate([np.asarray(c, dtype=np.float64), [0.02 * float(i)]])
+
+
+def _crossing(dd, I, C, edge, a_c, b_c) -> Optional[float]:
+    """Where the median profile, walking in, gets closer to colour b than to
+    colour a, near ``edge`` (sub-sample)."""
+    a = _mix(*a_c)
+    b = _mix(*b_c)
+    x = np.concatenate([C, 0.02 * I[:, None]], axis=1)
+    f = np.linalg.norm(x - a, axis=1) - np.linalg.norm(x - b, axis=1)   # >0: nearer b
+    near = np.nonzero((dd >= edge - 0.8) & (dd <= edge + 0.8))[0]
+    for k in near[:-1]:
+        if f[k] <= 0 < f[k + 1]:
+            return float(dd[k] + (dd[k + 1] - dd[k]) * (-f[k]) / (f[k + 1] - f[k]))
+    return None
+
+
+def _agreed(dd, Icol, Ccol, edge, run_c, card_c, s) -> bool:
+    """At least 60% of positions along the side cross from the band's colour
+    to the card's within 0.4 mm of ``edge``."""
+    # distance of each column's colour to the band and to the card
+    x = np.concatenate([Ccol, 0.02 * Icol[..., None]], axis=2)
+    a = np.concatenate([run_c[0], [0.02 * run_c[1]]])
+    b = np.concatenate([card_c[0], [0.02 * card_c[1]]])
+    closer = np.linalg.norm(x - b, axis=2) < np.linalg.norm(x - a, axis=2)   # depth x cols
+    near = (dd >= edge - 1.0) & (dd <= edge + 1.0)
+    if near.sum() < 4:
+        return False
+    idx = np.nonzero(near)[0]
+    first = np.full(Ccol.shape[1], np.nan)
+    for c in range(Ccol.shape[1]):
+        hit = np.nonzero(closer[idx, c])[0]
+        if len(hit):
+            first[c] = dd[idx[hit[0]]]
+    return float(np.mean(np.abs(first - edge) <= 0.4)) >= 0.6
+
+
+def _band_seat(dd, I, C, Icol, Ccol, s) -> Optional[tuple[float, str, float]]:
+    """Inward: the outline is on a sleeve's margin and/or the card's shadow.
+    Returns (mm inward to the card's edge, "margin" | "shadow", mm of the
+    shadow), or None."""
+    bgm = (dd >= -2.0) & (dd <= -0.4)
+    if bgm.sum() < 3:
+        return None
+    bg_c = np.median(C[bgm], axis=0)
+    bg_i = float(np.median(I[bgm]))
+    if bg_i < 50.0:
+        return None          # a dark mat's colour is noise; _sleeve_margin has it
+    delta = np.linalg.norm(C - bg_c, axis=1)
+    step = 1.0 / s
+    i = int(np.searchsorted(dd, 0.1))
+    if i >= len(dd) or dd[i] > 0.35:
+        return None
+    margin_ok = (delta <= BAND_MARGIN_CHROMA) & (I >= 0.7 * bg_i)
+    kind = None
+    if not (margin_ok[i] or (delta[i] <= BAND_SHADOW_CHROMA
+                             and I[i] < BAND_SHADOW_DARK * bg_i)):
+        # The sleeve's own edge -- a bright line where the plastic catches
+        # the light, or a dark seam -- can be what the outline sits on, with
+        # the margin inside it. Step over it only onto margin (the counter
+        # through plastic, 0.4 mm of it), never onto something dark: a dark
+        # silver border would pass for a shadow.
+        k = i
+        while k < len(dd) and dd[k] <= dd[i] + 0.7 and not margin_ok[k]:
+            k += 1
+        run = (dd >= dd[min(k, len(dd) - 1)]) & (dd <= dd[min(k, len(dd) - 1)] + 0.4)
+        if k >= len(dd) or dd[k] > dd[i] + 0.7 or not margin_ok[run].all():
+            return None
+        i, kind = k, "margin"
+    sh_start = None          # the shadow run in progress: start, darkest
+    sh_min = None
+    j = i
+    while j < len(dd) and dd[j] <= BAND_MAX_MM:
+        margin_like = delta[j] <= BAND_MARGIN_CHROMA and I[j] >= 0.7 * bg_i
+        shadow_like = delta[j] <= BAND_SHADOW_CHROMA and I[j] < BAND_SHADOW_DARK * bg_i
+        wide = sh_start is not None and dd[j] - sh_start >= 0.4
+        if wide and I[j] >= BAND_RISE * sh_min:
+            break                            # the light rises again: the card
+        if shadow_like:
+            if sh_start is None:
+                sh_start, sh_min = dd[j], I[j]
+            sh_min = min(sh_min, I[j])
+        elif margin_like and sh_start is None:
+            kind = "margin"
+        elif margin_like and not wide:
+            # a dark line narrower than 0.4 mm before more margin is the
+            # sleeve's seam, not a shadow
+            sh_start = sh_min = None
+            kind = "margin"
+        else:
+            break
+        j += 1
+    if sh_start is not None and dd[min(j, len(dd) - 1)] - sh_start >= 0.4:
+        kind = "shadow"
+    lo = dd[i]
+    if kind is None or j >= len(dd) or dd[j] > BAND_MAX_MM:
+        return None
+    edge = float(dd[j]) - 0.5 * step
+    if edge < 0.3:
+        return None
+    # the card past the edge stays card for 0.6 mm
+    card = (dd >= edge + 0.15) & (dd <= edge + 0.75)
+    band = (dd >= max(0.1, edge - 1.0)) & (dd <= edge - 0.15)
+    if card.sum() < 3 or band.sum() < 2:
+        return None
+    card_c = (np.median(C[card], axis=0), float(np.median(I[card])))
+    run_c = (np.median(C[band], axis=0), float(np.median(I[band])))
+    if kind == "margin":
+        if np.linalg.norm(card_c[0] - bg_c) < BAND_CARD_CHROMA:
+            return None
+    # a shadow is darker than the card beyond it, and wider than the blur of
+    # the card's own edge (a dark border's edge ramp is not a shadow)
+    elif card_c[1] < BAND_RISE * run_c[1]:
+        return None
+    edge = _crossing(dd, I, C, edge, run_c, card_c)
+    if edge is None or edge < 0.3:
+        return None
+    if not _agreed(dd, Icol, Ccol, edge, run_c, card_c, s):
+        return None
+    return edge, kind, (edge - sh_start if kind == "shadow" else 0.0)
+
+
+def _frame_seat(dd, I, C, Icol, Ccol, s) -> Optional[float]:
+    """Outward: the outline is on the printed frame, and the card's border
+    lies outside it -- a band that is not the counter, at least
+    FRAME_BAND_MIN_MM wide, then the counter. Returns mm (negative) or None."""
+    far = (dd >= -5.5) & (dd <= -4.6)
+    if far.sum() < 3:
+        return None
+    bg_c = np.median(C[far], axis=0)
+    bg_i = float(np.median(I[far]))
+    if bg_i < 50.0:
+        return None
+    delta = np.linalg.norm(C - bg_c, axis=1)
+    j = int(np.searchsorted(dd, -0.25)) - 1
+    if j < 0 or delta[j] <= BAND_CARD_CHROMA:
+        return None
+    while j >= 0 and dd[j] >= -4.5 and delta[j] > BAND_MARGIN_CHROMA:
+        j -= 1
+    if j < 0 or dd[j] < -4.5:
+        return None
+    edge = float(dd[j]) + 0.5 / s
+    if edge > -FRAME_BAND_MIN_MM:
+        return None
+    band = (dd >= edge + 0.2) & (dd <= -0.25)
+    out = (dd >= edge - 0.8) & (dd <= edge - 0.2)
+    if band.sum() < 3 or out.sum() < 2:
+        return None
+    b_c = np.median(C[band], axis=0)
+    # the band is one colour (a border), not a ramp
+    if float(np.median(np.linalg.norm(C[band] - b_c, axis=1))) > 1.5:
+        return None
+    if np.linalg.norm(b_c - bg_c) < BAND_CARD_CHROMA:
+        return None
+    card_c = (b_c, float(np.median(I[band])))
+    out_c = (np.median(C[out], axis=0), float(np.median(I[out])))
+    rd = dd[::-1] * -1.0                   # outward from the outline
+    e = _crossing(rd, I[::-1], C[::-1], -edge, card_c, out_c)
+    if e is None or e < FRAME_BAND_MIN_MM:
+        return None
+    if not _agreed(rd, Icol[::-1], Ccol[::-1], e, card_c, out_c, s):
+        return None
+    return -e
+
+
+def band_shifts(image: np.ndarray, corners: np.ndarray, px_per_mm: float) -> dict:
+    """{side: (shift_mm inward, kind, shadow_mm)} for sides whose outline is
+    on a sleeve margin or shadow (positive) or on the printed frame
+    (negative).
+
+    A band found on BOTH sides of a pair, the same width to within 0.5 mm,
+    is not a sleeve or a shadow -- those are one-sided -- but the card's own
+    border (a white border on a white mat reads as margin), and is dropped."""
+    s = max(float(px_per_mm), 8.0)
+    views = _chroma_views(image, np.asarray(corners, dtype=np.float64).reshape(4, 2), s)
+    if views is None:
+        return {}
+    found = {}
+    for side, (dd, I, C, Icol, Ccol) in views.items():
+        got = _band_seat(dd, I, C, Icol, Ccol, s)
+        if got is not None:
+            found[side] = got
+            continue
+        out = _frame_seat(dd, I, C, Icol, Ccol, s)
+        if out is not None:
+            found[side] = (out, "frame", 0.0)
+    for a, b in (("left", "right"), ("top", "bottom")):
+        if a in found and b in found and found[a][1] == found[b][1] and \
+                abs(found[a][0] - found[b][0]) < 0.5:
+            del found[a], found[b]
+    return found
+
+
 def seat_outer_edges(image: np.ndarray, corners: np.ndarray, px_per_mm: float,
                      pad_mm: float = 1.2, sleeved: bool = True) -> tuple[np.ndarray, dict]:
     """Put each side of the outline on the card's own edge.
@@ -232,8 +492,19 @@ def seat_outer_edges(image: np.ndarray, corners: np.ndarray, px_per_mm: float,
         sleeve = _sleeve_margin(P, prof, g, depth, bg, j, k, s) if ok and sleeved else None
         if sleeve is not None:
             shift[side] = sleeve
+    return _shift_sides(corners, shift, M)
+
+
+def _shift_sides(corners, shift: dict, M=None):
+    """Move each side of ``corners`` inward by shift[side] mm (card frame)."""
+    from .types import STANDARD_CARD_H_MM as CH, STANDARD_CARD_W_MM as CW
+
+    corners = np.asarray(corners, dtype=np.float64).reshape(4, 2)
     if not any(shift.values()):
         return corners, shift
+    if M is None:
+        src = np.float32([[0, 0], [CW, 0], [CW, CH], [0, CH]])
+        M = cv2.getPerspectiveTransform(src, corners.astype(np.float32)).astype(np.float64)
     l, t, r, b = (shift.get(k, 0.0) for k in ("left", "top", "right", "bottom"))
     mm = np.float32([[l, t], [CW - r, t], [CW - r, CH - b], [l, CH - b]]).reshape(-1, 1, 2)
     out = cv2.perspectiveTransform(mm, M.astype(np.float32)).reshape(4, 2).astype(np.float64)
@@ -358,6 +629,23 @@ def measure_centering(
 
     px_per_mm = _pick_scale(image_corners)
 
+    # Put each side on the card's own edge first when it is a band off: on a
+    # sleeve's margin, on the card's shadow inside the sleeve, or on the
+    # printed frame (see band_shifts). The shadow check below then sees the
+    # card's edge; a shadow on a bare card over a dark mat, which band_shifts
+    # leaves alone, is still found there and charged as before.
+    bands = band_shifts(image, image_corners, px_per_mm)
+    if bands:
+        image_corners, _ = _shift_sides(image_corners, {k: v[0] for k, v in bands.items()})
+        px_per_mm = _pick_scale(image_corners)
+        where = {"margin": "a sleeve's margin", "shadow": "a sleeve's margin and "
+                 "the card's shadow", "frame": "the printed frame"}
+        quality.warnings.append(
+            "outline moved onto the card's edge ("
+            + ", ".join(f"{k} {v[0]:+.2f}mm, off {where[v[1]]}" for k, v in bands.items())
+            + ")"
+        )
+
     # A card is ~0.3mm thick and obliquely lit it shadows its own edge, on one
     # side only. Measured in simulation: at 30 degrees of light elevation a
     # perfectly centred card reads 82.8/17.2, and the error bar misses truth by
@@ -365,7 +653,18 @@ def measure_centering(
     # is caused entirely by where the lamp is, so it is checked before anything
     # else is believed.
     shadow = detect_edge_shadow(image, image_corners, px_per_mm)
-    shadow_sigma_mm = 0.0
+    # per side: the shadow subtracted, charged as its own uncertainty (a
+    # penumbra is not a step), whether the seat or the check below found it
+    shadow_sigma: dict = {}
+    for side, (_mm, kind, width) in bands.items():
+        if kind == "shadow" and width > 0:
+            shadow_sigma[side] = 0.33 * width
+            quality.warnings.append(
+                f"edge shadow on the {side} ({width:.2f}mm) was detected and "
+                "subtracted from the boundary. This bias is one-sided and does "
+                "not cancel in the ratio, so the correction carries its own "
+                "error term."
+            )
     if shadow.directional and shadow.correctable:
         image_corners = correct_quad_for_shadow(
             image_corners, shadow.side_index, shadow.estimated_shadow_mm, px_per_mm
@@ -374,7 +673,7 @@ def measure_centering(
         # The correction is a measurement too, and a coarse one: the band's
         # inner boundary is soft because a penumbra is not a step. Charge a
         # third of the correction as its own uncertainty on that border.
-        shadow_sigma_mm = 0.33 * shadow.estimated_shadow_mm
+        shadow_sigma[shadow.darker_side] = 0.33 * shadow.estimated_shadow_mm
         quality.warnings.append(
             f"edge shadow on the {shadow.darker_side} "
             f"({shadow.estimated_shadow_mm:.2f}mm, light near "
@@ -516,7 +815,7 @@ def measure_centering(
             prof.sigma_mm**2
             + refract_sigma_mm**2
             + outer_sigma_mm**2
-            + (shadow_sigma_mm if side == shadow.darker_side else 0.0) ** 2
+            + shadow_sigma.get(side, 0.0) ** 2
         )
         if width <= 0:
             raise DetectionError(

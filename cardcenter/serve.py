@@ -152,6 +152,14 @@ _AR_SESSIONS: "OrderedDict[str, ARSession]" = OrderedDict()
 _AR_LOCK = threading.Lock()
 
 
+# how long a push waits for the previous one on the same session
+AR_BUSY_WAIT_S = 1.5
+
+
+class _Busy(Exception):
+    """The session is still working on the previous frame."""
+
+
 def _get_or_create_ar_session(
     device_id: str,
     holder: str = "raw",
@@ -163,6 +171,8 @@ def _get_or_create_ar_session(
         session = _AR_SESSIONS.get(device_id)
         if session is None or session.holder != holder or abs(session.fov_deg - fov) > 1e-3:
             session = ARSession(holder=holder, fov_deg=fov, boundary=boundary)
+            # one push at a time per session (see /ar/push)
+            session._serve_lock = threading.Lock()
             _AR_SESSIONS[device_id] = session
         _AR_SESSIONS.move_to_end(device_id)
         while len(_AR_SESSIONS) > max(1, MAX_AR_SESSIONS):
@@ -422,6 +432,31 @@ def _json_body(body: bytes) -> dict:
     return data
 
 
+# The card is rectified for reading with this much of its height above and
+# below it. The outline on a sleeved holo card is often one band off -- on a
+# Meganium (2.20.0) its top sat on the artwork's top edge, under the name bar,
+# and the name was cut off the card that OCR saw. A name is ~12 mm tall at
+# most from the card's top; 15% of 88 mm keeps it in view either way up.
+READ_MARGIN_FRAC = 0.15
+
+
+def _rectify_for_reading(image: np.ndarray, quad: np.ndarray, px_per_mm: float):
+    """(rectified card with READ_MARGIN_FRAC of margin top and bottom, the
+    name band as fractions of its height)."""
+    from .recognise import NAME_BAND
+    from .types import STANDARD_CARD_H_MM, STANDARD_CARD_W_MM
+
+    s = float(px_per_mm)
+    w, h = STANDARD_CARD_W_MM * s, STANDARD_CARD_H_MM * s
+    mx, my = 0.04 * w, READ_MARGIN_FRAC * h
+    dst = np.float32([[mx, my], [mx + w, my], [mx + w, my + h], [mx, my + h]])
+    M = cv2.getPerspectiveTransform(np.asarray(quad, dtype=np.float32).reshape(4, 2), dst)
+    size = (int(round(w + 2 * mx)), int(round(h + 2 * my)))
+    rect = cv2.warpPerspective(image, M, size, flags=cv2.INTER_LINEAR,
+                               borderMode=cv2.BORDER_REPLICATE)
+    return rect, (0.0, (my + NAME_BAND * h) / (h + 2 * my))
+
+
 def _identify_payload(image_bytes: bytes, device_id: str, owner: bool) -> dict:
     """OCR identification of one still, recorded for feedback and the second
     vote. The outline comes from locate_card (find_card_quad plus the
@@ -457,8 +492,8 @@ def _identify_payload(image_bytes: bytes, device_id: str, owner: bool) -> dict:
                                             min_area_frac=min_area_frac_for(work.shape))
     quad_full = quad / s + np.array(origin, dtype=np.float64)
     ppm = float(np.linalg.norm(quad_full[1] - quad_full[0])) / STANDARD_CARD_W_MM
-    rect, _ = rectify(image, quad_full, px_per_mm=min(ppm, 24.0))
-    rec = recognise_card(rect)
+    rect, band = _rectify_for_reading(image, quad_full, min(ppm, 24.0))
+    rec = recognise_card(rect, name_band=band)
     payload = {
         "ok": True,
         "identified": rec.resolved,
@@ -1513,6 +1548,12 @@ async function arTick() {
       arStats.ok++;
       arStats.error = '';
       arStats.lastOkAt = Date.now();
+    } else if (d && d.busy) {
+      // the server is still on the previous frame: not an error, and the
+      // next tick sends a newer frame
+      arStats.busy = (arStats.busy || 0) + 1;
+      setPushStatus('SERVER CATCHING UP');
+      return;
     } else {
       arStats.fail++;
       arStats.error = (d && d.error ? d.error : 'HTTP ' + res.status).slice(0, 140);
@@ -2712,9 +2753,22 @@ class Handler(BaseHTTPRequestHandler):
                 aim = (_field_float(fields, "aim_x"), _field_float(fields, "aim_y"))
                 if None not in aim and all(0.0 <= v <= 1.0 for v in aim):
                     session.select(aim)
-                measured_before = session.measured
-                status: ARStatus = session.push(
-                    frame, source_scale=_field_float(fields, "source_scale"))
+                # One push at a time per session. A push the phone gave up on
+                # (4 s) keeps running here; the next one used to start beside
+                # it, on the same session, and on two CPUs both then ran late
+                # -- the "PUSH TIMED OUT" runs of the 2.20.0 field report.
+                # Wait briefly for the previous frame, then say "busy" rather
+                # than queue: the phone just sends a newer frame.
+                lock = getattr(session, "_serve_lock", None)
+                if lock is not None and not lock.acquire(timeout=AR_BUSY_WAIT_S):
+                    raise _Busy()
+                try:
+                    measured_before = session.measured
+                    status: ARStatus = session.push(
+                        frame, source_scale=_field_float(fields, "source_scale"))
+                finally:
+                    if lock is not None:
+                        lock.release()
                 # keep the frames that were measured, at most one per 2 s
                 if status.measured_frames > measured_before and \
                         time.time() - getattr(session, "_field_at", 0.0) >= 2.0:
@@ -2837,6 +2891,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, b"not found", "text/plain")
                 return
 
+        except _Busy:
+            payload = {"ok": False, "busy": True,
+                       "error": "still working on the previous frame"}
         except DetectionError as exc:
             payload = {"ok": False, "error": str(exc)}
         except Exception:

@@ -48,6 +48,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import unicodedata
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -56,7 +57,7 @@ from typing import Optional, Sequence
 import cv2
 import numpy as np
 
-from .ocr import OcrUnavailable, levenshtein
+from .ocr import OcrUnavailable, background_run_kwargs, levenshtein
 
 _SPECIES_DATA = Path(__file__).parent / "data" / "species.json"
 
@@ -140,10 +141,76 @@ class SparseTextEngine:
                 out = subprocess.run(
                     cmd, capture_output=True, text=True,
                     timeout=self.timeout_s, check=False,
+                    **background_run_kwargs(),
                 )
             except (subprocess.TimeoutExpired, OSError) as exc:
                 raise OcrUnavailable(f"tesseract failed: {exc}") from exc
         return out.stdout
+
+    def read_words(self, image: np.ndarray) -> list["Word"]:
+        """The same sparse read, with where each word sits (tesseract's TSV).
+        One tesseract run, like ``read_text``."""
+        if shutil.which("tesseract") is None:
+            raise OcrUnavailable("tesseract is not installed")
+        h, w = image.shape[:2]
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "card.png"
+            cv2.imwrite(str(path), image)
+            cmd = [
+                "tesseract", str(path), "stdout",
+                "--psm", str(self.psm),
+                "-c", "debug_file=/dev/null", "tsv",
+            ]
+            try:
+                out = subprocess.run(
+                    cmd, capture_output=True, text=True,
+                    timeout=self.timeout_s, check=False,
+                    **background_run_kwargs(),
+                )
+            except (subprocess.TimeoutExpired, OSError) as exc:
+                raise OcrUnavailable(f"tesseract failed: {exc}") from exc
+        return parse_tsv(out.stdout, h)
+
+
+@dataclass(frozen=True)
+class Word:
+    """One OCR word and where it sits: ``top``/``height`` as fractions of the
+    card's height, ``line`` an id shared by the words on one text line."""
+
+    text: str
+    top: float = float("nan")
+    height: float = float("nan")
+    line: tuple = ()
+
+
+def parse_tsv(tsv: str, image_h: int) -> list[Word]:
+    """Words from tesseract's TSV output, in reading order."""
+    words: list[Word] = []
+    lines = tsv.splitlines()
+    if not lines:
+        return words
+    head = lines[0].split("\t")
+    try:
+        col = {k: head.index(k) for k in
+               ("block_num", "par_num", "line_num", "top", "height", "text")}
+    except ValueError:
+        return words
+    h = float(max(image_h, 1))
+    for row in lines[1:]:
+        f = row.split("\t")
+        if len(f) < len(head):
+            continue
+        text = f[col["text"]].strip()
+        if not text:
+            continue
+        try:
+            words.append(Word(
+                text, int(f[col["top"]]) / h, int(f[col["height"]]) / h,
+                (int(f[col["block_num"]]), int(f[col["par_num"]]), int(f[col["line_num"]])),
+            ))
+        except ValueError:
+            continue
+    return words
 
 
 def tokenise(text: str) -> list[str]:
@@ -241,6 +308,52 @@ class Recognition:
         return line
 
 
+# The name is printed at the top of the card, in the largest type on it: the
+# top 16% (14 mm of 88) holds the name bar and the "Evolves from" line under
+# it on every modern layout.
+NAME_BAND = 0.16
+
+
+def species_key(name: str) -> str:
+    """What a name is matched on: its letters and digits, lower case, accents
+    dropped -- "Mr. Mime" is mrmime, "Farfetch'd" farfetchd, "Flabébé"
+    flabebe. OCR splits the first two into two words; see match_words."""
+    flat = unicodedata.normalize("NFKD", name)
+    return "".join(c for c in flat.lower() if c.isalnum() and c.isascii())
+
+
+@lru_cache(maxsize=4)
+def _keyed(vocabulary: tuple) -> tuple:
+    return tuple((species_key(sp.name), sp) for sp in vocabulary)
+
+
+def _best(cands, vocabulary):
+    """cands: (rank, token, key) -> (species, token, edits, alternatives).
+    A lower rank wins before edits and length do, and a rank above 0 must
+    read exactly; the tie rule is unchanged."""
+    best = None   # (rank, edits, -len, species, token)
+    ties: set[str] = set()
+    for rank, token, key in cands:
+        if len(key) < MIN_TOKEN_LEN or key in _BOILERPLATE:
+            continue
+        budget = _allowed_edits(key)
+        for sk, sp in _keyed(tuple(vocabulary)):
+            d = levenshtein(key, sk)
+            if d > budget or (rank > 0 and d > 0):
+                continue
+            k = (rank, d, -len(key))
+            if best is None or k < best[:3]:
+                best = (*k, sp, token)
+                ties = {sp.name}
+            elif k == best[:3] and sp.name != best[3].name:
+                ties.add(sp.name)
+    if best is None:
+        return None, None, None, ()
+    if len(ties) > 1:
+        return None, best[4], best[1], tuple(sorted(ties))
+    return best[3], best[4], best[1], ()
+
+
 def match_species(
     tokens: Sequence[str], vocabulary: Sequence[Species]
 ) -> tuple[Optional[Species], Optional[str], Optional[int], tuple[str, ...]]:
@@ -250,41 +363,61 @@ def match_species(
     close to two different species resolves to neither: that is the same
     "closer to exactly one than to any other" rule the collector-number reader
     uses, and it is what keeps garbage from becoming a confident answer.
+    Two neighbouring tokens are also tried joined ("Mr" "Mime").
     """
-    best: Optional[tuple[int, int, Species, str]] = None  # (edits, -len, sp, token)
-    ties: set[str] = set()
+    cands = [(0, t, species_key(t)) for t in tokens]
+    cands += [(0, f"{a} {b}", species_key(a + b)) for a, b in zip(tokens, tokens[1:])
+              if len(species_key(a)) >= 1 and len(species_key(b)) >= 1]
+    return _best(cands, vocabulary)
 
-    for token in tokens:
-        low = token.lower()
-        if len(low) < MIN_TOKEN_LEN or low in _BOILERPLATE:
+
+def match_words(
+    words: Sequence[Word], vocabulary: Sequence[Species],
+    name_band: tuple[float, float] = (0.0, NAME_BAND),
+) -> tuple[Optional[Species], Optional[str], Optional[int], tuple[str, ...]]:
+    """match_species with where each word sits on the card.
+
+    The name is the word in the name bar; the rest of the card is rules and
+    flavour text, full of ordinary words one letter from a species. A
+    Meganium (2.20.0, the name not yet in the vocabulary) was named Seaking
+    from "soaking" in its flavour text, at one edit. So a word below the name
+    bar names the card only when it reads EXACTLY as a species (an attack that
+    names one is rare, a misread that lands on one is not), a word in the bar
+    beats any word below it, and the word after "from" ("Evolves from
+    Bayleef") is the previous stage, never the card.
+
+    ``name_band``: where the name bar is, as fractions of the image height --
+    (0, NAME_BAND) for a card rectified edge to edge; a caller that
+    rectifies with a margin (see serve._identify_payload) says so."""
+    lo, hi = name_band
+    cands = []
+    for i, w in enumerate(words):
+        prev = [x for x in words[max(0, i - 2):i] if x.line == w.line]
+        if any(species_key(x.text) == "from" for x in prev):
             continue
-        budget = _allowed_edits(low)
-        for sp in vocabulary:
-            d = levenshtein(low, sp.name.lower())
-            if d > budget:
-                continue
-            key = (d, -len(low), sp, token)
-            if best is None or (d, -len(low)) < (best[0], best[1]):
-                best = key
-                ties = {sp.name}
-            elif (d, -len(low)) == (best[0], best[1]) and sp.name != best[2].name:
-                ties.add(sp.name)
-
-    if best is None:
-        return None, None, None, ()
-    if len(ties) > 1:
-        return None, best[3], best[0], tuple(sorted(ties))
-    return best[2], best[3], best[0], ()
+        in_band = np.isfinite(w.top) and lo <= w.top + 0.5 * w.height <= hi
+        seq = [(w.text, species_key(w.text))]
+        nxt = words[i + 1] if i + 1 < len(words) else None
+        if nxt is not None and nxt.line == w.line:
+            seq.append((f"{w.text} {nxt.text}", species_key(w.text + nxt.text)))
+        for token, key in seq:
+            if in_band or not np.isfinite(w.top):
+                cands.append((0, token, key))
+            else:
+                cands.append((1, token, key))
+    return _best(cands, vocabulary)
 
 
 def recognise_card(
     rect_bgr: np.ndarray,
     vocabulary: Optional[Sequence[Species]] = None,
     engine: Optional[SparseTextEngine] = None,
+    name_band: tuple[float, float] = (0.0, NAME_BAND),
 ) -> Recognition:
     """Read a rectified card and name the species, or refuse.
 
     Deliberately tolerant of an imprecise boundary: see the module docstring.
+    ``name_band`` as in match_words.
     """
     vocab = list(vocabulary) if vocabulary is not None else list(load_species())
     engine = engine or SparseTextEngine()
@@ -305,16 +438,41 @@ def recognise_card(
     # but says nothing about which end is up, and on the corpus several cards
     # resolved only after a half turn. Try upright first and rotate only if
     # that fails, so the common case costs nothing.
-    attempts = [("upright", prepared)]
+    def read(img) -> tuple[str, list[Word]]:
+        if hasattr(engine, "read_words"):
+            words = engine.read_words(img)
+            return " ".join(w.text for w in words), words
+        text = engine.read_text(img)
+        return text, [Word(t) for t in tokenise(text)]
+
+    def read_band(img) -> list[Word]:
+        # The name bar alone, enlarged: a whole-card sparse read of a holo
+        # card in a sleeve misses the name about one time in three (field
+        # stills, 2.20.0) where the bar by itself at twice the size reads.
+        h = img.shape[0]
+        band = img[: max(8, int(round(name_band[1] * h)))]
+        f = min(2.0, 2400.0 / max(band.shape[1], 1))
+        band = cv2.resize(band, None, fx=f, fy=f, interpolation=cv2.INTER_CUBIC)
+        return [Word(w.text, name_band[0], 0.0, ("band",) + tuple(w.line))
+                for w in engine.read_words(band)]
+
     orientation = "upright"
-    raw_text = ""
     try:
-        raw_text = engine.read_text(prepared)
-        if match_species(tokenise(raw_text), vocab)[0] is None:
-            flipped = cv2.rotate(prepared, cv2.ROTATE_180)
-            flipped_text = engine.read_text(flipped)
-            if match_species(tokenise(flipped_text), vocab)[0] is not None:
-                raw_text, orientation = flipped_text, "rotated 180"
+        found = None
+        for label, img in (("upright", prepared),
+                           ("rotated 180", cv2.rotate(prepared, cv2.ROTATE_180))):
+            text, words = read(img)
+            if found is None:
+                found = (text, words, label)
+            if match_words(words, vocab, name_band)[0] is not None:
+                found = (text, words, label)
+                break
+            if hasattr(engine, "read_words"):
+                bw = read_band(img)
+                if match_words(bw, vocab, name_band)[0] is not None:
+                    found = (text, bw + words, label)
+                    break
+        raw_text, words, orientation = found
     except OcrUnavailable as exc:
         return Recognition(
             name=None, dex=None, matched_token=None, edits=None,
@@ -324,7 +482,7 @@ def recognise_card(
 
     tokens = tokenise(raw_text)
     dex = read_dex_number(raw_text)
-    sp, token, edits, alts = match_species(tokens, vocab)
+    sp, token, edits, alts = match_words(words, vocab, name_band)
 
     warnings: list[str] = []
     if sp is None and alts:

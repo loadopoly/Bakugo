@@ -390,3 +390,28 @@ def test_dumps_never_writes_non_json_tokens():
                   "c": {"d": np.float64("inf"), "e": np.float32(2.0)}, "f": (1, float("nan"))})
     data = _strict(out)
     assert data == {"a": None, "b": [None, 1.5, None], "c": {"d": None, "e": 2.0}, "f": [1, None]}
+
+
+def test_ar_push_says_busy_instead_of_queueing(test_server, monkeypatch):
+    """A push the phone gave up on keeps running on the server; the next one
+    must not start beside it on the same session (2.20.0: runs of "PUSH TIMED
+    OUT" on a two-CPU server). While the session is held it answers "busy"."""
+    token = _new_token(test_server)
+    payload, ctype = _multipart({"holder": "raw", "lens": "main"}, _card_jpeg(80))
+
+    def push():
+        req = urllib.request.Request(f"{test_server}/ar/push", data=payload, method="POST")
+        req.add_header("Content-Type", ctype)
+        req.add_header("Cookie", f"bakugo_device={token}")
+        return json.loads(_open(req)[2])
+
+    assert push()["ok"] is True
+    session = serve_mod._AR_SESSIONS[device_id_for_token(token)]
+    monkeypatch.setattr(serve_mod, "AR_BUSY_WAIT_S", 0.05)
+    session._serve_lock.acquire()
+    try:
+        d = push()
+        assert d["ok"] is False and d["busy"] is True
+    finally:
+        session._serve_lock.release()
+    assert push()["ok"] is True
