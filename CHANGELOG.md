@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.22.0] - 2026-09-25
+
+From sixteen screenshots of 2.21.1 and the 21 live frames and 3 stills the server kept. One
+Freeze measured: Meganium **56.1/43.9** (L 2.31, R 2.41, T 2.13, B 2.73 mm, 15 px/mm), close
+to the 56.6 of the earlier photo. It was named Meganium from "Megarium" read in the name bar.
+The live view never measured, for two reasons.
+
+### Fixed
+- **The live view zooms in by itself when it is too coarse.** Where the camera can focus (the
+  card about a third of the view wide), the 540 px live frame had 3.3-4.2 px/mm, and live
+  measurement needs 4.5. Moving closer took the card out of focus, so live never settled and
+  never auto-captured. After two too-coarse frames in a row, the phone now zooms the camera to
+  about 6 px/mm. The zoom is capped at 2x, because past that some phones switch to a telephoto
+  that can't focus as close. It won't zoom within 10 s of you zooming by hand, and the banner
+  says it has zoomed. The server now reports `live_px_per_mm` and `card_frac` for each push,
+  and the phone sends its zoom, so "too close to focus" divides the zoom out. The "too coarse"
+  advice now also says "zoom in (+) from where you are".
+- **An empty sleeve is not a card.** With the Meganium pushed half out of its penny sleeve,
+  the tracker held the empty half below it in 4 of 17 live frames, then said "too close to
+  focus" about it. The existing face test passed it, because the counter through plastic is a
+  little lighter and greyer than beside it. What stays the same is its colour
+  (chromaticity):
+  - The empty sleeves' faces were 0.35-0.61 from the counter's, and even (spread 0.14-0.68).
+  - The cards were 2.9-9.4 away, with artwork spread 3.4-4.8.
+  - A face within 1.5 of the counter's colour and spread under 1.5 is now rejected. The card
+    above the sleeve is then found instead, in 3 of the 4 frames.
+
+### Measured
+- Live pushes took 460-680 ms on the server, and 2.3-4.5 s when it had lost the card and
+  searched the whole frame. The phone's round trips were 1.2-3.6 s for 20 KB, so the network
+  (tunnel and Wi-Fi) takes 1-3 s of each push. Both leave too little of the 4 s timeout.
+
 ## [2.21.1] - 2026-09-24
 
 From eight screenshots of 2.21.0 (Meganium, live view). The card filled 50-80% of the view

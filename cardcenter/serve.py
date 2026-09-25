@@ -1381,6 +1381,54 @@ async function setZoom(z) {
   sizeARCanvases();
 }
 
+// How much the camera (or the crop) magnifies, as a plain factor.
+function zoomFactor() {
+  if (zoomIsOptical && videoTrack && zoomCaps) {
+    const got = (videoTrack.getSettings && videoTrack.getSettings().zoom) || zoomCaps.min;
+    return Math.max(1, got / Math.max(zoomCaps.min, 1e-3));
+  }
+  return zoomLevel;
+}
+
+// The slider level that gives a zoom factor f.
+function levelForFactor(f) {
+  if (zoomIsOptical && zoomCaps) {
+    const span = zoomCaps.max - zoomCaps.min;
+    const want = Math.max(1, zoomCaps.min) * f;
+    return Math.max(1, Math.min(8, 1 + 7 * (want - zoomCaps.min) / Math.max(span, 1e-3)));
+  }
+  return Math.max(1, Math.min(8, f));
+}
+
+// Zoom in by itself when the card is too coarse to measure live. At a
+// distance the camera focuses (card about a third of the view wide) the
+// 540 px live frame has 3.3-4.2 px/mm (2.21.1 field session) and live needs
+// 4.5, so it never measured and never settled; only Freeze did. Closer,
+// it cannot focus. Zoom from where it focuses: to ~6 px/mm, at most 2x (past
+// that some phones switch to a telephoto that focuses further away still),
+// and never when the user has zoomed by hand in the last 10 s.
+const LIVE_MIN_PXMM = 4.5, LIVE_TARGET_PXMM = 6.0, AUTO_ZOOM_MAX = 2.0;
+let userZoomAt = 0, autoZoomAt = 0, coarseRuns = 0;
+function maybeAutoZoom(d) {
+  if (!d || !d.ok || !d.tracking || !d.live_px_per_mm || !d.card_frac) { coarseRuns = 0; return; }
+  if (d.live_px_per_mm >= LIVE_MIN_PXMM) { coarseRuns = 0; return; }
+  if (++coarseRuns < 2) return;                      // two frames in a row
+  const now = Date.now();
+  if (now - userZoomAt < 10000 || now - autoZoomAt < 2500) return;
+  const cur = zoomFactor();
+  const want = Math.min(AUTO_ZOOM_MAX,
+                        cur * LIVE_TARGET_PXMM / d.live_px_per_mm,
+                        cur * 0.7 / d.card_frac);     // keep the card in view
+  if (want < cur * 1.15) return;
+  autoZoomAt = now;
+  coarseRuns = 0;
+  const lvl = levelForFactor(want);
+  $('#zoom').value = lvl;
+  setZoom(lvl);
+  autoZoomNote = now;
+}
+let autoZoomNote = 0;
+
 async function listCameras() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
   const sel = $('#setting-camera');
@@ -1562,6 +1610,7 @@ async function arTick() {
     // camera pixels per pushed pixel: the guidance can then say what a
     // full-resolution Measure Card photo would have
     fd.append('source_scale', String(crop.w / (offscreenCanvas.width || crop.w)));
+    fd.append('zoom', zoomFactor().toFixed(2));
     if (pendingAim) {
       fd.append('aim_x', pendingAim.x.toFixed(4));
       fd.append('aim_y', pendingAim.y.toFixed(4));
@@ -1598,6 +1647,7 @@ async function arTick() {
     }
     drawDebugInset(d);
     drawARHUD(d, thumb);
+    maybeAutoZoom(d);
   } catch(e) {
     // A dropped frame and a broken loop look identical until one of them is
     // reported: say which, on screen and in the console.
@@ -1679,6 +1729,9 @@ function drawARHUD(d, thumb) {
     } else if (d.settled) {
       banner.textContent = '✓ Target settled · Auto-capturing metrology';
       banner.className = 'hud-banner good';
+    } else if (Date.now() - autoZoomNote < 3500) {
+      banner.textContent = `zoomed in to ${zoomFactor().toFixed(1)}x so the live view can measure -- keep the phone where it is`;
+      banner.className = 'hud-banner';
     } else if (d.guidance && d.guidance.length > 0) {
       banner.textContent = '⚠ ' + d.guidance[0];
       banner.className = 'hud-banner warn';
@@ -2361,9 +2414,9 @@ $('#setting-save').onclick = () => {
   refreshConfig();
 };
 
-$('#zoom').oninput = (e) => setZoom(e.target.value);
-$('#zoom-in').onclick = () => { $('#zoom').value = Math.min(8, zoomLevel + 0.5); setZoom($('#zoom').value); };
-$('#zoom-out').onclick = () => { $('#zoom').value = Math.max(1, zoomLevel - 0.5); setZoom($('#zoom').value); };
+$('#zoom').oninput = (e) => { userZoomAt = Date.now(); setZoom(e.target.value); };
+$('#zoom-in').onclick = () => { userZoomAt = Date.now(); $('#zoom').value = Math.min(8, zoomLevel + 0.5); setZoom($('#zoom').value); };
+$('#zoom-out').onclick = () => { userZoomAt = Date.now(); $('#zoom').value = Math.max(1, zoomLevel - 0.5); setZoom($('#zoom').value); };
 $('#setting-camera').onchange = (e) => {
   cameraId = e.target.value || null;
   try {
@@ -2855,7 +2908,8 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     measured_before = session.measured
                     status: ARStatus = session.push(
-                        frame, source_scale=_field_float(fields, "source_scale"))
+                        frame, source_scale=_field_float(fields, "source_scale"),
+                        zoom=_field_float(fields, "zoom"))
                 finally:
                     if lock is not None:
                         lock.release()
@@ -2918,6 +2972,10 @@ class Handler(BaseHTTPRequestHandler):
                     # time spent here: the phone's round trip minus this is
                     # the network (the debug inset shows both)
                     "server_ms": int(1000 * (time.monotonic() - push_t0)),
+                    "live_px_per_mm": (round(status.px_per_mm, 2)
+                                       if status.px_per_mm is not None else None),
+                    "card_frac": (round(status.card_frac, 3)
+                                  if status.card_frac is not None else None),
                 }
 
             elif path == "/identify":

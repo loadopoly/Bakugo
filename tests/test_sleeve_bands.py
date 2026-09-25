@@ -147,3 +147,43 @@ def test_sharpness_does_not_depend_on_card_size():
     half = cv2.resize(img, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)
     b = still_sharpness(half, q * 0.5)
     assert abs(a - b) / a < 0.35
+
+
+# --------------------------------------------------------------------------
+# Live: the empty end of a sleeve is not a card (2.21.1 field frames, 540 px)
+# --------------------------------------------------------------------------
+
+EMPTY_SLEEVE_QUAD = [[176.8, 217.7], [430.7, 220.4], [415.3, 554.2], [165.6, 524.9]]
+CARD_QUAD = [[96.1, 171.3], [339.1, 170.6], [330.8, 523.4], [80.8, 511.4]]
+
+
+def test_empty_sleeve_is_not_judged_a_card():
+    """The Meganium half out of its sleeve: the tracker held the empty half
+    below it and said 'too close to focus' about it."""
+    from cardcenter.scene import SceneSearch
+
+    img = cv2.imread(str(SLEEVE / "live_empty_sleeve.jpg"))
+    s = SceneSearch(img)
+    assert s.judge(np.array(EMPTY_SLEEVE_QUAD)) is None
+    hit = s.card_at((img.shape[1] / 2, img.shape[0] / 2))
+    # the card above it is found instead (the reticle is on the sleeve)
+    assert hit is not None and hit.quad[:, 1].max() < 260
+
+
+def test_card_above_an_empty_sleeve_is_still_a_card():
+    from cardcenter.scene import SceneSearch
+
+    img = cv2.imread(str(SLEEVE / "live_card_over_sleeve.jpg"))
+    assert SceneSearch(img).judge(np.array(CARD_QUAD)) is not None
+
+
+def test_live_status_reports_resolution_and_card_size():
+    from cardcenter.ar import ARSession
+
+    img = cv2.imread(str(SLEEVE / "live_card_over_sleeve.jpg"))
+    s = ARSession()
+    st = None
+    for i in range(3):
+        st = s.push(img, now=1.0 + 0.2 * i, source_scale=4.0, zoom=1.0)
+    assert st.tracking
+    assert 3.0 < st.px_per_mm < 6.0 and 0.3 < st.card_frac < 0.7

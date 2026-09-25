@@ -405,3 +405,21 @@ def test_frame_sharpness_is_measured(page):
     v = page.evaluate("frameSharpness(null)")
     assert v >= 0 and v == v
 
+
+def test_zooms_in_when_the_live_view_is_too_coarse(page):
+    """2.21.1: at a distance the camera focuses the live frame had 3.3-4.2
+    px/mm and live needs 4.5; it never measured. The phone zooms in itself
+    (to ~6 px/mm, at most 2x), but not over a zoom the user just set."""
+    page.evaluate("setZoom(1); userZoomAt = 0; autoZoomAt = 0; coarseRuns = 0")
+    coarse = "({ok: true, tracking: true, live_px_per_mm: 3.5, card_frac: 0.3})"
+    page.evaluate(f"maybeAutoZoom({coarse})")
+    assert page.evaluate("zoomFactor()") == 1          # one frame is not enough
+    page.evaluate(f"maybeAutoZoom({coarse})")
+    z = page.evaluate("zoomFactor()")
+    assert 1.5 <= z <= 2.0
+    # a hand zoom wins for 10 s
+    page.evaluate("setZoom(1); userZoomAt = Date.now(); autoZoomAt = 0; coarseRuns = 0")
+    page.evaluate(f"maybeAutoZoom({coarse}); maybeAutoZoom({coarse})")
+    assert page.evaluate("zoomFactor()") == 1
+    page.evaluate("setZoom(1); userZoomAt = 0")
+

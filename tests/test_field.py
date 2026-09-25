@@ -213,7 +213,7 @@ def test_too_far_for_live_points_at_the_photo():
     for i in range(3):
         st = s.push(img, now=1.0 + 0.2 * i, source_scale=4.0)
     text = " ".join(st.guidance)
-    assert "Measure Card" in text and "photo" in text, st.guidance
+    assert "Freeze" in text and "photo" in text and "zoom in" in text, st.guidance
     s2 = ARSession()
     for i in range(3):
         st2 = s2.push(img, now=1.0 + 0.2 * i)

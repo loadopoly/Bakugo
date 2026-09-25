@@ -630,6 +630,11 @@ class ARStatus:
     information: Optional[dict] = None
     decision: Optional[str] = None
     decision_reason: str = ""
+    # the tracked card in the pushed frame: its px/mm, and how much of the
+    # frame's width it takes (the phone zooms in on the first when it is too
+    # coarse to measure live)
+    px_per_mm: Optional[float] = None
+    card_frac: Optional[float] = None
 
     def headline(self) -> str:
         if not self.tracking:
@@ -687,6 +692,9 @@ class ARSession:
     last_result: Optional[CenteringResult] = None
     # camera pixels per pushed pixel (see push); 1.0 until the phone says
     source_scale: float = 1.0
+    # the phone's camera zoom: the card looks this much bigger than it is
+    # close, so "too close to focus" divides it out
+    zoom: float = 1.0
     _aim_norm: Optional[tuple] = None
     _aim_at: Optional[float] = None
     # the outline as measured (unsmoothed): where the tracker starts next time
@@ -913,13 +921,13 @@ class ARSession:
 
         photo = frame_px_per_mm * self.source_scale
         if photo >= MIN_PX_PER_MM:
-            return (f"live view too coarse here ({frame_px_per_mm:.1f} px/mm) -- hold still and "
-                    f"tap Measure Card (photo ~{photo:.1f} px/mm)")
+            return (f"live view too coarse here ({frame_px_per_mm:.1f} px/mm) -- zoom in (+) "
+                    f"from where you are, or hold still and tap Freeze (photo ~{photo:.1f} px/mm)")
         return (f"too far even for a photo (~{photo:.1f} px/mm, needs {MIN_PX_PER_MM:.1f}) -- "
                 "move closer or zoom in")
 
     def push(self, frame: np.ndarray, now: Optional[float] = None,
-             source_scale: Optional[float] = None) -> ARStatus:
+             source_scale: Optional[float] = None, zoom: Optional[float] = None) -> ARStatus:
         """Feed one camera frame. Cheap unless the frame is worth measuring.
 
         ``source_scale`` is how many camera pixels each pushed pixel stands
@@ -930,6 +938,8 @@ class ARSession:
         self.seen += 1
         if source_scale is not None and 1.0 <= source_scale <= 16.0:
             self.source_scale = float(source_scale)
+        if zoom is not None and 1.0 <= zoom <= 30.0:
+            self.zoom = float(zoom)
 
         track_img, track_scale = _resize_long(frame, TRACK_LONG_SIDE)
         th, tw = track_img.shape[:2]
@@ -1144,7 +1154,8 @@ class ARSession:
         # phone's main camera is near the closest it can focus
         xs = quad_small[:, 0]
         card_frac = float(xs.max() - xs.min()) / max(float(tw), 1.0)
-        guidance = tuple(self._focus_hint(self._photo_hint(g, full_px_per_mm), card_frac)
+        guidance = tuple(self._focus_hint(self._photo_hint(g, full_px_per_mm),
+                                          card_frac / max(self.zoom, 1.0))
                          for g in quality.guidance)
         if quality.passed and shown is not None and shown.advice and not self.settled:
             guidance = tuple(guidance) + (shown.advice[0].message,)
@@ -1166,6 +1177,8 @@ class ARSession:
             information=info_dict,
             decision=gate.decision.value if gate is not None else None,
             decision_reason=gate.reason if gate is not None else "",
+            px_per_mm=float(full_px_per_mm),
+            card_frac=card_frac,
         )
 
     def _gate(self, res: CenteringResult, info) -> Optional[object]:

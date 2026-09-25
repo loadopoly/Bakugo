@@ -643,6 +643,67 @@ class SceneSearch:
             out[i] = worst <= max_background_frac
         return out
 
+    def _empty_sleeve(self, Q: np.ndarray) -> np.ndarray:
+        """For quads Q (N,4,2): is the face the counter seen through clear
+        plastic -- an empty sleeve, or the empty end of one?
+
+        2.21.1 field frames: a card pushed half out of its penny sleeve, and
+        the tracker held the empty half below it (four of seventeen live
+        frames), then said "too close to focus" about a sleeve. The Lab face
+        test passes it: through plastic the counter is a little lighter and
+        greyer than beside it. What does not change is the colour of the
+        light, chromaticity (r, b as fractions of r+g+b): the empty sleeves'
+        faces were 0.35-0.61 from the counter's, and even (0.14-0.68 spread
+        across the face); cards were 2.9-9.4 away, and their artwork spread
+        3.4-4.8 (Meganium) or sat 6.7-9.4 away (Terapagos). Both the colour
+        and the evenness have to match to call it empty."""
+        N = len(Q)
+        out = np.zeros(N, bool)
+        img = self.img.astype(np.float32)
+        src = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], np.float32)
+        g = np.linspace(0.15, 0.85, 15)
+        uu, vv = np.meshgrid(g, g)
+        core_uv = np.stack([uu.ravel(), vv.ravel(), np.ones(uu.size)], axis=1)
+        t = np.linspace(0.1, 0.9, 15)
+
+        def at(pts):
+            xi = np.clip(np.round(pts[:, 0]).astype(int), 0, self.w - 1)
+            yi = np.clip(np.round(pts[:, 1]).astype(int), 0, self.h - 1)
+            return img[yi, xi]
+
+        def chroma(x):
+            tot = x.sum(axis=1) + 1e-6
+            return np.stack([100.0 * x[:, 2] / tot, 100.0 * x[:, 0] / tot], axis=1)
+
+        for i in range(N):
+            q = Q[i].astype(np.float32)
+            try:
+                M = cv2.getPerspectiveTransform(src, q)
+            except cv2.error:
+                continue
+            core = core_uv @ M.T
+            face = at(core[:, :2] / core[:, 2:3])
+            c = q.mean(axis=0)
+            ring = []
+            for k in range(4):
+                a, b = q[k], q[(k + 1) % 4]
+                d = b - a
+                n = np.array([-d[1], d[0]], np.float32)
+                n /= max(float(np.hypot(*n)), 1e-6)
+                if np.dot(n, (a + b) / 2 - c) < 0:
+                    n = -n
+                L = float(np.hypot(*d))
+                ring.append(a[None, :] + t[:, None] * d[None, :] + 0.10 * L * n[None, :])
+            ring = at(np.concatenate(ring))
+            if float(np.median(ring.sum(axis=1))) < 150.0:
+                continue                   # a dark mat: chromaticity is noise
+            fc, rc = chroma(face), chroma(ring)
+            fm = np.median(fc, axis=0)
+            spread = float(np.median(np.linalg.norm(fc - fm, axis=1)))
+            out[i] = (float(np.linalg.norm(fm - np.median(rc, axis=0))) < 1.5
+                      and spread < 1.5)
+        return out
+
     def _judge_batch(self, quads) -> list:
         """Judge many quads at once; None for the ones that are not cards.
 
@@ -686,6 +747,9 @@ class SceneSearch:
         idx = np.nonzero(ok)[0]
         if len(idx):
             ok[idx] &= self._face_differs(Q[idx])
+        idx = np.nonzero(ok)[0]
+        if len(idx):
+            ok[idx] &= ~self._empty_sleeve(Q[idx])
         support = ranked[:, :3].mean(axis=1)
         score = (support + 0.35 * ranked[:, 3] - 0.6 * np.abs(aspect - CARD_ASPECT)
                  - 0.25 * over.mean(axis=1))
