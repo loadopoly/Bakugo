@@ -423,3 +423,18 @@ def test_zooms_in_when_the_live_view_is_too_coarse(page):
     assert page.evaluate("zoomFactor()") == 1
     page.evaluate("setZoom(1); userZoomAt = 0")
 
+
+def test_bigger_live_frame_when_the_card_is_coarse(page, stub):
+    """2.22.0: the card read 3.4-4.4 px/mm in the 540 px live frame at a
+    distance the camera focuses; live needs 4.5. The phone sends 720 px
+    frames while it tracks a coarse card, and 540 again once tracking has
+    been lost for 1.5 s."""
+    _wait_pushes(page)
+    page.evaluate("liveW = LIVE_W; sizeARCanvases()")
+    assert page.evaluate("offscreenCanvas.width") == 540
+    page.evaluate("maybeLiveHiRes({ok: true, tracking: true, live_px_per_mm: 4.0, card_frac: 0.5})")
+    assert page.evaluate("offscreenCanvas.width") == 720
+    page.evaluate("maybeLiveHiRes({ok: true, tracking: false}); liveHiLostAt = Date.now() - 2000;"
+                  "maybeLiveHiRes({ok: true, tracking: false})")
+    assert page.evaluate("offscreenCanvas.width") == 540
+

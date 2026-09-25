@@ -1128,7 +1128,10 @@ const arStats = { pushes: 0, ok: 0, fail: 0, status: 0, ms: 0, bytes: 0, error: 
 // true, the interval kept returning early, and the HUD and inset froze on the
 // last good frame while the camera carried on. Bound the wait, and reset the
 // flag if a request outlives even that.
-const PUSH_TIMEOUT_MS = 4000;
+// 6 s: a search for a lost card takes the server 2.3-3.4 s, and on 5G or the
+// shop Wi-Fi the round trip adds 1-1.5 s; at 4 s those pushes were given up
+// on and sent again, which cost more than waiting (2.22.0 field log).
+const PUSH_TIMEOUT_MS = 6000;
 const PUSH_STUCK_MS = 8000;
 const OVERLAY_STALE_MS = 800;
 // On shop signal a push can take a second or more end to end; a fixed 800 ms
@@ -1361,6 +1364,34 @@ function coverCrop() {
   return { x: Math.round((vw - w) / 2), y: Math.round((vh - h) / 2), w: w, h: h };
 }
 
+// The live frame is 540 px across, and the card's height is what limits it:
+// the frame is 540x632 and a card's 88 mm fits in ~85% of the 632 at most, so
+// even filling the view it is ~6 px/mm. In the 2.22.0 session the card took
+// 55% of the width and 66% of the height at 2-2.5x zoom (where the camera
+// focuses) and read 3.4-4.4 px/mm; live needs 4.5 and measured once in four
+// minutes. A crop cannot help (the card's height already fills the frame), so
+// when the card is too coarse the phone sends a bigger frame: 720 across. The
+// server's tracker follows the change in scale at once (replayed on the
+// field frames: 3.9 -> 5.2, 4.4 -> 6.1 px/mm, the second measured). Sticky:
+// back to 540 when tracking has been lost for 1.5 s.
+const LIVE_W = 540, LIVE_HI_W = 720;
+let liveW = LIVE_W, liveHiLostAt = 0;
+function maybeLiveHiRes(d) {
+  const now = Date.now();
+  if (!d || !d.ok || !d.tracking) {
+    if (liveW > LIVE_W) {
+      if (!liveHiLostAt) liveHiLostAt = now;
+      else if (now - liveHiLostAt > 1500) { liveW = LIVE_W; liveHiLostAt = 0; sizeARCanvases(); }
+    }
+    return;
+  }
+  liveHiLostAt = 0;
+  if (liveW === LIVE_W && d.live_px_per_mm && d.live_px_per_mm < LIVE_MIN_PXMM) {
+    liveW = LIVE_HI_W;
+    sizeARCanvases();
+  }
+}
+
 async function setZoom(z) {
   zoomLevel = Math.max(1, Math.min(8, Number(z) || 1));
   zoomIsOptical = false;
@@ -1455,7 +1486,7 @@ function sizeARCanvases() {
   // crop, so scaling its long side to 540 would shrink the card below what the
   // uncropped frame used to carry. Height is capped so an extreme crop cannot
   // cost more than the old full frame did.
-  const s = Math.min(1, 540 / crop.w, 960 / crop.h);
+  const s = Math.min(1, liveW / crop.w, (960 * liveW / LIVE_W) / crop.h);
   const ow = Math.max(64, Math.round(crop.w * s)), oh = Math.max(64, Math.round(crop.h * s));
   if (offscreenCanvas.width !== ow || offscreenCanvas.height !== oh) {
     offscreenCanvas.width = ow;
@@ -1648,6 +1679,7 @@ async function arTick() {
     drawDebugInset(d);
     drawARHUD(d, thumb);
     maybeAutoZoom(d);
+    maybeLiveHiRes(d);
   } catch(e) {
     // A dropped frame and a broken loop look identical until one of them is
     // reported: say which, on screen and in the console.

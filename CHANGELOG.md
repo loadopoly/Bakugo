@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.22.1] - 2026-09-25
+
+From nine screenshots of 2.22.0 and the 32 live frames the server kept: Terapagos on a black
+binder, 5G, camera zoom 2-2.5x. Live measured once in four minutes (52.1).
+
+### Fixed
+- **The live frame is bigger when the card is too coarse.** At 2-2.5x zoom the card took 45-58%
+  of the 540 px live frame's width and 66% of its height, and read 3.4-4.4 px/mm; live measuring
+  needs 4.5. The frame is 540x632, and the card's height is what limits it. Filling the view,
+  the card reaches only ~6 px/mm, so neither more zoom nor a crop gives much. While it tracks a
+  card below 4.5 px/mm, the phone now sends 720 px frames, and goes back to 540 once tracking
+  has been lost for 1.5 s. Replaying three of the field frames, the server's tracker followed
+  the change at once: 3.9 -> 5.2, 4.4 -> 6.1 and 3.7 -> 5.0 px/mm, and the second one measured
+  (53.0).
+- **A push waits 6 s, not 4.** A search for a lost card took the server 2.3-3.4 s, and the
+  5G round trip added 1-1.5 s. At 4 s those pushes were given up on and sent again, which
+  cost more than waiting.
+
 ## [2.22.0] - 2026-09-25
 
 From sixteen screenshots of 2.21.1 and the 21 live frames and 3 stills the server kept. One
