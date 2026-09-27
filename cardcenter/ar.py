@@ -471,6 +471,27 @@ class OneEuroFilter:
 # ---------------------------------------------------------------------------
 
 
+def _same_card(found: np.ndarray, tracked: np.ndarray, shape) -> bool:
+    """Is ``found`` (located on the edge-strip mosaic) the card the tracker
+    follows? The same outline (IoU >= 0.93; the printed frame, 3 mm inside
+    all round, is only 0.87 of a card), or one that holds the tracked outline
+    and is at most 1.35x its area: the card around a printed frame the 540 px
+    tracker locked onto, or a sleeve around the card (the seat moves that one
+    in)."""
+    from .edge_information import _quad_iou
+
+    if _quad_iou(found, tracked, shape) >= 0.93:
+        return True
+    a = np.asarray(found, np.float32).reshape(4, 2)
+    b = np.asarray(tracked, np.float32).reshape(4, 2)
+    ab = abs(cv2.contourArea(b))
+    if ab <= 0:
+        return False
+    inter, _ = cv2.intersectConvexConvex(a, b)
+    ratio = abs(cv2.contourArea(a)) / ab
+    return inter >= 0.97 * ab and 1.0 < ratio <= 1.35
+
+
 def _resize_long(image: np.ndarray, long_side: int) -> tuple[np.ndarray, float]:
     h, w = image.shape[:2]
     longest = max(h, w)
@@ -927,7 +948,8 @@ class ARSession:
                 "move closer or zoom in")
 
     def push(self, frame: np.ndarray, now: Optional[float] = None,
-             source_scale: Optional[float] = None, zoom: Optional[float] = None) -> ARStatus:
+             source_scale: Optional[float] = None, zoom: Optional[float] = None,
+             detail: Optional[tuple] = None) -> ARStatus:
         """Feed one camera frame. Cheap unless the frame is worth measuring.
 
         ``source_scale`` is how many camera pixels each pushed pixel stands
@@ -940,6 +962,11 @@ class ARSession:
             self.source_scale = float(source_scale)
         if zoom is not None and 1.0 <= zoom <= 30.0:
             self.zoom = float(zoom)
+        # (strips, m): full-resolution strips along the edges (detail.py)
+        self._detail_in = detail
+        self.detail_used = False
+        self.detail_px_per_mm = None
+        self.last_detail_image = None
 
         track_img, track_scale = _resize_long(frame, TRACK_LONG_SIDE)
         th, tw = track_img.shape[:2]
@@ -1012,10 +1039,27 @@ class ARSession:
             float(np.linalg.norm(quad_small[2] - quad_small[1])),
             float(np.linalg.norm(quad_small[1] - quad_small[0])),
         ) / track_scale
-        crop_long_px = card_long_px * (1.0 + 2.0 * FRAME_MARGIN_FRAC)
+        # Strips from the phone's full-resolution frame, when they hold the
+        # card's edges where the tracker has them now: the measurement then
+        # runs on them instead of the tracking frame (detail.py).
+        det = None
+        if self._detail_in is not None:
+            from .detail import build_mosaic, covers
+
+            try:
+                strips, m = self._detail_in
+                det = build_mosaic(frame, strips, float(m))
+                if det is not None and not covers(det, self._last_quad):
+                    det = None
+            except (ValueError, cv2.error):
+                det = None
+        dm = det.m if det is not None else 1.0
+        crop_long_px = card_long_px * dm * (1.0 + 2.0 * FRAME_MARGIN_FRAC)
         measure_scale = min(1.0, MEASURE_LONG_SIDE / max(crop_long_px, 1.0))
+        if det is not None:
+            self.detail_px_per_mm = float(full_px_per_mm) * dm * measure_scale
         quality = assess_frame(
-            track_img, quad_small, px_per_mm=float(full_px_per_mm) * measure_scale
+            track_img, quad_small, px_per_mm=float(full_px_per_mm) * dm * measure_scale
         )
 
         due = (now - self._last_measure) >= self.measure_interval_s
@@ -1025,11 +1069,13 @@ class ARSession:
             # measurement on it: a side with no resolvable edge, or a frame
             # whose floor already exceeds what the grade gate can use, is
             # refused with the change that would help most.
-            small, small_scale = _resize_long(frame, MEASURE_LONG_SIDE)
+            m_src = det.image if det is not None else frame
+            m_quad = det.to_mosaic(self._last_quad) if det is not None else self._last_quad
+            small, small_scale = _resize_long(m_src, MEASURE_LONG_SIDE)
             try:
                 from .edge_information import quad_information
 
-                info_full = quad_information(small, self._last_quad * small_scale)
+                info_full = quad_information(small, m_quad * small_scale)
             except ValueError:
                 info_full = None
             self._last_info = info_full
@@ -1060,10 +1106,31 @@ class ARSession:
             # frame is a crop around it rather than the whole downscaled frame.
             # On a distant card that is the difference between measuring 200 px
             # of card and measuring 600.
-            framed = frame_card_for_measure(
-                frame, quad=self._last_quad, fov_deg=self.fov_deg,
-                max_side=MEASURE_LONG_SIDE,
-            )
+            framed = None
+            if det is not None:
+                # At strip resolution the tracked outline (found at 540 px) is
+                # a pixel or two out, which is ~0.5 mm here: find the card on
+                # the mosaic the way a Freeze does, and keep it only if it is
+                # the tracked card (IoU 0.93: the printed frame, 3 mm inside
+                # all round, is 0.87 of a card and must not pass).
+                from .edge_information import _quad_iou
+
+                f2 = frame_card_for_measure(
+                    m_src, fov_deg=self.fov_deg, max_side=MEASURE_LONG_SIDE,
+                    prefer_point=tuple(np.asarray(m_quad).mean(axis=0)), parent=det.parent)
+                if f2.quad is not None:
+                    back = f2.to_source(f2.quad) if hasattr(f2, "to_source") else None
+                    if back is not None and _same_card(back, m_quad, m_src.shape[:2]):
+                        framed = f2
+            if framed is None:
+                framed = frame_card_for_measure(
+                    m_src, quad=m_quad, fov_deg=self.fov_deg,
+                    max_side=MEASURE_LONG_SIDE,
+                    parent=det.parent if det is not None else None,
+                )
+            self.detail_used = det is not None
+            # kept for the field log: the pixels the measurement saw
+            self.last_detail_image = framed.image if det is not None else None
             try:
                 # Detection is re-run INSIDE the crop rather than reusing the
                 # tracked outline: the tracker's quad is 1-euro filtered and
@@ -1077,6 +1144,13 @@ class ARSession:
                     q_in, _, resid_in, _, _ = locate_card(framed.image, prefer_point=aim)
                 except DetectionError:
                     q_in, resid_in = framed.quad, framed.residual_px
+                # On the mosaic the strips' inner edge is a seam: a detection
+                # that is not the tracked card is not used.
+                if det is not None and framed.quad is not None:
+                    from .edge_information import _quad_iou
+
+                    if _quad_iou(q_in, framed.quad, framed.image.shape[:2]) < 0.93:
+                        q_in, resid_in = framed.quad, framed.residual_px
                 res = measure_centering(
                     framed.image,
                     slab=resolve_holder(self.holder),

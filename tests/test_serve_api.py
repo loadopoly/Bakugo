@@ -415,3 +415,38 @@ def test_ar_push_says_busy_instead_of_queueing(test_server, monkeypatch):
     finally:
         session._serve_lock.release()
     assert push()["ok"] is True
+
+
+def test_ar_push_accepts_edge_strips(test_server):
+    """detail_meta + detail_0..3 are parsed and reported back; a malformed
+    set is ignored, not an error."""
+    token = _new_token(test_server)
+    img = cv2.imdecode(np.frombuffer(_card_jpeg(80), np.uint8), 1)
+    strip = cv2.imencode(".jpg", img[:60, :200])[1].tobytes()
+    boundary = "----StripBoundary987"
+    body = io.BytesIO()
+
+    def part(name, value, filename=None):
+        body.write(f"--{boundary}\r\n".encode())
+        if filename:
+            body.write(f'Content-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'
+                       "Content-Type: image/jpeg\r\n\r\n".encode())
+            body.write(value)
+            body.write(b"\r\n")
+        else:
+            body.write(f'Content-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
+
+    part("holder", "raw")
+    part("detail_meta", json.dumps({"m": 2.0, "strips": [[0, 0, 100, 30]]}))
+    part("detail_0", strip, "s0.jpg")
+    part("image", _card_jpeg(80), "frame.jpg")
+    body.write(f"--{boundary}--\r\n".encode())
+    req = urllib.request.Request(f"{test_server}/ar/push", data=body.getvalue(), method="POST")
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    req.add_header("Cookie", f"bakugo_device={token}")
+    status, _, raw = _open(req)
+    d = json.loads(raw)
+    assert status == 200 and d["ok"] is True
+    assert d["detail"]["sent"] is True
+    assert d["detail"]["used"] is False        # a strip that does not hold the card
+

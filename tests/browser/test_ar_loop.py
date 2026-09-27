@@ -438,3 +438,22 @@ def test_bigger_live_frame_when_the_card_is_coarse(page, stub):
                   "maybeLiveHiRes({ok: true, tracking: false})")
     assert page.evaluate("offscreenCanvas.width") == 540
 
+
+def test_edge_strips_are_cut_along_the_tracked_outline(page, stub):
+    """Beside the tracking frame, four strips from the full video frame along
+    the tracked edges; fewer pixels when round trips run long, none past 3.5 s."""
+    _wait_pushes(page)
+    page.wait_for_function("() => freshTrackQuad() !== null", timeout=10000)
+    got = page.evaluate("""() => { lastDetailAt = 0; arStats.msAvg = 500;
+        const s = cutDetailStrips(coverCrop());
+        return s && {n: s.canvases.length, m: s.m, rects: s.rects,
+                     w: s.canvases.map(c => c.width)}; }""")
+    assert got and got["n"] == 4 and got["m"] > 0
+    assert all(len(r) == 4 and r[2] > 0 and r[3] > 0 for r in got["rects"])
+    slow = page.evaluate("""() => { lastDetailAt = 0; arStats.msAvg = 2500;
+        const s = cutDetailStrips(coverCrop()); return s && s.canvases.map(c => c.width); }""")
+    assert slow and sum(slow) <= sum(got["w"])
+    none = page.evaluate("() => { lastDetailAt = 0; arStats.msAvg = 4000; return cutDetailStrips(coverCrop()); }")
+    assert none is None
+    page.evaluate("arStats.msAvg = 0")
+

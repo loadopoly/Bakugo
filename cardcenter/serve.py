@@ -160,6 +160,29 @@ class _Busy(Exception):
     """The session is still working on the previous frame."""
 
 
+def _detail_strips(fields: dict):
+    """(strips, m) from an /ar/push form: ``detail_meta`` = {"m": detail px
+    per frame px, "strips": [[x, y, w, h], ...] in frame pixels} and the
+    strips as ``detail_0`` .. ``detail_3``. None when absent or malformed --
+    the push then measures on the tracking frame as before."""
+    raw = fields.get("detail_meta")
+    if not raw:
+        return None
+    try:
+        meta = json.loads(raw.decode("utf-8", "replace"))
+        m = float(meta["m"])
+        rects = meta["strips"]
+        strips = []
+        for i, r in enumerate(rects[:4]):
+            buf = fields.get(f"detail_{i}")
+            if not buf or len(r) != 4:
+                continue
+            strips.append((decode_image(buf, "detail strip"), [float(v) for v in r]))
+        return (strips, m) if strips else None
+    except (ValueError, KeyError, TypeError, DetectionError):
+        return None
+
+
 def _get_or_create_ar_session(
     device_id: str,
     holder: str = "raw",
@@ -1374,6 +1397,63 @@ function coverCrop() {
 // server's tracker follows the change in scale at once (replayed on the
 // field frames: 3.9 -> 5.2, 4.4 -> 6.1 px/mm, the second measured). Sticky:
 // back to 540 when tracking has been lost for 1.5 s.
+// ---- Edge strips (cardcenter/detail.py) ----
+// Beside the tracking frame, four strips cut from the full-resolution video
+// frame along the tracked outline: 6 mm outside to 11 mm inside each side,
+// at up to 11 px/mm -- the resolution a Freeze has, where the measurement
+// reads, for about the pixels of a 720 px frame. The server measures on them
+// when they hold the card's edges where it tracks them now. Sent at most
+// every 700 ms, and at lower resolution when round trips run long: 8 px/mm
+// past 2 s on average, none past 3.5 s (the frame alone then keeps tracking).
+const DETAIL_ON = true;
+const DETAIL_EVERY_MS = 700, DETAIL_OUT_MM = 6, DETAIL_IN_MM = 11, DETAIL_END_MM = 3;
+let lastDetailAt = 0;
+function detailTargetPxmm() {
+  const avg = arStats.msAvg || 0;
+  if (avg > 3500) return 0;
+  return avg > 2000 ? 8 : 11;
+}
+function cutDetailStrips(crop) {
+  if (!DETAIL_ON || !crop || Date.now() - lastDetailAt < DETAIL_EVERY_MS) return null;
+  const track = freshTrackQuad();
+  if (!track) return null;
+  const target = detailTargetPxmm();
+  if (!target) return null;
+  const q = track.quad;
+  const dist = (a, b) => Math.hypot(b[0] - a[0], b[1] - a[1]);
+  const ppm = 0.5 * (dist(q[0], q[1]) / 63 + dist(q[0], q[3]) / 88);   // video px per mm
+  if (!(ppm > 0)) return null;
+  const k = Math.min(1, target / ppm);                                    // strip px per video px
+  const srcScale = crop.w / (offscreenCanvas.width || crop.w);            // video px per frame px
+  const cx = q.reduce((a, p) => a + p[0], 0) / 4, cy = q.reduce((a, p) => a + p[1], 0) / 4;
+  const canvases = [], rects = [];
+  for (let i = 0; i < 4; i++) {
+    const a = q[i], b = q[(i + 1) % 4];
+    const L = dist(a, b) || 1;
+    const t = [(b[0] - a[0]) / L, (b[1] - a[1]) / L];
+    let n = [-t[1], t[0]];
+    if (n[0] * ((a[0] + b[0]) / 2 - cx) + n[1] * ((a[1] + b[1]) / 2 - cy) < 0) n = [-n[0], -n[1]];
+    const e = DETAIL_END_MM * ppm, o = DETAIL_OUT_MM * ppm, inn = DETAIL_IN_MM * ppm;
+    const pts = [
+      [a[0] - t[0] * e + n[0] * o, a[1] - t[1] * e + n[1] * o],
+      [b[0] + t[0] * e + n[0] * o, b[1] + t[1] * e + n[1] * o],
+      [a[0] - t[0] * e - n[0] * inn, a[1] - t[1] * e - n[1] * inn],
+      [b[0] + t[0] * e - n[0] * inn, b[1] + t[1] * e - n[1] * inn]];
+    const x0 = Math.max(crop.x, Math.floor(Math.min(...pts.map(p => p[0]))));
+    const y0 = Math.max(crop.y, Math.floor(Math.min(...pts.map(p => p[1]))));
+    const x1 = Math.min(crop.x + crop.w, Math.ceil(Math.max(...pts.map(p => p[0]))));
+    const y1 = Math.min(crop.y + crop.h, Math.ceil(Math.max(...pts.map(p => p[1]))));
+    if (x1 - x0 < 8 || y1 - y0 < 8) return null;
+    const c = document.createElement('canvas');
+    c.width = Math.max(2, Math.round((x1 - x0) * k));
+    c.height = Math.max(2, Math.round((y1 - y0) * k));
+    c.getContext('2d').drawImage(arVideo, x0, y0, x1 - x0, y1 - y0, 0, 0, c.width, c.height);
+    canvases.push(c);
+    rects.push([(x0 - crop.x) / srcScale, (y0 - crop.y) / srcScale, (x1 - x0) / srcScale, (y1 - y0) / srcScale]);
+  }
+  return { canvases: canvases, rects: rects, m: k * srcScale };
+}
+
 const LIVE_W = 540, LIVE_HI_W = 720;
 let liveW = LIVE_W, liveHiLostAt = 0;
 function maybeLiveHiRes(d) {
@@ -1386,6 +1466,10 @@ function maybeLiveHiRes(d) {
     return;
   }
   liveHiLostAt = 0;
+  if (d.detail && d.detail.used) {                    // the strips carry the detail
+    if (liveW !== LIVE_W) { liveW = LIVE_W; sizeARCanvases(); }
+    return;
+  }
   if (liveW === LIVE_W && d.live_px_per_mm && d.live_px_per_mm < LIVE_MIN_PXMM) {
     liveW = LIVE_HI_W;
     sizeARCanvases();
@@ -1537,7 +1621,9 @@ function drawDebugInset(d) {
     ? arStats.error.slice(0, 40)
     : `${arStats.ok}/${arStats.pushes} ok  ${arStats.status}  ${arStats.ms}ms` +
       `${arStats.serverMs != null ? ' (srv ' + arStats.serverMs + ')' : ''}  ` +
-      `${Math.round(arStats.bytes / 1024)}k  ${age > 1 ? age.toFixed(1) + 's old' : 'live'}`, 5, 32);
+      `${Math.round(arStats.bytes / 1024)}k` +
+      `${d && d.detail && d.detail.sent ? ' +' + Math.round((arStats.detailBytes || 0) / 1024) + 'k strips' + (d.detail.used ? ' ' + (d.detail.px_per_mm || 0).toFixed(1) + 'px/mm' : ' unused') : ''}` +
+      `  ${age > 1 ? age.toFixed(1) + 's old' : 'live'}`, 5, 32);
 }
 
 async function startARStream() {
@@ -1624,6 +1710,8 @@ async function arTick() {
     offCtx.drawImage(arVideo, crop.x, crop.y, crop.w, crop.h,
                      0, 0, offscreenCanvas.width, offscreenCanvas.height);
     const thumb = MOTION_COMP ? grabThumb(crop) : null;
+    // strips along the tracked edges, from this same video frame
+    const strips = cutDetailStrips(crop);
     const blob = await new Promise(res => offscreenCanvas.toBlob(res, 'image/jpeg', 0.75));
     if (!blob) {
       arStats.fail++;
@@ -1642,6 +1730,15 @@ async function arTick() {
     // full-resolution Measure Card photo would have
     fd.append('source_scale', String(crop.w / (offscreenCanvas.width || crop.w)));
     fd.append('zoom', zoomFactor().toFixed(2));
+    if (strips) {
+      const blobs = await Promise.all(strips.canvases.map(c => encodeCanvas(c, 0.85)));
+      if (blobs.every(b => b)) {
+        fd.append('detail_meta', JSON.stringify({ m: strips.m, strips: strips.rects }));
+        blobs.forEach((b, i) => fd.append('detail_' + i, b, 'strip' + i + '.jpg'));
+        arStats.detailBytes = blobs.reduce((a, b) => a + b.size, 0);
+        lastDetailAt = Date.now();
+      }
+    }
     if (pendingAim) {
       fd.append('aim_x', pendingAim.x.toFixed(4));
       fd.append('aim_y', pendingAim.y.toFixed(4));
@@ -2921,6 +3018,7 @@ class Handler(BaseHTTPRequestHandler):
 
                 push_t0 = time.monotonic()
                 frame = decode_image(image_bytes, "frame")
+                detail = _detail_strips(fields)
 
                 session = _get_or_create_ar_session(device_id, holder=holder, lens=lens)
                 # A tap on the preview picks the card: a shop counter has
@@ -2941,7 +3039,7 @@ class Handler(BaseHTTPRequestHandler):
                     measured_before = session.measured
                     status: ARStatus = session.push(
                         frame, source_scale=_field_float(fields, "source_scale"),
-                        zoom=_field_float(fields, "zoom"))
+                        zoom=_field_float(fields, "zoom"), detail=detail)
                 finally:
                     if lock is not None:
                         lock.release()
@@ -2955,6 +3053,8 @@ class Handler(BaseHTTPRequestHandler):
                     res = session.last_result if measured_now else None
                     field = ("live" if measured_now else "live_unmeasured", image_bytes, {
                         "tracking": status.tracking,
+                        "detail_sent": detail is not None,
+                        "detail_used": bool(session.detail_used),
                         "guidance": list(status.guidance),
                         "server_ms": int(1000 * (time.monotonic() - push_t0)),
                         "holder": holder, "lens": lens, "device": str(device_id)[:8],
@@ -2966,6 +3066,16 @@ class Handler(BaseHTTPRequestHandler):
                             "left": res.horizontal.low_mm.value, "right": res.horizontal.high_mm.value,
                             "top": res.vertical.low_mm.value, "bottom": res.vertical.high_mm.value},
                         "last_warnings": [] if res is None else list(res.quality.warnings)})
+                    # the measured crop of the edge-strip mosaic, beside the frame
+                    if measured_now and session.last_detail_image is not None:
+                        ok_, buf_ = cv2.imencode(".jpg", session.last_detail_image,
+                                                 [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+                        if ok_:
+                            from .fieldlog import record
+
+                            record("live_detail", buf_.tobytes(), {
+                                "device": str(device_id)[:8], "version": __version__,
+                                "detail_px_per_mm": session.detail_px_per_mm})
 
                 payload = {
                     "ok": True,
@@ -3008,6 +3118,13 @@ class Handler(BaseHTTPRequestHandler):
                                        if status.px_per_mm is not None else None),
                     "card_frac": (round(status.card_frac, 3)
                                   if status.card_frac is not None else None),
+                    # edge strips: sent, placed over the card, measured on
+                    "detail": {
+                        "sent": detail is not None,
+                        "used": bool(getattr(session, "detail_used", False)),
+                        "px_per_mm": (round(session.detail_px_per_mm, 2)
+                                      if getattr(session, "detail_px_per_mm", None) else None),
+                    },
                 }
 
             elif path == "/identify":

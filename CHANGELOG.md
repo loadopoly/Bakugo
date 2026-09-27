@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.23.0] - 2026-09-27
+
+### Added
+- **Edge strips: full-resolution detail where the live measurement reads.** The idea is
+  taken from how game engines stream geometry detail: fetch detail only where the error
+  budget needs it, and send less, not nothing, when the link is slow.
+  - Beside the 540 px tracking frame, the phone sends four strips cut from the camera's full
+    frame along the tracked outline. Each runs 6 mm outside to 11 mm inside a side, at up to
+    11 px/mm (Freeze gets ~15 px/mm).
+  - That is about the pixels of a 720 px frame, spent on the edges and border instead of
+    the table and artwork: 60-100 KB per push, at most every 700 ms.
+  - The server lays the strips over the tracking frame and measures on that picture
+    (`cardcenter/detail.py`). It first finds the card on the picture itself, the way a
+    Freeze does. It uses the strips only if they hold the card's edges where the tracker
+    has them now. Otherwise it measures on the frame, as before.
+  - When round trips average over 2 s the strips drop to 8 px/mm. Over 3.5 s none are sent.
+  - The debug inset shows the strips' size and whether they were used.
+  - Synthetic 4K captures, card at half the view width (live frame ~4 px/mm), 48 cases
+    (3 border sets x tilt 0/20 x blur 0/2 px x light/dark background x 175/210 mm):
+
+    | Live frame | Measured | Median error | 90th percentile | Over 3 points |
+    |---|---|---|---|---|
+    | 540 px alone | 0/48 | -- | -- | -- |
+    | 720 px (2.22.1) | 18/48 | 0.59 | 1.98 | 0 |
+    | 540 px + strips | 44/48 | 0.28 | 0.88 | 0 |
+
+  - Replaying the 8 field stills (most of them soft) as live sessions: strips 3/8, 720 px
+    3/8. On the Meganium that a Freeze measured at 56.1: strips 57.2, 720 px 59.0.
+  - When the strips are used, the phone stays at 540 px (the 720 px frame is for when they
+    are not).
+- A card found on the strip picture is taken as the tracked card when it is the same
+  outline (IoU >= 0.93), or holds the tracked one at up to 1.35x its area. The second case
+  is the card around a printed frame the 540 px tracker locked onto (on a synthetic card
+  the tracker held the frame, and the strips found the card). A printed frame 3 mm inside
+  all round is 0.87 of a card and does not pass.
+
 ## [2.22.1] - 2026-09-25
 
 From nine screenshots of 2.22.0 and the 32 live frames the server kept: Terapagos on a black
