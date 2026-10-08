@@ -129,6 +129,95 @@ def make_card_texture(
     return card
 
 
+def apply_wear(
+    tex: np.ndarray,
+    px_per_mm: float,
+    corner_radius_mm: float = 3.0,
+    corner_loss_mm: Optional[dict] = None,
+    corner_white_mm: Optional[dict] = None,
+    edge_white: Optional[list] = None,
+    nicks: Optional[list] = None,
+    glare: Optional[list] = None,
+    scratches: Optional[list] = None,
+    ink: Optional[list] = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Physical condition on a fronto-parallel card texture, with truth.
+
+    Returns (texture, alpha): alpha is 0 where there is no card (outside
+    the rounded corners, inside a nick), 1 on the card.
+
+    * ``corner_loss_mm`` {corner: mm}: the corner cut back along its
+      diagonal by that much (a rounded / blunted corner) -- the outline
+      becomes a larger radius tangent to both sides.
+    * ``corner_white_mm`` {corner: mm}: white fibre that deep inward of the
+      corner's outline.
+    * ``edge_white`` [(side, from_mm, to_mm, depth_mm)]: white fibre along
+      a stretch of a side.
+    * ``nicks`` [(side, at_mm, width_mm, depth_mm)]: material missing.
+    * ``glare`` [(x_mm, y_mm, radius_mm, strength 0..1)]: a highlight.
+    * ``scratches`` [(x0, y0, x1, y1) mm]: lines that show only inside a
+      highlight, as a real scratch does.
+    * ``ink`` [(x0, y0, x1, y1) mm]: dark PRINTED lines, there in every
+      light -- what a scratch detector must not report.
+    """
+    h, w = tex.shape[:2]
+    ppm = float(px_per_mm)
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    X, Y = (xx + 0.5) / ppm, (yy + 0.5) / ppm
+    W, H = w / ppm, h / ppm
+    names = ("top_left", "top_right", "bottom_right", "bottom_left")
+    corner_loss_mm = corner_loss_mm or {}
+    corner_white_mm = corner_white_mm or {}
+    # distance inside the card's (rounded) outline, mm, per corner window
+    inside = np.minimum(np.minimum(X, W - X), np.minimum(Y, H - Y))
+    for k, name in enumerate(names):
+        # corner-local coords u, v >= 0 inward
+        u = X if k in (0, 3) else W - X
+        v = Y if k in (0, 1) else H - Y
+        loss = float(corner_loss_mm.get(name, 0.0))
+        # radius whose arc sits ``loss`` further in along the diagonal
+        r = corner_radius_mm + loss / (math.sqrt(2.0) - 1.0)
+        zone = (u < r) & (v < r)
+        d_arc = r - np.sqrt((u - r) ** 2 + (v - r) ** 2)
+        inside = np.where(zone, np.minimum(inside, d_arc), inside)
+    alpha = np.clip(inside * ppm + 0.5, 0.0, 1.0)
+    for side, at, width, depth in (nicks or []):
+        along = X if side in ("top", "bottom") else Y
+        dist = {"top": Y, "bottom": H - Y, "left": X, "right": W - X}[side]
+        hit = (np.abs(along - at) <= width / 2.0) & (dist < depth)
+        alpha = np.where(hit, 0.0, alpha)
+    out = tex.astype(np.float32)
+    white = np.zeros((h, w), bool)
+    for k, name in enumerate(names):
+        dep = float(corner_white_mm.get(name, 0.0))
+        if dep <= 0:
+            continue
+        u = X if k in (0, 3) else W - X
+        v = Y if k in (0, 1) else H - Y
+        white |= (u < corner_radius_mm + 1.5) & (v < corner_radius_mm + 1.5) & (inside < dep) & (inside >= 0)
+    for side, a, b, dep in (edge_white or []):
+        along = X if side in ("top", "bottom") else Y
+        dist = {"top": Y, "bottom": H - Y, "left": X, "right": W - X}[side]
+        white |= (along >= a) & (along <= b) & (dist < dep)
+    out[white] = (238.0, 240.0, 240.0)
+    for x0, y0, x1, y1 in (ink or []):
+        line = np.zeros((h, w), np.uint8)
+        cv2.line(line, (int(x0 * ppm), int(y0 * ppm)), (int(x1 * ppm), int(y1 * ppm)),
+                 1, max(1, int(round(0.08 * ppm))))
+        out[line > 0] = out[line > 0] * 0.35
+    for gx, gy, rad, strength in (glare or []):
+        g = np.exp(-(((X - gx) ** 2 + (Y - gy) ** 2) / (2.0 * (rad / 2.0) ** 2))).astype(np.float32)
+        g = np.clip(g * 1.6 * strength, 0, 1)[..., None]
+        out = out * (1 - g) + 252.0 * g
+        for x0, y0, x1, y1 in (scratches or []):
+            line = np.zeros((h, w), np.uint8)
+            cv2.line(line, (int(x0 * ppm), int(y0 * ppm)), (int(x1 * ppm), int(y1 * ppm)),
+                     1, max(1, int(round(0.08 * ppm))))
+            dark = (line > 0) & (g[..., 0] > 0.5)
+            out[dark] = out[dark] * 0.55
+    return np.clip(out, 0, 255).astype(np.uint8), alpha.astype(np.float32)
+
+
 def _camera_matrices(
     tilt_deg: float,
     azimuth_deg: float,
@@ -194,6 +283,7 @@ def render_capture(
     light_azimuth_deg: float = 0.0,
     shadow_darkness: float = 0.45,
     seed: int = 0,
+    wear: Optional[dict] = None,
 ) -> tuple[np.ndarray, GroundTruth, float]:
     """Render a photographed card. Returns (image, ground_truth, focal_px)."""
     if isinstance(slab, str):
@@ -211,6 +301,9 @@ def render_capture(
         add_border_text=add_border_text,
         seed=seed,
     )
+    alpha = None
+    if wear is not None:
+        tex, alpha = apply_wear(tex, texture_px_per_mm, **wear)
     K, R, C = _camera_matrices(tilt_deg, azimuth_deg, distance_mm, focal_px, image_size)
     tvec = -R @ C
     H = K @ np.column_stack([R[:, 0], R[:, 1], tvec])  # card mm -> image px
@@ -269,7 +362,13 @@ def render_capture(
         tex, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT
     )
     mask = inside.reshape(h_img, w_img)
-    out[mask] = sampled[mask]
+    if alpha is None:
+        out[mask] = sampled[mask]
+    else:
+        a = cv2.remap(alpha, map_x, map_y, cv2.INTER_LINEAR,
+                      borderMode=cv2.BORDER_CONSTANT)[..., None]
+        blend = sampled.astype(np.float32) * a + out.astype(np.float32) * (1.0 - a)
+        out[mask] = np.clip(blend[mask], 0, 255).astype(np.uint8)
 
     # Vignette and sensor noise in a single float32 pass.
     # A physical card has thickness, and obliquely lit it casts a shadow of its

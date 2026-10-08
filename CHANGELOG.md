@@ -9,6 +9,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.24.0] - 2026-10-08
+
+### Fixed
+- **The live grade estimate is no longer always "~PSA 8".** Corners, edges and surface used
+  to start at 10 and lose up to 2 points each depending on how cleanly the card's outline
+  was found (a line-fit residual, the border detector's confidence). That penalty was
+  capped at 2, so a soft or tilted live frame landed on exactly 10 - 2 = 8 for every card.
+  The 2026-10-08 screenshots show a crisp 51.6/48.4 Probopass and a soft one both reading
+  "~PSA 8". Detection quality describes the photo, not the card, and is no longer used as
+  card condition.
+- **The percentage beside the grade is now the probability of that grade.** It used to be
+  1 - sigma/10 of the centering ratio, and the distribution behind it was a fixed
+  70/20/10 split.
+- **A card's back seen in the live view no longer pools into the front's centering.** The
+  back is recognised and measured against the back thresholds in its own accumulators.
+- `cardcenter.__version__` was left at 2.23.0 by 2.23.1, so `/health` reported the wrong
+  version. It now matches `pyproject.toml`.
+
+### Added
+- **Corners, edges and surface measured from the card** (`cardcenter/condition.py`,
+  `docs/CONDITION_GRADING.md`):
+  - **Corners:** material lost inside the nominal 3.0 mm rounded corner, measured against
+    edges fitted locally past the arc, and the depth of white fibre at it.
+  - **Edges:** nicks against the cut's own running course, and the share of the length
+    carrying white fibre. Fibre is measured past the card's visible side face, whose width
+    comes from a pose self-calibrated from the outline. Glare positions are excluded.
+  - **Surface:** thin dark structures inside a highlight, and which parts of the face have
+    been under one.
+  - Each corner and side is read only where the photo supports it: at least 6 px/mm
+    locally, an edge-spread under 0.45 mm (0.3 mm for whitening), and a background
+    distinguishable from the border and from white. Otherwise it is reported as not
+    resolvable, with the reason.
+- **Multi-view evidence** (`cardcenter/condition_evidence.py`):
+  - Whitening takes the low end of the views, because glare and side faces only ever
+    add white.
+  - Loss and nicks take the median.
+  - A surface defect needs two views under a highlight, and no matching line in the print
+    seen without one.
+  - Front and back are kept separately and combined per physical corner and side.
+  - `next_action()` names the view that would add the most missing evidence: closer, hold
+    still, contrasting surface, sweep the reflection, or flip the card.
+- **Whole-card grade from all four aspects** (`grading.predict_overall_grade(...,
+  condition=, back_ratio=)`):
+  - Each aspect is a grade distribution: centering from its uncertainty and the
+    strict/lenient threshold spread; corners and edges enumerated exactly from the
+    per-corner and per-side measurements.
+  - Overall is the weakest aspect (PSA, CGC, SGC) or the BGS rule.
+  - While an aspect has no evidence the result is a ceiling. The label reads
+    "PSA 9 max", `complete` is False, `missing` names the aspects, and the unassessed
+    subgrades are `None` instead of a number.
+- **AR:**
+  - `/ar/push` returns `aspects`, `grade_complete`, `face` and `condition_hint`.
+  - The HUD shows a row of CEN / CRN / EDG / SRF grades, with "--" for an aspect not yet
+    assessed. The chip shows "≤PSA 9" for a ceiling and "PSA 9 (62%)" only once all four
+    aspects are measured. The banner gives the next view to take.
+  - A Freeze photo taken within 6 s of the live session seeing its card joins that
+    session's evidence.
+  - Turning the card over within 8 s carries the evidence across to the back.
+- **Phone:** sends one full-resolution region over the whole card instead of four edge
+  strips when that costs about the same, so corners, edges and the face arrive at full
+  resolution together.
+- **Still results and CLI:** the result card shows a "Card Grade (PSA, all aspects)"
+  table with each aspect's grade, probability and per-corner/per-side detail. The CLI
+  prints and writes the same.
+- `synth.apply_wear`: rounded die-cut corners plus known corner loss, corner and edge
+  whitening, nicks, highlights, scratches that only show in a highlight, and printed ink.
+  21 tests in `tests/test_condition.py`.
+
+### Known limits
+- The millimetre category boundaries (sharp under 0.15 mm, slight fraying to 0.4 mm, ...)
+  are this project's reading of PSA's published wording. They have not been checked
+  against certified grades. `condition_standards.json` is marked `"confidence": "low"`.
+- The 3.0 mm nominal corner radius was fitted on one modern card (Probopass). A design
+  with a different radius biases corner loss by about 0.41 times the difference.
+- The live view is usually too coarse for corners and edges: 3-5 px/mm in the
+  2026-10-08 field log, where edge strips were sent but mostly not used. In practice the
+  Freeze photo supplies them, until the full-card detail region proves out on the phone.
+- Surface is rarely assessed from a single photo. It needs the reflection swept across 60%
+  of the face over two or more views.
+- On foil cards, scratches can't be told from the foil pattern, and the surface is reported
+  as such.
+- Sleeved and foil-bordered cards: corners are refused where the sleeve's edge competes with
+  the card's, and edge nick readings are noisy (a sleeved reverse-holo read 0.56 mm "nicks"
+  not visible by eye). Several views are needed before an edge grade there means much.
+- Only the Pokemon back is recognised as a back.
+
 ## [2.23.1] - 2026-10-07
 
 ### Added

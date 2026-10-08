@@ -1,0 +1,75 @@
+{
+  "_README": "Corner, edge and surface thresholds for cardcenter.condition and the grade composition in cardcenter.grading. The categories below are this project's reading of PSA's published grade descriptions (sharp corners at 10; 'one minor flaw' at 9; 'slight fraying at one or two corners' at 8; 'slight fraying on some corners' at 7; 'graduated fraying' at 6; 'minor rounding becoming evident' at 5; 'slightly rounded' at 4; 'some rounding' at 3). PSA publishes words, not millimetres: the millimetre boundaries are ours and have not been checked against certified grades. Certified labels (cardcenter.learning) are the way to correct them.",
+  "_schema_version": 1,
+  "_last_reviewed": "2026-10-08",
+  "confidence": "low",
+  "nominal_corner_radius_mm": 3.0,
+  "_nominal_corner_radius_note": "Fitted on a fresh Scarlet & Violet Probopass photographed at 14 px/mm (2026-10-08): the four corners fit 2.75-3.25 mm. A corner's loss is measured against this outline, so a design with a different radius reads as worn or as sharper than it is by about 0.41 x the radius difference at the corner's diagonal.",
+  "resolution": {
+    "corner_min_px_per_mm": 6.0,
+    "corner_max_blur_mm": 0.45,
+    "edge_min_px_per_mm": 6.0,
+    "edge_max_blur_mm": 0.45,
+    "nick_min_mm": 0.12,
+    "surface_min_px_per_mm": 6.0,
+    "surface_work_px_per_mm": 8.0,
+    "surface_texture_max": 0.08,
+    "surface_min_line_mm": 0.8,
+    "whitening_max_blur_mm": 0.3
+  },
+  "corners": {
+    "_about": "Per physical corner, severity = the larger of material lost inside the nominal rounded outline and the depth of white fibre at it (mm). Category boundaries, then grade rules on how many corners fall in each.",
+    "severity_bounds_mm": [
+      0.15,
+      0.4,
+      0.75,
+      1.2,
+      1.8
+    ],
+    "category_names": [
+      "sharp",
+      "slight fraying",
+      "fraying",
+      "minor rounding",
+      "rounding",
+      "heavy rounding"
+    ]
+  },
+  "edges": {
+    "_about": "Per physical side, two readings: share of the side's length carrying white fibre, and the deepest nick inward of the straight cut (mm). Each maps to a category; the side takes the worse.",
+    "whitening_bounds_frac": [
+      0.03,
+      0.1,
+      0.25,
+      0.45,
+      0.7
+    ],
+    "nick_bounds_mm": [
+      0.12,
+      0.25,
+      0.5,
+      0.9,
+      1.5
+    ],
+    "category_names": [
+      "clean",
+      "slight wear",
+      "light wear",
+      "moderate wear",
+      "heavy wear",
+      "severe wear"
+    ]
+  },
+  "surface": {
+    "_about": "Defects confirmed in two or more views under a highlight and absent from the print. Category by count and the longest (mm). A long single line is treated as a crease.",
+    "min_coverage": 0.6,
+    "crease_mm": 15.0,
+    "category_names": [
+      "clean",
+      "one small mark",
+      "slight wear",
+      "noticeable wear",
+      "heavy wear / crease"
+    ]
+  }
+}

@@ -25,7 +25,7 @@
     "PSA": {
       "display_name": "PSA",
       "subgrade_published": false,
-      "notes": "Centering folds into a single overall grade; it caps the grade but does not set it. Corners, edges and surface can pull the result below what centering alone allows. This tool measures ONLY centering, so it reports a ceiling, not a prediction.",
+      "notes": "Centering folds into a single overall grade; it caps the grade but does not set it. Corners, edges and surface can pull the result below what centering alone allows. The centering band here is a ceiling, not a prediction; corners, edges and surface are graded from their own measurements (cardcenter.condition, data/condition_standards.json) where the capture resolves them, and reported as not assessed where it does not.",
       "confidence": "medium",
       "tiers": [
         {"grade": "10", "front_strict": 55.0, "front_lenient": 60.0, "back_strict": 75.0, "back_lenient": 75.0},

@@ -440,16 +440,23 @@ def test_bigger_live_frame_when_the_card_is_coarse(page, stub):
 
 
 def test_edge_strips_are_cut_along_the_tracked_outline(page, stub):
-    """Beside the tracking frame, four strips from the full video frame along
-    the tracked edges; fewer pixels when round trips run long, none past 3.5 s."""
+    """Beside the tracking frame, detail from the full video frame: four strips
+    along the tracked edges, or (2.24) one region over the whole card when that
+    costs about the same -- it then carries the face for surface grading too.
+    Fewer pixels when round trips run long, none past 3.5 s."""
     _wait_pushes(page)
     page.wait_for_function("() => freshTrackQuad() !== null", timeout=10000)
     got = page.evaluate("""() => { lastDetailAt = 0; arStats.msAvg = 500;
         const s = cutDetailStrips(coverCrop());
+        const q = freshTrackQuad().quad;
         return s && {n: s.canvases.length, m: s.m, rects: s.rects,
-                     w: s.canvases.map(c => c.width)}; }""")
-    assert got and got["n"] == 4 and got["m"] > 0
+                     w: s.canvases.map(c => c.width), quad: q}; }""")
+    assert got and got["n"] in (1, 4) and got["m"] > 0
     assert all(len(r) == 4 and r[2] > 0 and r[3] > 0 for r in got["rects"])
+    if got["n"] == 1:
+        # the single region holds the whole tracked card (frame pixels)
+        x, y, w, h = got["rects"][0]
+        assert w > 0 and h > 0
     slow = page.evaluate("""() => { lastDetailAt = 0; arStats.msAvg = 2500;
         const s = cutDetailStrips(coverCrop()); return s && s.canvases.map(c => c.width); }""")
     assert slow and sum(slow) <= sum(got["w"])

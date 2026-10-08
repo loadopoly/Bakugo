@@ -2,6 +2,7 @@
 
 import io
 import json
+import time
 import os
 import socket
 import tempfile
@@ -450,3 +451,44 @@ def test_ar_push_accepts_edge_strips(test_server):
     assert d["detail"]["sent"] is True
     assert d["detail"]["used"] is False        # a strip that does not hold the card
 
+
+
+def test_measure_reports_every_aspect_and_joins_the_live_session(test_server):
+    """A Freeze photo is the sharpest view a live session gets: its corners/
+    edges/surface reading joins the session's evidence, and the reply grades
+    on all four aspects -- saying which are not assessed rather than
+    assuming them clean."""
+    from cardcenter import serve as serve_mod
+
+    token = _new_token(test_server)
+    jpeg = _card_jpeg(90)
+    for _ in range(2):
+        payload, ctype = _multipart({"holder": "raw", "lens": "main"}, jpeg)
+        req = urllib.request.Request(f"{test_server}/ar/push", data=payload, method="POST")
+        req.add_header("Content-Type", ctype)
+        req.add_header("Cookie", f"bakugo_device={token}")
+        status, _, body = _open(req)
+        assert status == 200
+        live = json.loads(body)
+        time.sleep(0.4)
+    assert live["aspects"] is not None and set(live["aspects"]) == {
+        "centering", "corners", "edges", "surface"}
+    session = serve_mod._AR_SESSIONS[device_id_for_token(token)]
+    before = session.condition.n_views
+
+    payload, ctype = _multipart({"holder": "raw", "lens": "main"}, jpeg)
+    req = urllib.request.Request(f"{test_server}/measure", data=payload, method="POST")
+    req.add_header("Content-Type", ctype)
+    req.add_header("Cookie", f"bakugo_device={token}")
+    status, _, body = _open(req)
+    assert status == 200
+    data = json.loads(body)
+    psa = data["predicted_grades"]["PSA"]
+    assert set(psa["aspects"]) == {"centering", "corners", "edges", "surface"}
+    assert psa["aspects"]["surface"]["assessed"] == "no"
+    assert psa["complete"] is False and "surface" in psa["missing"]
+    assert psa["subgrades"]["surface"] is None
+    assert data["face"] == "front"
+    assert data["condition"]["corners"]
+    assert before >= 1
+    assert session.condition.n_views == before + 1

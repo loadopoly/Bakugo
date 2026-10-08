@@ -101,6 +101,10 @@ SOCKET_TIMEOUT_S = _env_int("CARDCENTER_SOCKET_TIMEOUT", 30)
 MAX_CONNECTIONS = _env_int("CARDCENTER_MAX_CONNECTIONS", 32)
 # Live AR sessions kept in memory (least recently used are evicted).
 MAX_AR_SESSIONS = _env_int("CARDCENTER_MAX_AR_SESSIONS", 256)
+# A Freeze photo taken this soon after the live session last saw its card is
+# another (sharper) view of that card, and its corners/edges/surface reading
+# joins the session's evidence.
+STILL_JOINS_SESSION_S = 6.0
 
 # Browser origins allowed to call the API. Override with a comma-separated
 # CARDCENTER_CORS_ORIGINS. The two localhost entries are the Capacitor shell in
@@ -343,7 +347,35 @@ def still_sharpness(image: np.ndarray, quad) -> Optional[float]:
     return float(assess_frame(small, q * s).sharpness)
 
 
-def _measure_payload(image_bytes: bytes, holder: str, lens: str, parent=None) -> dict:
+def _condition_for_still(image, result, capture, session=None):
+    """(view, prediction source) for a still: its own corner/edge/surface
+    reading, pooled into the device's live session when that session is
+    looking at the same card -- a Freeze photo is the sharpest view the
+    session gets. Never fails a measurement."""
+    try:
+        from .condition import analyse_view
+
+        view = analyse_view(image, result.corners_px, None,
+                            result.inner_rect_mm, capture=capture)
+    except Exception:
+        return None, None
+    if session is not None and session.measured > 0 and \
+            time.time() - getattr(session, "_last_valid_at", float("-inf")) <= STILL_JOINS_SESSION_S:
+        lock = getattr(session, "_serve_lock", None)
+        if lock is None or lock.acquire(timeout=2.0):
+            try:
+                session.add_condition(view)
+                return view, session.condition
+            except Exception:
+                pass
+            finally:
+                if lock is not None:
+                    lock.release()
+    return view, view
+
+
+def _measure_payload(image_bytes: bytes, holder: str, lens: str, parent=None,
+                     session=None) -> dict:
     source = decode_image(image_bytes, "file")
 
     # Spend the 2400 px budget on the card, not on the room around it: capping
@@ -382,6 +414,11 @@ def _measure_payload(image_bytes: bytes, holder: str, lens: str, parent=None) ->
 
     bands = {g: grade_band(result.worst_ratio, g, "front") for g in available_graders()}
     quality = assess_frame(image, result.corners_px, px_per_mm=result.px_per_mm)
+    view, evidence = _condition_for_still(image, result, capture, session)
+    face = view.face if view is not None else "front"
+    back_ratio = None
+    if session is not None and evidence is not None and evidence is not view:
+        back_ratio = session.back_worst_ratio if face == "front" else None
 
     # Card only without side panel for optimal mobile display
     overlay = annotate(result, bands)[:, : result.rectified.shape[1]]
@@ -414,11 +451,19 @@ def _measure_payload(image_bytes: bytes, holder: str, lens: str, parent=None) ->
             }
             for g, b in bands.items()
         },
+        "face": face,
+        "condition": view.to_dict() if view is not None else None,
+        "condition_hint": (evidence.next_action() if hasattr(evidence, "next_action") else None),
         "predicted_grades": {
             g: {
                 "grade": p.grade_label,
                 "score": p.grade_score,
                 "condition": p.condition_name,
+                "complete": p.complete,
+                "missing": list(p.missing),
+                "probability": p.confidence,
+                "probabilities": {k: round(v, 3) for k, v in p.probabilities.items() if v >= 0.005},
+                "aspects": p.aspects_dict(),
                 "subgrades": {
                     "centering": p.centering_subgrade,
                     "corners": p.estimated_corners,
@@ -430,7 +475,8 @@ def _measure_payload(image_bytes: bytes, holder: str, lens: str, parent=None) ->
             }
             for g, p in {
                 name: predict_overall_grade(
-                    w, quality=result.quality, grader=name, model=maybe_load_grade_model()
+                    w, quality=result.quality, grader=name, model=maybe_load_grade_model(),
+                    face=face, condition=evidence, back_ratio=back_ratio,
                 )
                 for name in bands.keys()
             }.items()
@@ -793,6 +839,12 @@ header.app-bar{padding:calc(10px + env(safe-area-inset-top)) 16px 10px;
 @keyframes p{from{opacity:.3;transform:scale(.8)}to{opacity:1;transform:scale(1.2)}}
 .hud-verdict{background:rgba(11,15,21,0.85);backdrop-filter:blur(10px);border:1px solid var(--rule);padding:4px 10px;border-radius:20px;font-size:11px;font-family:ui-monospace,"SF Mono",monospace;color:var(--dim)}
 .hud-chip.settled{border-color:var(--pass);color:var(--pass)}
+.hud-aspects{position:absolute;top:44px;left:10px;right:10px;display:flex;gap:5px;flex-wrap:wrap;pointer-events:none}
+.hud-aspects span{background:rgba(11,15,21,0.85);backdrop-filter:blur(10px);border:1px solid var(--rule);border-radius:12px;padding:2px 8px;font-size:10px;font-family:ui-monospace,"SF Mono",monospace;color:var(--dim)}
+.hud-aspects span.ok{color:var(--paper);border-color:var(--key)}
+.hud-aspects span.low{color:var(--hold);border-color:var(--hold)}
+.aspect-table td:first-child{width:28%}
+.aspect-table .why{display:block;color:var(--dim);font-size:11px;margin-top:2px}
 .hud-chip.settled .radar{background:var(--pass);animation:none;opacity:1;transform:none}
 
 .hud-banner{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);background:rgba(11,15,21,0.85);backdrop-filter:blur(10px);border:1px solid rgba(78,210,198,0.4);border-radius:20px;padding:5px 14px;font-size:11px;font-weight:600;font-family:ui-monospace,"SF Mono",monospace;color:var(--paper);display:flex;align-items:center;gap:6px;pointer-events:none;transition:all .2s;white-space:normal;text-align:center;line-height:1.35;max-width:92%;width:max-content;z-index:10;box-shadow:0 4px 16px rgba(0,0,0,0.5)}
@@ -916,6 +968,7 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
       <div class="hud-chip"><span class="radar"></span><span id="hud-status">SEARCHING</span></div>
       <div class="hud-verdict" id="hud-verdict">SPRT IDLE</div>
     </div>
+    <div id="hud-aspects" class="hud-aspects hidden"></div>
     <div id="hud-guidance" class="hud-banner">Align card inside viewfinder template</div>
     <div id="hud-spirit-level" class="hud-spirit"><span class="spirit-bubble"></span><span id="spirit-deg">0° LEVEL</span></div>
   </div>
@@ -1427,6 +1480,33 @@ function cutDetailStrips(crop) {
   const srcScale = crop.w / (offscreenCanvas.width || crop.w);            // video px per frame px
   const cx = q.reduce((a, p) => a + p[0], 0) / 4, cy = q.reduce((a, p) => a + p[1], 0) / 4;
   const canvases = [], rects = [];
+  // One region over the whole card when it costs about what the four strips
+  // do (a card square to the view): the corners, edges AND face then all
+  // arrive at full resolution, which is what grading the surface and a
+  // card's corners live needs, and a rectangle with 6 mm to spare all round
+  // still holds the card when the outline has moved a little since.
+  {
+    const o = DETAIL_OUT_MM * ppm;
+    const fx0 = Math.max(crop.x, Math.floor(Math.min(...q.map(p => p[0])) - o));
+    const fy0 = Math.max(crop.y, Math.floor(Math.min(...q.map(p => p[1])) - o));
+    const fx1 = Math.min(crop.x + crop.w, Math.ceil(Math.max(...q.map(p => p[0])) + o));
+    const fy1 = Math.min(crop.y + crop.h, Math.ceil(Math.max(...q.map(p => p[1])) + o));
+    const full = (fx1 - fx0) * (fy1 - fy0);
+    let strips = 0;
+    for (let i = 0; i < 4; i++) {
+      const a = q[i], b = q[(i + 1) % 4];
+      strips += (dist(a, b) + 2 * DETAIL_END_MM * ppm) * (DETAIL_OUT_MM + DETAIL_IN_MM) * ppm * 1.15;
+    }
+    if (fx1 - fx0 >= 8 && fy1 - fy0 >= 8 && full <= 1.35 * strips) {
+      const c = document.createElement('canvas');
+      c.width = Math.max(2, Math.round((fx1 - fx0) * k));
+      c.height = Math.max(2, Math.round((fy1 - fy0) * k));
+      c.getContext('2d').drawImage(arVideo, fx0, fy0, fx1 - fx0, fy1 - fy0, 0, 0, c.width, c.height);
+      return { canvases: [c], rects: [[(fx0 - crop.x) / srcScale, (fy0 - crop.y) / srcScale,
+                                       (fx1 - fx0) / srcScale, (fy1 - fy0) / srcScale]],
+               m: k * srcScale };
+    }
+  }
   for (let i = 0; i < 4; i++) {
     const a = q[i], b = q[(i + 1) % 4];
     const L = dist(a, b) || 1;
@@ -1796,6 +1876,31 @@ async function arTick() {
   }
 }
 
+// The grade is four aspects. One that has no evidence yet is shown as
+// "--", never as a number: until 2.24 the corners/edges/surface here were
+// guessed from detection quality and every soft frame read "~PSA 8".
+const ASPECT_ABBR = { centering: 'CEN', corners: 'CRN', edges: 'EDG', surface: 'SRF' };
+function gradeText(d) {
+  if (!d || !d.grade_estimate) return null;
+  const g = String(d.grade_estimate).replace(/ max$/, '');
+  if (d.grade_complete) return `${g} (${Math.round((d.grade_confidence || 0) * 100)}%)`;
+  return `\u2264${g}`;
+}
+function renderAspectChips(d) {
+  const box = document.getElementById('hud-aspects');
+  if (!box) return;
+  const a = d && d.aspects;
+  if (!a) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+  box.classList.remove('hidden');
+  box.innerHTML = Object.keys(ASPECT_ABBR).map(k => {
+    const x = a[k];
+    if (!x || x.assessed === 'no' || x.grade == null) return `<span>${ASPECT_ABBR[k]} --</span>`;
+    const cls = (+x.grade >= 9) ? 'ok' : 'low';
+    const side = x.assessed === 'both' ? ' F+B' : (x.assessed === 'back' ? ' B' : '');
+    return `<span class="${cls}">${ASPECT_ABBR[k]} ${esc(x.grade)}${side}</span>`;
+  }).join('') + (d.face === 'back' ? '<span class="low">BACK</span>' : '');
+}
+
 function drawARHUD(d, thumb) {
   if (!d || !d.ok) {
     lastHUDData = null;
@@ -1823,9 +1928,8 @@ function drawARHUD(d, thumb) {
 
     const chip = $('#hud-status');
     const chipBox = document.querySelector('.hud-chip');
-    const est = d.grade_estimate
-      ? `~${d.grade_estimate}${d.grade_confidence != null ? ` (${Math.round(d.grade_confidence * 100)}%)` : ''}`
-      : null;
+    const est = gradeText(d);
+    renderAspectChips(d);
     if (!d.ratio) {
       chip.textContent = 'TRACKING';
       if (chipBox) chipBox.classList.remove('settled');
@@ -1856,7 +1960,7 @@ function drawARHUD(d, thumb) {
       banner.textContent = '⚠ the photo was refused -- see below; adjust and tap Freeze again';
       banner.className = 'hud-banner warn';
     } else if (d.settled) {
-      banner.textContent = '✓ Target settled · Auto-capturing metrology';
+      banner.textContent = '✓ Centering settled · ' + (d.condition_hint || 'auto-capturing a photo');
       banner.className = 'hud-banner good';
     } else if (Date.now() - autoZoomNote < 3500) {
       banner.textContent = `zoomed in to ${zoomFactor().toFixed(1)}x so the live view can measure -- keep the phone where it is`;
@@ -1864,6 +1968,9 @@ function drawARHUD(d, thumb) {
     } else if (d.guidance && d.guidance.length > 0) {
       banner.textContent = '⚠ ' + d.guidance[0];
       banner.className = 'hud-banner warn';
+    } else if (d.tracking && d.condition_hint) {
+      banner.textContent = '◇ ' + d.condition_hint;
+      banner.className = 'hud-banner';
     } else if (d.tracking) {
       banner.textContent = '⚡ Tracking · Hold steady for multi-view convergence';
       banner.className = 'hud-banner';
@@ -2363,6 +2470,7 @@ function renderResults(d) {
   <div class="sect-title">Centering Grade Ceiling</div>
   <div class="chips-row">${Object.entries(d.bands).map(([g,b])=>
     `<div class="chip ${String(b.label).includes('10')?'gold':''}"><i>${esc(g)}</i><b>${esc(b.label)}</b></div>`).join('')}</div>
+  ${renderCardGrade(d)}
   <table class="mm-table">
     <tr><td>Horizontal Borders (L/R)</td><td>${d.borders.left.toFixed(2)} / ${d.borders.right.toFixed(2)} mm</td></tr>
     <tr><td>Vertical Borders (T/B)</td><td>${d.borders.top.toFixed(2)} / ${d.borders.bottom.toFixed(2)} mm</td></tr>
@@ -2371,6 +2479,26 @@ function renderResults(d) {
   </table>
   ${d.overlay ? `<img class="ov" alt="Card Metrology" src="data:image/jpeg;base64,${d.overlay}">` : ''}`;
   window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+}
+
+function renderCardGrade(d) {
+  const p = d.predicted_grades && d.predicted_grades.PSA;
+  if (!p || !p.aspects) return '';
+  const head = p.complete
+    ? `${esc(p.grade)} <span>${Math.round((p.probability || 0) * 100)}% likely</span>`
+    : `\u2264 ${esc(String(p.grade).replace(/ max$/, ''))} <span>ceiling -- ${esc((p.missing || []).join(', '))} not assessed</span>`;
+  const names = { centering: 'Centering', corners: 'Corners', edges: 'Edges', surface: 'Surface' };
+  const rows = Object.keys(names).map(k => {
+    const a = p.aspects[k] || {};
+    const val = (a.assessed === 'no' || a.grade == null)
+      ? 'not assessed'
+      : `${esc(a.grade)} (${Math.round((a.p || 0) * 100)}%)${a.assessed === 'both' ? ' · front+back' : (a.assessed === 'back' ? ' · back' : '')}`;
+    return `<tr><td>${names[k]}</td><td>${val}<span class="why">${esc(a.detail || '')}</span></td></tr>`;
+  }).join('');
+  return `<div class="sect-title">Card Grade (PSA, all aspects)</div>
+  <div class="ratio-row"><b>${head}</b></div>
+  <table class="mm-table aspect-table">${rows}</table>
+  ${d.condition_hint ? `<div class="sub-meta">Next: ${esc(d.condition_hint)}</div>` : ''}`;
 }
 
 function renderIdentify(d) {
@@ -2990,11 +3118,14 @@ class Handler(BaseHTTPRequestHandler):
                     "lens": fields.get("lens", b"main").decode("utf-8", "replace"),
                     "parent": _parent_crop(fields, image),
                     "device": str(device_id)[:8]})
+                with _AR_LOCK:
+                    live = _AR_SESSIONS.get(device_id)
                 payload = _measure_payload(
                     image,
                     fields.get("holder", b"raw").decode("utf-8", "replace"),
                     fields.get("lens", b"main").decode("utf-8", "replace"),
                     _parent_crop(fields, image),
+                    session=live,
                 )
                 payload["device_id"] = device_id
                 if notes:
@@ -3100,6 +3231,13 @@ class Handler(BaseHTTPRequestHandler):
                         else None
                     ),
                     "bands": status.bands,
+                    # every aspect of the grade: centering, corners, edges,
+                    # surface (assessed or not, and why), the face in view,
+                    # and what to do to fill in what is missing
+                    "aspects": status.aspects,
+                    "grade_complete": status.grade_complete,
+                    "face": status.face,
+                    "condition_hint": status.condition_hint,
                     "verdict": (
                         session.verdict.name
                         if hasattr(session.verdict, "name")

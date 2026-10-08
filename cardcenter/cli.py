@@ -26,16 +26,20 @@ from .render import save_annotated
 from .types import SLAB_PRESETS, CaptureSpec, CenteringResult, DetectionError
 
 DISCLAIMER = (
-    "This measures centering only. It does not assess corners, edges, or "
-    "surface, and it is not a grade prediction. Centering sets a ceiling on "
-    "the grade; the other three attributes decide where under that ceiling a "
-    "card lands. A tool that reports a single grade from one photograph is "
-    "overclaiming, and if that number is wired to anything that moves money, "
-    "the overclaim becomes someone else's loss."
+    "Centering is measured; corners and edges are measured where the photo "
+    "resolves them (see each aspect's 'assessed' and 'detail'); the surface "
+    "needs the reflection swept across the card in a live session and is not "
+    "assessed from one photo. An aspect without evidence is reported as not "
+    "assessed and the grade as a ceiling. The millimetre thresholds behind "
+    "corner and edge grades are this project's reading of the graders' "
+    "published wording, not the graders' numbers. A tool that reports a single "
+    "grade from one photograph is overclaiming, and if that number is wired to "
+    "anything that moves money, the overclaim becomes someone else's loss."
 )
 
 
-def _result_dict(res: CenteringResult, bands: dict, model: Optional[GradeOutcomeModel] = None) -> dict:
+def _result_dict(res: CenteringResult, bands: dict, model: Optional[GradeOutcomeModel] = None,
+                 condition=None) -> dict:
     def pair(p):
         rp = p.ratio_pct
         lo, hi = rp.interval()
@@ -84,11 +88,15 @@ def _result_dict(res: CenteringResult, bands: dict, model: Optional[GradeOutcome
             }
             for name, b in bands.items()
         },
+        "condition": condition.to_dict() if condition is not None else None,
         "predicted_grades": {
             name: {
                 "grade": pred.grade_label,
                 "score": pred.grade_score,
                 "condition": pred.condition_name,
+                "complete": pred.complete,
+                "missing": list(pred.missing),
+                "aspects": pred.aspects_dict(),
                 "subgrades": {
                     "centering": pred.centering_subgrade,
                     "corners": pred.estimated_corners,
@@ -102,7 +110,8 @@ def _result_dict(res: CenteringResult, bands: dict, model: Optional[GradeOutcome
             }
             for name, pred in {
                 g: predict_overall_grade(
-                    res.worst_ratio, quality=res.quality, grader=g, model=model
+                    res.worst_ratio, quality=res.quality, grader=g, model=model,
+                    condition=condition,
                 )
                 for g in bands.keys()
             }.items()
@@ -116,6 +125,7 @@ def _print_human(
     bands: dict,
     face: str,
     model: Optional[GradeOutcomeModel] = None,
+    condition=None,
 ) -> None:
     print()
     print("=" * 66)
@@ -149,13 +159,20 @@ def _print_human(
     from .grading import predict_overall_grade
     for name in bands.keys():
         pred = predict_overall_grade(
-            res.worst_ratio, quality=res.quality, grader=name, face=face, model=model
+            res.worst_ratio, quality=res.quality, grader=name, face=face, model=model,
+            condition=condition,
         )
         learned = (
             f"  [learned from {pred.n_observations} certs]" if pred.used_learned else ""
         )
-        print(f"  {name:<5} -> {pred.grade_label:<8} ({pred.condition_name:<16})  [Confidence: {int(pred.confidence*100)}%]{learned}")
-        print(f"        Subgrades: Centering {pred.centering_subgrade:.1f} | Corners {pred.estimated_corners:.1f} | Edges {pred.estimated_edges:.1f} | Surface {pred.estimated_surface:.1f}")
+
+        def sub(v):
+            return "--" if v is None else f"{v:.1f}"
+
+        print(f"  {name:<5} -> {pred.grade_label:<12} ({pred.condition_name:<16})  [P: {int(pred.confidence*100)}%]{learned}")
+        print(f"        Subgrades: Centering {pred.centering_subgrade:.1f} | Corners {sub(pred.estimated_corners)} | Edges {sub(pred.estimated_edges)} | Surface {sub(pred.estimated_surface)}")
+        if pred.missing:
+            print(f"        Not assessed: {', '.join(pred.missing)} -- the grade is a ceiling")
         prob_str = ", ".join(f"{g}: {int(p*100)}%" for g, p in sorted(pred.probabilities.items(), key=lambda kv: -kv[1]))
         print(f"        Probabilities: {prob_str}")
     print()
@@ -700,13 +717,20 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     model = maybe_load_grade_model(args.db)
+    try:
+        from .condition import analyse_view
+
+        condition = analyse_view(image, res.corners_px, None, res.inner_rect_mm,
+                                 capture=capture if capture.focal_px else None)
+    except Exception:
+        condition = None
 
     if not args.quiet:
-        _print_human(res, bands, args.face, model=model)
+        _print_human(res, bands, args.face, model=model, condition=condition)
 
     if args.json:
         with open(args.json, "w", encoding="utf-8") as fh:
-            json.dump(_result_dict(res, bands, model=model), fh, indent=2)
+            json.dump(_result_dict(res, bands, model=model, condition=condition), fh, indent=2)
         print(f"  wrote {args.json}")
 
     if args.overlay:

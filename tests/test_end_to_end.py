@@ -254,5 +254,10 @@ def test_disclaimer_states_the_ceiling_limitation() -> None:
     from cardcenter.cli import DISCLAIMER
 
     low = DISCLAIMER.lower()
-    assert "centering only" in low
-    assert "not a grade prediction" in low
+    # 2.24: corners and edges are measured where the photo resolves them; the
+    # disclaimer must still say what is NOT assessed, that the grade is then a
+    # ceiling, and whose thresholds are behind the condition grades
+    assert "not assessed" in low
+    assert "ceiling" in low
+    assert "not the graders' numbers" in low
+    assert "overclaiming" in low

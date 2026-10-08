@@ -73,6 +73,21 @@ from .types import (
     resolve_holder,
 )
 
+def _new_evidence():
+    from .condition_evidence import ConditionEvidence
+
+    return ConditionEvidence()
+
+
+# A card turned over leaves the view and comes back as a different outline;
+# the outline's jump starts a "new card". If the first view of it is the
+# OTHER face within this long, it is taken to be the same card turned over
+# and the evidence carries across. Two different cards shown front then back
+# inside 8 s would be merged -- the HUD says "back: same card?" so the user
+# can reset.
+FLIP_WINDOW_S = 8.0
+
+
 def _default_gate_config():
     from .confidence import GateConfig
 
@@ -656,6 +671,15 @@ class ARStatus:
     # coarse to measure live)
     px_per_mm: Optional[float] = None
     card_frac: Optional[float] = None
+    # Corners, edges and surface (condition.py, pooled in
+    # condition_evidence.py) and the whole-card grade they compose to:
+    # per-aspect distributions, whether all four are assessed (otherwise
+    # grade_estimate is a ceiling), the face last seen, and the one change of
+    # view that would add the most missing evidence.
+    aspects: Optional[dict] = None
+    grade_complete: bool = False
+    face: Optional[str] = None
+    condition_hint: Optional[str] = None
 
     def headline(self) -> str:
         if not self.tracking:
@@ -725,6 +749,16 @@ class ARSession:
     _lost_reason: str = ""
     # the last frame, small and grey, to measure how the view moved since
     _last_gray: Optional[np.ndarray] = None
+    # Condition evidence for the card, both faces, and the back's own
+    # centering: a back measured into the front's accumulators would be
+    # pooled with the front as if it were another view of it.
+    condition: "ConditionEvidence" = field(default_factory=lambda: _new_evidence())
+    back_horizontal: RunningRatio = field(default_factory=RunningRatio)
+    back_vertical: RunningRatio = field(default_factory=RunningRatio)
+    # what a new outline replaced, kept a few seconds in case it is the same
+    # card turned over (see _maybe_flip)
+    _flip_stash: Optional[dict] = None
+    last_condition: Optional[object] = None
 
     def reset(self) -> None:
         """Start a new card. Combining frames across two different cards would
@@ -745,6 +779,11 @@ class ARSession:
         self._sigma_meas_px = None
         self._last_info = None
         self._last_gate = None
+        self.condition = _new_evidence()
+        self.back_horizontal = RunningRatio()
+        self.back_vertical = RunningRatio()
+        self._flip_stash = None
+        self.last_condition = None
         # Where the user pointed (0..1 of the pushed frame), when they tapped a
         # card rather than centring it: a shop counter has several.
         self._aim_norm = None
@@ -760,6 +799,50 @@ class ARSession:
     def worst_ratio(self) -> Optional[Measured]:
         cands = [c for c in (self.horizontal.combined, self.vertical.combined) if c]
         return max(cands, key=lambda m: m.value) if cands else None
+
+    @property
+    def back_worst_ratio(self) -> Optional[Measured]:
+        cands = [c for c in (self.back_horizontal.combined, self.back_vertical.combined) if c]
+        return max(cands, key=lambda m: m.value) if cands else None
+
+    def _maybe_flip(self, face: str, now: float) -> bool:
+        """Carry the last card's evidence over when this first view of a
+        "new" outline is that card's other face, seen within FLIP_WINDOW_S."""
+        st = self._flip_stash
+        self._flip_stash = None
+        if st is None or self.condition.n_views:
+            return False
+        if face == st["face"] or now - st["at"] > FLIP_WINDOW_S:
+            return False
+        self.condition = st["condition"]
+        self.horizontal, self.vertical = st["horizontal"], st["vertical"]
+        self.back_horizontal, self.back_vertical = st["back_horizontal"], st["back_vertical"]
+        self._measurements, self._sprt = st["measurements"], st["sprt"]
+        self.measured = st["measured"]
+        return True
+
+    def add_condition(self, view, now: Optional[float] = None) -> None:
+        """Pool one condition view (a live frame's, or a Freeze photo's) into
+        this card's evidence."""
+        now = time.time() if now is None else now
+        self._maybe_flip(view.face, now)
+        self.condition.add(view)
+        self.last_condition = view
+
+    def grade(self, grader: str = "PSA"):
+        """Whole-card grade from everything pooled so far, or None before any
+        centering is measured."""
+        from .grading import predict_overall_grade
+
+        front, back = self.worst_ratio, self.back_worst_ratio
+        if front is None and back is None:
+            return None
+        quality = self.last_result.quality if self.last_result else None
+        if front is not None:
+            return predict_overall_grade(front, quality=quality, grader=grader, face="front",
+                                         condition=self.condition, back_ratio=back)
+        return predict_overall_grade(back, quality=quality, grader=grader, face="back",
+                                     condition=self.condition)
 
     @property
     def fusion(self):
@@ -803,9 +886,22 @@ class ARSession:
             return False
         return information_value(w, self.boundary) > 0.02
 
-    def _new_card(self) -> None:
+    def _new_card(self, now: Optional[float] = None) -> None:
         """The outline now on screen is a different card: its views must not
         be pooled with the last card's."""
+        if self.condition.n_views and self.condition.last_face:
+            self._flip_stash = {
+                "at": time.time() if now is None else now,
+                "face": self.condition.last_face,
+                "condition": self.condition,
+                "horizontal": self.horizontal, "vertical": self.vertical,
+                "back_horizontal": self.back_horizontal, "back_vertical": self.back_vertical,
+                "measurements": self._measurements, "sprt": self._sprt,
+                "measured": self.measured,
+            }
+        self.condition = _new_evidence()
+        self.back_horizontal = RunningRatio()
+        self.back_vertical = RunningRatio()
         self.horizontal = RunningRatio()
         self.vertical = RunningRatio()
         self.measured = 0
@@ -905,7 +1001,7 @@ class ARSession:
         from .edge_information import _quad_iou
 
         if prev is not None and _quad_iou(q, prev, shape) < 0.3:
-            self._new_card()
+            self._new_card(now)
         # no smoothing across two different outlines
         self._quad_filter.reset()
         self._last_valid_at = now
@@ -1159,18 +1255,30 @@ class ARSession:
                     card_quad=q_in,
                     quad_residual_px=float(resid_in or 0.0),
                 )
-                self.horizontal.add(res.horizontal.ratio_pct)
-                self.vertical.add(res.vertical.ratio_pct)
-                self.last_result = res
-                self.measured += 1
+                view = self._condition_view(framed, res, det)
+                face = view.face if view is not None else "front"
+                if view is not None:
+                    self.add_condition(view, now)
+                if face == "back":
+                    # the back's centering has its own (looser) thresholds and
+                    # is never pooled with the front's
+                    self.back_horizontal.add(res.horizontal.ratio_pct)
+                    self.back_vertical.add(res.vertical.ratio_pct)
+                    self.last_result = res
+                    self.measured += 1
+                else:
+                    self.horizontal.add(res.horizontal.ratio_pct)
+                    self.vertical.add(res.vertical.ratio_pct)
+                    self.last_result = res
+                    self.measured += 1
 
-                from .evidence import SequentialBoundaryTest
+                    from .evidence import SequentialBoundaryTest
 
-                self._measurements.append(res.worst_ratio)
-                if self._sprt is None:
-                    self._sprt = SequentialBoundaryTest(threshold=self.boundary)
-                self._sprt.update(res.worst_ratio)
-                self._last_gate = self._gate(res, info_full)
+                    self._measurements.append(res.worst_ratio)
+                    if self._sprt is None:
+                        self._sprt = SequentialBoundaryTest(threshold=self.boundary)
+                    self._sprt.update(res.worst_ratio)
+                    self._last_gate = self._gate(res, info_full)
             except DetectionError as exc:
                 quality = FrameQuality(
                     sharpness=quality.sharpness,
@@ -1187,9 +1295,11 @@ class ARSession:
         bands_dict = None
         grade_est = None
         grade_conf = None
+        aspects = None
+        complete = False
         if self.worst_ratio is not None:
             try:
-                from .grading import grade_band, predict_overall_grade
+                from .grading import grade_band
                 psa_band = grade_band(self.worst_ratio, "PSA", "front")
                 grade_ceil = psa_band.best if psa_band.is_single else f"{psa_band.worst}–{psa_band.best}"
                 bands_dict = {
@@ -1199,22 +1309,27 @@ class ARSession:
                         for name in ("PSA", "BGS", "CGC")
                     }.items()
                 }
-                # grade_ceil above is the honest worst-case range: it can only
-                # narrow as more views accumulate and stays wide (e.g. "7-10")
-                # on early frames by design, which reads as worthless on its
-                # own. predict_overall_grade already exists for the still-photo
-                # path and turns the same ratio into a single most-likely
-                # grade plus a probability, using edge/corner quality signal
-                # this session already measured -- wire it into the live loop
-                # too instead of showing only the conservative range.
-                quality_hint = self.last_result.quality if self.last_result else None
-                pred = predict_overall_grade(
-                    self.worst_ratio, quality=quality_hint, grader="PSA", face="front"
-                )
-                grade_est = pred.grade_label
-                grade_conf = float(pred.confidence)
             except Exception:
                 pass
+        # The whole-card grade, from every aspect with evidence. Before 2.24
+        # this was the centering ratio plus corners/edges/surface GUESSED from
+        # how cleanly the outline was found, which put every soft frame at
+        # PSA 8. An aspect without evidence is now reported as not assessed
+        # and the grade as a ceiling.
+        try:
+            pred = self.grade("PSA")
+        except Exception:
+            pred = None
+        if pred is not None:
+            grade_est = pred.grade_label
+            grade_conf = float(pred.confidence)
+            aspects = pred.aspects_dict()
+            complete = bool(pred.complete)
+        hint = None
+        try:
+            hint = self.condition.next_action()
+        except Exception:
+            hint = None
 
         info_dict = None
         shown = self._last_info
@@ -1253,7 +1368,36 @@ class ARSession:
             decision_reason=gate.reason if gate is not None else "",
             px_per_mm=float(full_px_per_mm),
             card_frac=card_frac,
+            aspects=aspects,
+            grade_complete=complete,
+            face=self.condition.last_face,
+            condition_hint=hint,
         )
+
+    def _condition_view(self, framed, res, det):
+        """Corners, edges and surface off the frame just measured, or None.
+        On the edge-strip mosaic only the strips are true detail; the rest
+        was upsampled from the tracking frame and is read at its own
+        resolution."""
+        from .condition import analyse_view
+
+        try:
+            mask = up = None
+            if det is not None and getattr(framed, "scale", None):
+                h, w = framed.image.shape[:2]
+                ox, oy = (int(round(v)) for v in framed.origin)
+                sub = det.mask[max(0, oy):, max(0, ox):]
+                cw = int(round(w / framed.scale))
+                ch = int(round(h / framed.scale))
+                sub = sub[:ch, :cw]
+                if sub.size:
+                    mask = cv2.resize(sub.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST) > 0
+                    up = float(det.m)
+            return analyse_view(framed.image, res.corners_px, None,
+                                res.inner_rect_mm, capture=framed.capture,
+                                detail_mask=mask, detail_upsample=up)
+        except Exception:
+            return None
 
     def _gate(self, res: CenteringResult, info) -> Optional[object]:
         """confidence.gate on the fused worst-axis ratio, with the Cramer-Rao
