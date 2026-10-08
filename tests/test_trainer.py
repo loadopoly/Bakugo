@@ -126,6 +126,8 @@ def test_sync_uses_copy_not_sync_and_records_listing(tmp_path, layout, monkeypat
 # --------------------------------------------------------------- manifest
 
 def test_manifest_diff_weak_labels_and_pdf_pages(layout, con):
+    # The PDF page only exists if pypdfium2 can rasterise it (the trainer extra).
+    pytest.importorskip("pypdfium2", reason="install the trainer extra: pip install -e .[trainer]")
     _write(layout, "Pokemon/Duplicates/Lechonk_182.png", _noise(1))
     _write(layout, "Pokemon/Binder/PXL_20260914_000000001.jpg", _noise(2))
     from PIL import Image

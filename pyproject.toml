@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cardcenter"
-version = "2.23.0"
+version = "2.23.1"
 description = "Trading card centering measurement and batch scanning, with honest error bars"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -42,6 +42,9 @@ dev = ["pytest>=7.4", "scipy>=1.10", "pillow>=10.0"]
 # DuckDB powers the OLAP analytical layer.  It is optional because on
 # mobile (Android Termux) the native C extension can fail to compile.
 analytics = ["duckdb>=1.0.0"]
+# The private trainer (trainer/, Dockerfile.trainer). pypdfium2 rasterises
+# scanned PDFs into pages; tests/test_trainer.py needs it to cover that path.
+trainer = ["duckdb>=1.0.0", "pypdfium2>=4.0", "pillow>=10.0", "pytesseract>=0.3.10"]
 
 [project.scripts]
 cardcenter = "cardcenter.cli:main"

@@ -57,7 +57,9 @@ def write_candidate(layout: Layout, *, task: str, exposure: str, params: dict,
     model_id = f"{task}-{stamp}-{hashlib.sha256(body.encode()).hexdigest()[:8]}"
     d = layout.models / task / model_id
     d.mkdir(parents=True, exist_ok=False)
-    (d / "params.json").write_text(body, encoding="utf-8")
+    # Bytes, not text: text mode on Windows writes "\r\n", and the file would no
+    # longer match payload_sha256 (which the release guard checks).
+    (d / "params.json").write_bytes(body.encode("utf-8"))
     meta = {
         "schema": SCHEMA,
         "task": task,

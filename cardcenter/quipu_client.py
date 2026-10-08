@@ -53,17 +53,31 @@ def enabled() -> bool:
     return bool(base_url())
 
 
+_OUTBOX = None
+_OUTBOX_LOCK = threading.Lock()
+
+
+def _outbox():
+    """The QUIPU edge outbox (quipu_edge_client): writes are kept on disk
+    (QUIPU_OUTBOX) until QUIPU has them, signed with QUIPU_EDGE_KEY, and
+    idempotent on retry.  Rebuilt if the URL or outbox file changes."""
+    global _OUTBOX
+    url, path = base_url(), os.environ.get("QUIPU_OUTBOX", "")
+    with _OUTBOX_LOCK:
+        if _OUTBOX is None or _OUTBOX.base_url != url or (path and str(_OUTBOX.outbox_path) != path):
+            from .quipu_edge_client import QuipuEdgeClient
+            _OUTBOX = QuipuEdgeClient(_SOURCE, base_url=url, timeout=_TIMEOUT_S)
+        return _OUTBOX
+
+
 def _post_json(path: str, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
-    url = f"{base_url()}{path}"
-    body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=body, headers={"Content-Type": "application/json"}, method="POST"
-    )
+    """Queue a write to QUIPU.  Nothing is lost if QUIPU is down; nothing is
+    learned twice if a send is retried.  Never raises."""
     try:
-        with urllib.request.urlopen(req, timeout=_TIMEOUT_S) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, OSError, ValueError):
+        k = _outbox().submit(path, payload)
+    except Exception:
         return None
+    return {"ok": k is not None, "queued": True, "idempotency": k}
 
 
 def _get_json(path: str) -> Optional[dict[str, Any]]:

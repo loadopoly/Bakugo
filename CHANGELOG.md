@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.23.1] - 2026-10-07
+
+### Added
+- **QUIPU Edge Outbox (`cardcenter/quipu_edge_client.py`)**: Persistent disk-backed outbox queue for QUIPU observations with HMAC signing and idempotency checks.
+- **Windows Artifact Checksum Integrity (`trainer/artifacts.py`)**: Direct byte-writing for `params.json` to prevent CRLF line-ending mismatches during checksum validation under Windows environments.
+- **Trainer Dependencies**: Added `trainer` optional dependency group in `pyproject.toml` (`duckdb`, `pypdfium2`, `pillow`, `pytesseract`).
+
 ## [2.23.0] - 2026-09-27
 
 ### Added
