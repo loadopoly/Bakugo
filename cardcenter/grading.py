@@ -590,6 +590,13 @@ class CardGradePrediction:
     complete: bool = False
     aspects: Dict[str, AspectGrade] = field(default_factory=dict)
     missing: tuple = ()
+    # True when the card's physical condition was seen: corners AND edges
+    # measured (surface may still be missing, then the grade is a ceiling).
+    # False means only centering is known; ``grade_score`` is then the most
+    # centering allows -- not a grade -- and ``grade_label`` says
+    # "not graded". A 51.6/48.4 card read "PSA 10 max" in 2.24.0 and was
+    # taken, reasonably, for a grade of 10.
+    graded: bool = False
 
     def describe(self) -> str:
         def sub(v):
@@ -606,7 +613,11 @@ class CardGradePrediction:
             f"  Centering Ceiling  : {self.grade_ceiling.best if self.grade_ceiling.is_single else f'{self.grade_ceiling.worst}-{self.grade_ceiling.best}'}",
             f"  Notes              : {self.summary}",
         ]
-        if self.missing:
+        if not self.graded:
+            lines.append("  Not graded         : " + ", ".join(self.missing)
+                         + " not measured; centering alone allows up to "
+                         + f"{self.grader} {_key(self.grade_score)}, which says nothing about wear")
+        elif self.missing:
             lines.append("  Not assessed       : " + ", ".join(self.missing)
                          + " -- the grade above is a ceiling, not an estimate")
         if self.used_learned:
@@ -697,6 +708,7 @@ def predict_overall_grade(
     }
     missing = tuple(k for k, a in aspects.items() if not a.is_assessed)
     complete = not missing
+    graded = aspects["corners"].is_assessed and aspects["edges"].is_assessed
     dist = compose(list(aspects.values()), grader)
     probs = {_key(k): float(v) for k, v in sorted(dist.items(), reverse=True)}
     final_score = max(dist.items(), key=lambda kv: (kv[1], kv[0]))[0]
@@ -704,15 +716,22 @@ def predict_overall_grade(
 
     def label(score: float) -> str:
         g = int(score) if float(score).is_integer() else score
+        if not graded:
+            return f"{grader} not graded"
         return f"{grader} {g}" if complete else f"{grader} {g} max"
 
     centering_sub = centering.modal if centering.modal is not None else 1.0
     final_score = max(1.0, min(10.0, final_score))
-    cond_name = CONDITION_NAMES.get(final_score, "Authentic")
+    cond_name = CONDITION_NAMES.get(final_score, "Authentic") if graded else "Not graded"
     grade_label = label(final_score)
     if complete:
         summary = (f"Predicted {grade_label} ({cond_name}) from measured centering, corners, "
                    f"edges and surface.")
+    elif not graded:
+        summary = ("Not graded: " + ", ".join(missing) + " not measured in this capture. "
+                   f"Centering alone ({max(50.0, ratio.value):.1f}/{100 - max(50.0, ratio.value):.1f}) "
+                   f"allows up to {grader} {_key(final_score)}; corners, edges and surface decide "
+                   "where under that a card lands, and they were not seen.")
     else:
         summary = (f"Ceiling {grade_label} ({cond_name}) from "
                    + ", ".join(k for k in ASPECTS if k not in missing)
@@ -753,6 +772,10 @@ def predict_overall_grade(
                         expected += score * weight
                         mass += weight
                     if mass > 0:
+                        # certified grades are whole-card outcomes: with
+                        # them the estimate is a grade even before corners
+                        # and edges are read here
+                        graded = True
                         final_score = _snap_grade(expected / mass, grader)
                         if ceiling is not None:
                             final_score = min(final_score, ceiling)
@@ -785,6 +808,7 @@ def predict_overall_grade(
         complete=complete,
         aspects=aspects,
         missing=missing,
+        graded=graded,
     )
 
 

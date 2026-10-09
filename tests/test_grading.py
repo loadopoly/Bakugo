@@ -161,23 +161,26 @@ def test_predict_overall_grade_gem_mint() -> None:
     from cardcenter.grading import predict_overall_grade, CardGradePrediction
     pred = predict_overall_grade(Measured(51.0, 0.2), grader="PSA", face="front")
     assert isinstance(pred, CardGradePrediction)
+    # Centering alone is not a grade (2.24.1): gem-mint centering only says
+    # the card CAN reach 10. The number is kept as the ceiling, the label
+    # says it is not graded.
     assert pred.grade_score == 10.0
-    assert "10" in pred.grade_label
-    assert pred.condition_name == "Gem Mint"
+    assert not pred.graded
+    assert pred.grade_label == "PSA not graded"
+    assert pred.condition_name == "Not graded"
     assert pred.centering_subgrade == 10.0
-    assert pred.confidence >= 0.8
     assert "10" in pred.probabilities
     desc = pred.describe()
     assert "ESTIMATED GRADE" in desc
-    assert "Gem Mint" in desc
+    assert "says nothing about wear" in desc
 
 
 def test_predict_overall_grade_bgs_half_grades() -> None:
     from cardcenter.grading import predict_overall_grade
     pred = predict_overall_grade(Measured(53.0, 0.2), grader="BGS", face="front")
     assert pred.grader == "BGS"
-    assert pred.grade_score in (9.5, 10.0)
-    assert pred.condition_name == "Gem Mint"
+    assert pred.grade_score in (9.5, 10.0)      # the ceiling, on BGS's half-grade scale
+    assert pred.grade_label == "BGS not graded"
 
 
 def test_predict_all_grades() -> None:

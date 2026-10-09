@@ -92,7 +92,9 @@ def _result_dict(res: CenteringResult, bands: dict, model: Optional[GradeOutcome
         "predicted_grades": {
             name: {
                 "grade": pred.grade_label,
-                "score": pred.grade_score,
+                "score": pred.grade_score if pred.graded else None,
+                "ceiling": pred.grade_score,
+                "graded": pred.graded,
                 "condition": pred.condition_name,
                 "complete": pred.complete,
                 "missing": list(pred.missing),

@@ -117,7 +117,8 @@ def test_too_coarse_is_not_assessed_rather_than_clean() -> None:
     pred = predict_overall_grade(res.worst_ratio, condition=v)
     assert not pred.complete
     assert pred.estimated_corners is None and pred.estimated_edges is None
-    assert pred.grade_label.endswith("max")
+    assert pred.grade_label == "PSA not graded"
+    assert not pred.graded
     assert "corners" in pred.missing
 
 
@@ -330,7 +331,8 @@ def test_ar_session_reports_every_aspect() -> None:
     assert float(st.aspects["corners"]["grade"]) <= 5.0
     assert st.aspects["surface"]["assessed"] == "no"
     assert not st.grade_complete
-    assert st.grade_estimate.endswith("max")
+    assert st.grade_graded                      # corners and edges were read
+    assert st.grade_estimate.endswith("max")    # surface was not
     assert st.condition_hint
     s.reset()
     assert s.condition.n_views == 0
@@ -363,3 +365,17 @@ def test_a_different_card_does_not_inherit_evidence() -> None:
     s._new_card(now=13.0)
     s.add_condition(_fake_view("back"), now=13.0 + FLIP_WINDOW_S + 1.0)   # too late
     assert not s.condition.has("front")
+
+
+def test_centering_alone_is_never_shown_as_a_grade(clean) -> None:
+    """2.24.0 labelled a card whose corners and edges were unreadable
+    "PSA 10 max"; read as a grade of 10, it was wrong about a card nobody
+    had seen the corners of. Without corners and edges it is "not graded";
+    with them (surface still missing) it is a ceiling with a number."""
+    v, res = clean
+    bare = predict_overall_grade(Measured(51.6, 1.2))
+    assert bare.grade_label == "PSA not graded" and not bare.graded
+    assert "says nothing about wear" in bare.describe()
+    seen = predict_overall_grade(res.worst_ratio, condition=v)
+    assert seen.graded and not seen.complete
+    assert seen.grade_label.endswith("max") and seen.grade_label != "PSA not graded"

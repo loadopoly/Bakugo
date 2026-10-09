@@ -678,6 +678,8 @@ class ARStatus:
     # view that would add the most missing evidence.
     aspects: Optional[dict] = None
     grade_complete: bool = False
+    # corners and edges seen: without them grade_estimate is "not graded"
+    grade_graded: bool = False
     face: Optional[str] = None
     condition_hint: Optional[str] = None
 
@@ -1297,6 +1299,7 @@ class ARSession:
         grade_conf = None
         aspects = None
         complete = False
+        graded = False
         if self.worst_ratio is not None:
             try:
                 from .grading import grade_band
@@ -1325,6 +1328,7 @@ class ARSession:
             grade_conf = float(pred.confidence)
             aspects = pred.aspects_dict()
             complete = bool(pred.complete)
+            graded = bool(pred.graded)
         hint = None
         try:
             hint = self.condition.next_action()
@@ -1370,6 +1374,7 @@ class ARSession:
             card_frac=card_frac,
             aspects=aspects,
             grade_complete=complete,
+            grade_graded=graded,
             face=self.condition.last_face,
             condition_hint=hint,
         )

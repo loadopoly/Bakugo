@@ -457,7 +457,11 @@ def _measure_payload(image_bytes: bytes, holder: str, lens: str, parent=None,
         "predicted_grades": {
             g: {
                 "grade": p.grade_label,
-                "score": p.grade_score,
+                # only a grade when corners and edges were seen; otherwise
+                # what centering alone allows, under "ceiling"
+                "score": p.grade_score if p.graded else None,
+                "ceiling": p.grade_score,
+                "graded": p.graded,
                 "condition": p.condition_name,
                 "complete": p.complete,
                 "missing": list(p.missing),
@@ -1882,6 +1886,10 @@ async function arTick() {
 const ASPECT_ABBR = { centering: 'CEN', corners: 'CRN', edges: 'EDG', surface: 'SRF' };
 function gradeText(d) {
   if (!d || !d.grade_estimate) return null;
+  // Centering alone is not a grade: until corners and edges are read the
+  // chip says so (2.24.0 showed "\u2264PSA 10" for a card nobody had looked at
+  // the corners of, which reads as a 10).
+  if (!d.grade_graded) return 'not graded yet';
   const g = String(d.grade_estimate).replace(/ max$/, '');
   if (d.grade_complete) return `${g} (${Math.round((d.grade_confidence || 0) * 100)}%)`;
   return `\u2264${g}`;
@@ -2484,9 +2492,11 @@ function renderResults(d) {
 function renderCardGrade(d) {
   const p = d.predicted_grades && d.predicted_grades.PSA;
   if (!p || !p.aspects) return '';
-  const head = p.complete
-    ? `${esc(p.grade)} <span>${Math.round((p.probability || 0) * 100)}% likely</span>`
-    : `\u2264 ${esc(String(p.grade).replace(/ max$/, ''))} <span>ceiling -- ${esc((p.missing || []).join(', '))} not assessed</span>`;
+  const head = !p.graded
+    ? `Not graded <span>${esc((p.missing || []).join(', '))} not readable in this photo -- centering alone allows up to PSA ${esc(p.ceiling)}, which says nothing about wear</span>`
+    : p.complete
+      ? `${esc(p.grade)} <span>${Math.round((p.probability || 0) * 100)}% likely</span>`
+      : `\u2264 ${esc(String(p.grade).replace(/ max$/, ''))} <span>ceiling -- ${esc((p.missing || []).join(', '))} not assessed</span>`;
   const names = { centering: 'Centering', corners: 'Corners', edges: 'Edges', surface: 'Surface' };
   const rows = Object.keys(names).map(k => {
     const a = p.aspects[k] || {};
@@ -3236,6 +3246,7 @@ class Handler(BaseHTTPRequestHandler):
                     # and what to do to fill in what is missing
                     "aspects": status.aspects,
                     "grade_complete": status.grade_complete,
+                    "grade_graded": status.grade_graded,
                     "face": status.face,
                     "condition_hint": status.condition_hint,
                     "verdict": (

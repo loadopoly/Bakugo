@@ -97,9 +97,15 @@ Each aspect is a probability distribution over grades:
 - **Corners and edges**: each corner and side gets a category distribution from its pooled measurement and uncertainty. The grade rule (PSA's wording: "slight fraying at one or two corners" is 8, and so on) is enumerated exactly over the four corners or sides.
 - **Overall** is the weakest aspect for PSA, CGC and SGC, and the BGS rule for BGS. It is enumerated exactly. The `probabilities` are the chance of each grade given what was measured, and `confidence` is the probability of the grade shown.
 
-While any aspect lacks evidence, `complete` is False. The grade label then reads
-"PSA 9 max" and the result is a ceiling: the card cannot grade above it and may
-grade below it.
+Until corners **and** edges are measured, there is no grade. `graded` is
+False, the label reads "PSA not graded", and the centering limit is reported
+only as `ceiling`. Centering alone says what the card could reach, not what it
+is. In 2.24.0 such a card was labelled "PSA 10 max" and taken for a 10 (the
+Probopass of 2026-10-08), which is why 2.24.1 changed the label.
+
+With corners and edges measured but surface still missing, `complete` is False
+and the label reads "PSA 9 max". That result is a ceiling: the card cannot grade
+above it and may grade below it.
 
 Certified grades (`cardcenter.learning`) still blend into the distribution as
 before, and still never raise the published centering ceiling.

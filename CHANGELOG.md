@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.24.1] - 2026-10-09
+
+### Fixed
+- **Centering alone is no longer shown as a grade.** In 2.24.0, a card whose corners and
+  edges could not be read was labelled "PSA 10 max" (HUD: "≤PSA 10"). It was read, fairly,
+  as "this card is a 10". The 2026-10-08 Probopass still showed this: centering 51.6/48.4
+  (a hand re-measure on the flattened card gives about 53/47, both inside PSA's 55/45),
+  while its two far corners and top edge were too soft to read.
+  - Until corners AND edges are measured, the result is now "PSA not graded".
+    `CardGradePrediction.graded` is False, `condition_name` is "Not graded", and the
+    description says centering alone "says nothing about wear".
+  - In JSON, `score` is null and the centering limit moves to `ceiling`.
+  - The HUD chip reads "not graded yet". The photo result says which aspects could not be
+    read.
+  - With corners and edges measured but no surface yet, the result is still a numbered
+    ceiling ("PSA 9 max").
+  - A grade blended from certified labels counts as graded.
+
 ## [2.24.0] - 2026-10-08
 
 ### Fixed
