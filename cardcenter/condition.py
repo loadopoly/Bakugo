@@ -121,6 +121,7 @@ class CornerReading:
     glare: bool = False
     blur_mm: float = 0.0
     sigma_mm: float = 0.0
+    coarse: bool = False
 
     @property
     def severity_mm(self) -> float:
@@ -140,6 +141,7 @@ class CornerReading:
             "glare": self.glare,
             "blur_mm": round(self.blur_mm, 3),
             "sigma_mm": round(self.sigma_mm, 3),
+            "coarse": self.coarse,
         }
 
 
@@ -157,6 +159,7 @@ class EdgeReading:
     noise_mm: float = 0.0
     blur_mm: float = 0.0
     side_face_mm: float = 0.0
+    coarse: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -171,6 +174,7 @@ class EdgeReading:
             "noise_mm": round(self.noise_mm, 3),
             "blur_mm": round(self.blur_mm, 3),
             "side_face_mm": round(self.side_face_mm, 3),
+            "coarse": self.coarse,
         }
 
 
@@ -638,7 +642,7 @@ def _analyse_corner(canon: _Canon, k: int, name: str, inner_mm: dict,
     res = canon.res_at(xs[0] - 1.0, ys[0] - 1.0, xs[1] + 1.0, ys[1] + 1.0)
     out = CornerReading(name=name, resolvable=False, px_per_mm=res)
     if res < fl["corner_min_px_per_mm"]:
-        out.reason = f"{res:.1f} px/mm here; corners need {fl['corner_min_px_per_mm']:.0f}"
+        out.reason = f"{res:.1f} px/mm here; corners need {fl['corner_min_px_per_mm']:.1f}"
         return out
 
     def P(mm):
@@ -761,17 +765,25 @@ def _analyse_corner(canon: _Canon, k: int, name: str, inner_mm: dict,
     if not np.isfinite(blur) or blur > fl["corner_max_blur_mm"]:
         out.reason = "the corner is too soft to place its outline"
         return out
+    fine_res = float(fl.get("fine_corner_min_px_per_mm", 6.0))
+    fine_blur = float(fl.get("fine_corner_max_blur_mm", 0.45))
+    is_coarse = (res < fine_res) or (blur > fine_blur)
+    out.coarse = is_coarse
     out.glare = glare_hits >= len(thetas) // 3
     # a chip is a few rays, rounding is the middle ones: the 75th percentile
     # catches both without letting one stray ray decide
     out.loss_mm = float(max(0.0, np.percentile(loss, 75)))
-    out.sigma_mm = float(math.sqrt((0.6 / res) ** 2 + (0.3 * blur) ** 2 + 0.03 ** 2))
-    out.whitening_resolvable = (models.white_vs_bg and not out.glare
-                                and blur <= fl["whitening_max_blur_mm"])
-    if out.whitening_resolvable:
-        out.whitening_mm = float(np.percentile(wdepth, 75))
-        frac = float((wdepth >= max(0.08, 1.0 / res)).mean())
-        out.whitening_len_mm = frac * (math.pi / 2.0) * r0
+    if is_coarse:
+        out.sigma_mm = float(math.sqrt((0.6 / res) ** 2 + (0.4 * blur) ** 2 + 0.03 ** 2))
+        out.whitening_resolvable = False
+    else:
+        out.sigma_mm = float(math.sqrt((0.6 / res) ** 2 + (0.3 * blur) ** 2 + 0.03 ** 2))
+        out.whitening_resolvable = (models.white_vs_bg and not out.glare
+                                    and blur <= fl["whitening_max_blur_mm"])
+        if out.whitening_resolvable:
+            out.whitening_mm = float(np.percentile(wdepth, 75))
+            frac = float((wdepth >= max(0.08, 1.0 / res)).mean())
+            out.whitening_len_mm = frac * (math.pi / 2.0) * r0
     out.resolvable = True
     return out
 
@@ -818,7 +830,7 @@ def _analyse_edge(canon: _Canon, side: str, inner_mm: dict, sf_mm: float) -> Edg
     res = canon.res_at(*box)
     out = EdgeReading(side=side, resolvable=False, px_per_mm=res, side_face_mm=sf_mm)
     if res < fl["edge_min_px_per_mm"]:
-        out.reason = f"{res:.1f} px/mm here; edges need {fl['edge_min_px_per_mm']:.0f}"
+        out.reason = f"{res:.1f} px/mm here; edges need {fl['edge_min_px_per_mm']:.1f}"
         return out
     bw = float(inner_mm.get(side, 2.5))
     deep = max(0.9, min(1.6, bw - 0.4))
@@ -872,6 +884,10 @@ def _analyse_edge(canon: _Canon, side: str, inner_mm: dict, sf_mm: float) -> Edg
     if not np.isfinite(blur) or blur > fl["edge_max_blur_mm"]:
         out.reason = "the edge is too soft to follow"
         return out
+    fine_res = float(fl.get("fine_edge_min_px_per_mm", 6.0))
+    fine_blur = float(fl.get("fine_edge_max_blur_mm", 0.45))
+    is_coarse = (res < fine_res) or (blur > fine_blur)
+    out.coarse = is_coarse
     # The cut is not a straight line in the flattened card: a lens's
     # distortion and a card that bows a little bend it by a tenth of a
     # millimetre or more over its length (the 2026-10-08 Probopass, a fresh
@@ -885,6 +901,8 @@ def _analyse_edge(canon: _Canon, side: str, inner_mm: dict, sf_mm: float) -> Edg
     resid[idx] = Cu - base                         # + = inward of the cut
     rv = resid[idx]
     noise = float(1.4826 * np.median(np.abs(rv - np.median(rv))))
+    if is_coarse:
+        noise = max(noise, float(math.sqrt((0.6 / res) ** 2 + (0.4 * blur) ** 2 + 0.03 ** 2)))
     out.noise_mm = noise
     thr = max(fl["nick_min_mm"], 3.0 * noise, 1.0 / res)
     inward = np.nan_to_num(resid, nan=-1.0) > thr
@@ -919,11 +937,14 @@ def _analyse_edge(canon: _Canon, side: str, inner_mm: dict, sf_mm: float) -> Edg
         whitened[jj] = run * step >= wmin
         deep_band = white[jj, d(cut[jj] + 0.9):d(cut[jj] + deep) + 1]
         glare_pos[jj] = deep_band.size > 0 and deep_band.mean() >= 0.4
-    usable = ok & white_ok & ~glare_pos
-    out.usable_frac = float(usable.mean())
-    out.whitening_resolvable = out.usable_frac >= 0.3 and blur <= fl["whitening_max_blur_mm"]
-    if out.whitening_resolvable:
-        out.whitening_frac = float(whitened[usable].mean())
+    if is_coarse:
+        out.whitening_resolvable = False
+    else:
+        usable = ok & white_ok & ~glare_pos
+        out.usable_frac = float(usable.mean())
+        out.whitening_resolvable = out.usable_frac >= 0.3 and blur <= fl["whitening_max_blur_mm"]
+        if out.whitening_resolvable:
+            out.whitening_frac = float(whitened[usable].mean())
     out.resolvable = True
     return out
 

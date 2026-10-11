@@ -209,3 +209,69 @@ def test_untrained_model_matches_heuristic_bit_for_bit() -> None:
         assert got.summary == a.summary
         assert got.used_learned is False
 
+
+def test_helpers_upper_bound_and_credible_range() -> None:
+    from cardcenter.grading import upper_bound, credible_range
+    dist = {9.0: 0.2, 8.0: 0.7, 7.0: 0.1}
+    assert upper_bound(dist, 0.10) == 9.0
+    assert upper_bound(dist, 0.25) == 8.0
+    rng = credible_range(dist, 0.80)
+    assert rng is not None
+    lo, hi = rng
+    assert lo <= hi
+    assert lo in (7.0, 8.0)
+    assert hi in (8.0, 9.0)
+
+
+def test_partial_corner_evidence_sets_wear_ceiling() -> None:
+    from cardcenter.condition import CORNERS, SIDES, ConditionView, CornerReading, EdgeReading, SurfaceReading
+    from cardcenter.grading import predict_overall_grade
+
+    corners = {
+        "top_left": CornerReading(name="top_left", resolvable=True, px_per_mm=7.0, loss_mm=0.8, whitening_mm=0.0),
+        "top_right": CornerReading(name="top_right", resolvable=False, reason="soft"),
+        "bottom_left": CornerReading(name="bottom_left", resolvable=False, reason="soft"),
+        "bottom_right": CornerReading(name="bottom_right", resolvable=False, reason="soft"),
+    }
+    edges = {
+        s: EdgeReading(side=s, resolvable=False, reason="soft") for s in SIDES
+    }
+    view = ConditionView(
+        face="front",
+        face_confidence=1.0,
+        px_per_mm=7.0,
+        corners=corners,
+        edges=edges,
+        surface=SurfaceReading(resolvable=False, reason="no_highlight"),
+    )
+    pred = predict_overall_grade(Measured(51.0, 0.1), grader="PSA", condition=view)
+    assert pred.wear_ceiling is not None
+    assert pred.wear_ceiling <= 7.0
+    assert "partial" in pred.grade_label
+    assert pred.aspects["corners"].is_partial
+    assert pred.aspects["corners"].upper <= 7.0
+    assert pred.range is not None
+
+
+def test_full_corners_and_edges_produces_range_and_max() -> None:
+    from cardcenter.condition import CORNERS, SIDES, ConditionView, CornerReading, EdgeReading, SurfaceReading
+    from cardcenter.grading import predict_overall_grade
+
+    corners = {c: CornerReading(name=c, resolvable=True, px_per_mm=8.0, loss_mm=0.05, whitening_mm=0.02) for c in CORNERS}
+    edges = {s: EdgeReading(side=s, resolvable=True, px_per_mm=8.0, whitening_frac=0.01, nick_max_mm=0.04) for s in SIDES}
+    view = ConditionView(
+        face="front",
+        face_confidence=1.0,
+        px_per_mm=8.0,
+        corners=corners,
+        edges=edges,
+        surface=SurfaceReading(resolvable=False, reason="no_highlight"),
+    )
+    pred = predict_overall_grade(Measured(51.0, 0.1), grader="PSA", condition=view)
+    assert pred.graded
+    assert not pred.complete
+    assert pred.range is not None
+    assert pred.range[0] >= 8.0
+    assert pred.grade_label.endswith("max")
+
+

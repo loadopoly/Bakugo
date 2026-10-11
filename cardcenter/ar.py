@@ -680,6 +680,8 @@ class ARStatus:
     grade_complete: bool = False
     # corners and edges seen: without them grade_estimate is "not graded"
     grade_graded: bool = False
+    wear_ceiling: Optional[float] = None
+    grade_range: Optional[tuple[float, float]] = None
     face: Optional[str] = None
     condition_hint: Optional[str] = None
 
@@ -1323,12 +1325,16 @@ class ARSession:
             pred = self.grade("PSA")
         except Exception:
             pred = None
+        wear_ceil = None
+        grade_rng = None
         if pred is not None:
             grade_est = pred.grade_label
             grade_conf = float(pred.confidence)
             aspects = pred.aspects_dict()
             complete = bool(pred.complete)
             graded = bool(pred.graded)
+            wear_ceil = pred.wear_ceiling
+            grade_rng = pred.range
         hint = None
         try:
             hint = self.condition.next_action()
@@ -1349,7 +1355,7 @@ class ARSession:
         card_frac = float(xs.max() - xs.min()) / max(float(tw), 1.0)
         guidance = tuple(self._focus_hint(self._photo_hint(g, full_px_per_mm),
                                           card_frac / max(self.zoom, 1.0))
-                         for g in quality.guidance)
+                          for g in quality.guidance)
         if quality.passed and shown is not None and shown.advice and not self.settled:
             guidance = tuple(guidance) + (shown.advice[0].message,)
         gate = self._last_gate
@@ -1375,6 +1381,8 @@ class ARSession:
             aspects=aspects,
             grade_complete=complete,
             grade_graded=graded,
+            wear_ceiling=wear_ceil,
+            grade_range=grade_rng,
             face=self.condition.last_face,
             condition_hint=hint,
         )

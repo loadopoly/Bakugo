@@ -57,11 +57,12 @@ self-calibrated from the card's rectangular outline because the nominal field
 of view is often wrong. Positions where the border well inside the edge is also
 white are glare. They are excluded rather than scored.
 
-**Blur gate.** Sharpness is the 20-80% width of the edge-spread function. It is
+**Resolution and blur tiers (2.25.0).** Sharpness is the 20-80% width of the edge-spread function,
 measured on the pixel's position along the background-to-border colour axis,
-averaged across rays or positions so print and background texture cancel. A
-corner or edge softer than 0.45 mm is not read at all. Whitening needs 0.3 mm or
-better.
+averaged across rays or positions so print and background texture cancel:
+- **Fine tier:** at least 6.0 px/mm locally, blur under 0.45 mm (0.3 mm for whitening).
+- **Coarse tier (shop mode):** at least 3.5 px/mm locally, blur under 0.8 mm. Used when viewing cards across counters or in display cases. Readings below fine tier get `coarse=True` with wider measurement uncertainty ($\sigma = \sqrt{(0.6/\mathrm{res})^2 + (0.4\times\mathrm{blur})^2 + 0.03^2}$). White fibre is suppressed when coarse because half-millimetre colour subsampling cannot reliably separate fibre from background bleed.
+Features softer than 0.8 mm or below 3.5 px/mm are not read at all.
 
 **Surface.** Scratches and dents show in the reflection of a light, not in the
 print. Each view records two things:
@@ -82,12 +83,12 @@ front fails the ring test or the disc test.
 - **Loss and nicks** are geometry, the same in every view. They are estimated by the median. The uncertainty is floored by the resolution.
 - **Surface defects** count only when two views see a candidate at the same place and direction, and the diffuse print there shows no such line. Dark ink under a highlight is therefore not reported as a scratch. Surface is assessed once 60% of the face has been under a highlight in two or more views.
 - **Faces are kept apart.** The back's top-left corner is the front's top-right. Each physical corner and side takes the worse of its two faces.
-- **`next_action()`** names the one change of view that adds the most missing evidence:
-  - move closer or zoom in when a corner is below 6 px/mm;
-  - hold still when the edges are soft;
-  - put the card on a contrasting surface;
-  - tilt so the reflection sweeps the face;
-  - flip the card to see the back.
+- **`next_action()` (phone-centric):** names the one change of phone position or zoom that adds the most missing evidence:
+  - zoom in (+) on the card when corners/edges need 3.5 px/mm;
+  - move the phone toward a soft end or corner of the card;
+  - hold the phone steady when the edges are soft;
+  - tilt the phone slowly so the light's reflection moves across the card;
+  - observe the back if visible.
 
 ## Grades (`grading.predict_overall_grade`)
 
@@ -95,16 +96,19 @@ Each aspect is a probability distribution over grades:
 
 - **Centering** comes from the ratio's uncertainty and the spread between the strict and lenient published thresholds. The back's centering, when measured, uses the back thresholds.
 - **Corners and edges**: each corner and side gets a category distribution from its pooled measurement and uncertainty. The grade rule (PSA's wording: "slight fraying at one or two corners" is 8, and so on) is enumerated exactly over the four corners or sides.
+  - **Partial evidence (2.25.0):** when only a subset of corners or sides are resolved, unread features are assumed perfect (`assessed="partial"`), making the result an upper bound (`AspectGrade.is_partial`, `AspectGrade.upper`).
+  - **Wear ceiling (2.25.0):** when wear observed on even a single corner or edge caps the card below its centering ceiling, a `wear_ceiling` is reported (e.g. `≤PSA 7 (partial)` or `PSA <=7 (partial)`).
 - **Overall** is the weakest aspect for PSA, CGC and SGC, and the BGS rule for BGS. It is enumerated exactly. The `probabilities` are the chance of each grade given what was measured, and `confidence` is the probability of the grade shown.
+- **Credible range (2.25.0):** uncertain grades are reported as an 80% credible range (e.g. `PSA 8–10`, `PSA 8-10 max`, or `PSA 8–10 (surface ?)`), replacing low-percentage modal guesses.
 
-Until corners **and** edges are measured, there is no grade. `graded` is
+Until corners **and** edges are measured (at least partially with wear capping), `graded` is
 False, the label reads "PSA not graded", and the centering limit is reported
 only as `ceiling`. Centering alone says what the card could reach, not what it
 is. In 2.24.0 such a card was labelled "PSA 10 max" and taken for a 10 (the
 Probopass of 2026-10-08), which is why 2.24.1 changed the label.
 
 With corners and edges measured but surface still missing, `complete` is False
-and the label reads "PSA 9 max". That result is a ceiling: the card cannot grade
+and the label reads "PSA 9 max" (or range e.g. "PSA 8–10 (surface ?)"). That result is a ceiling: the card cannot grade
 above it and may grade below it.
 
 Certified grades (`cardcenter.learning`) still blend into the distribution as

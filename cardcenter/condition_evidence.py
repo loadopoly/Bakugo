@@ -344,6 +344,7 @@ class ConditionEvidence:
         face = front if front.views else self.faces["back"]
         lv = self.last_view
         cons = load_condition_standards()["resolution"]
+        min_res = cons.get("corner_min_px_per_mm", 3.5)
         missing_c = [c for c in CORNERS if not face.corners[c]]
         missing_e = [s for s in SIDES if not face.edges[s]]
         if missing_c or missing_e:
@@ -352,16 +353,19 @@ class ConditionEvidence:
                        if not r.resolvable and "px/mm" in r.reason]
                 if res:
                     worst = min(r.px_per_mm for r in res)
-                    return (f"corners and edges need ~{cons['corner_min_px_per_mm']:.0f} px/mm "
-                            f"(this view {worst:.1f}) -- move closer or zoom in")
-                soft = [r for r in list(lv.corners.values()) + list(lv.edges.values())
-                        if not r.resolvable and "soft" in r.reason]
-                if soft:
-                    return "edges too soft to read -- hold still and let it focus"
+                    return f"zoom in (+) on the card -- corners need {min_res:.1f} px/mm, this view {worst:.1f}"
+                soft_c = [c for c, r in lv.corners.items() if not r.resolvable and "soft" in r.reason]
+                if soft_c:
+                    c_name = soft_c[0].replace("_", "-")
+                    return f"the card's {c_name} corner is soft from here -- move the phone toward that end of the card"
+                soft_e = [s for s, r in lv.edges.items() if not r.resolvable and "soft" in r.reason]
+                if soft_e:
+                    s_name = soft_e[0]
+                    return f"the card's {s_name} edge is soft from here -- move the phone toward that end of the card"
                 bg = [r for r in list(lv.corners.values()) + list(lv.edges.values())
                       if not r.resolvable and "background" in r.reason]
                 if bg:
-                    return "the card's edge blends into the surface -- put it on a contrasting one"
+                    return "the card's edge blends into the background -- move the phone for better contrast"
             names = [c.replace("_", "-") for c in missing_c] + missing_e
             return "still to see clearly: " + ", ".join(names[:3])
         s = face.surface
@@ -369,8 +373,7 @@ class ConditionEvidence:
             return None
         cov = s.coverage
         if cov < load_condition_standards()["surface"]["min_coverage"]:
-            return (f"surface {int(round(100 * cov))}% inspected -- tilt the card slowly so the "
-                    "light's reflection sweeps across it")
+            return "tilt the phone slowly so the light's reflection moves across the card"
         if not self.faces["back"].views:
-            return "front done -- flip the card to check the back's corners and edges"
+            return "the back's corners and edges count too, if you can see it"
         return None

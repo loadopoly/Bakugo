@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.25.0] - 2026-10-11
+
+### Added
+- **Photometrology Contract Integration:**
+  - Vendored `cardcenter/photometrology.py` (`holon.metrology/1`, canonical in umbrella `Metrology/`): grading components (centering from four borders, defect sizing), Planck/quantum/Cramér–Rao resolution floors, and interstitial measures.
+  - Added `tests/test_metrology_parity.py` and `tests/fixtures/metrology_golden.json` verifying exact parity with Bakugo's `cramer_rao_ratio_pp`, edge floors, and `ASPECTS`.
+
+- **Shop-mode grading for handheld cards in cases and counters (Part B):**
+  - **Coarse resolution tier** (`cardcenter/data/condition_standards.json`, `cardcenter/condition.py`):
+    corners and edges can now be assessed at 3.5 px/mm and blur up to 0.8 mm (fine tier remains 6.0 px/mm, 0.45 mm blur). Readings below fine tier are marked `coarse=True` with wider measurement uncertainty ($\sigma = \sqrt{(0.6/\mathrm{res})^2 + (0.4\times\mathrm{blur})^2 + 0.03^2}$) and white fibre detection suppressed.
+  - **Partial evidence assessment** (`cardcenter/grading.py`): when only some corners or edges are resolvable, unread items are assumed perfect to calculate an upper bound (`AspectGrade.is_partial`, `AspectGrade.upper`).
+  - **Wear ceiling**: when wear already observed places an inescapable cap on the card's grade, the app reports a `wear_ceiling` (e.g. `≤PSA 7 (partial)` or `PSA <=7 (partial)`).
+  - **Credible range reporting**: uncertain grades are presented as an 80% credible range (e.g. `PSA 8–10`, `PSA 8-10 max`, or `PSA 8–10 (surface ?)`), replacing low-probability single-grade guesses.
+  - **Phone-centric guidance** (`cardcenter/condition_evidence.py`): guidance now directs the user to move, tilt, or zoom the phone ("zoom in (+) on the card -- corners need 3.5 px/mm, this view X", "tilt the phone slowly so the light's reflection moves across the card"), never asking to handle or flip the card.
+  - **JSON & CLI payload**: `/measure`, `/ar/push`, CLI output, and Perceptopoly now expose `wear_ceiling` and `range`.
+
+- **Accessibility & Readability Overhaul (Part A):**
+  - **Unblocked viewport zoom**: removed `maximum-scale=1, user-scalable=no` meta constraints to comply with WCAG 1.4.4.
+  - **Fluid rem typography**: all font sizes converted to `rem` relative to OS/browser root text size (`html { font-size: 100% }`), with a 1rem (16px) body baseline and no text below 0.875rem (14px). Monospace typography is reserved for tabular numbers; sentence case used throughout.
+  - **Relocated HUD guidance panel**: guidance and aspect status moved from camera overlay glass to a solid (`alpha 0.96`) high-contrast container below the video preview, preventing background bleed and contrast loss.
+  - **AAA 7:1 contrast compliance**: high-contrast palette with `--dim: #B8C4D0` and verified pass/hold/stop status colors across all text and background pairings.
+  - **Status with text and symbols**: aspect chips communicate status with explicit words and symbols (e.g. `Corners 9 ✓`, `Corners ≤7 ⚠`, `Edges — not read`), never by color alone.
+  - **Screen reader integration**: `role="status"` and `aria-live="polite"` on guidance and results, semantic `<h2>` section headers, `<th scope="row">` table headers, explicit `aria-label` attributes on all icon buttons and host status pills, `aria-hidden` on video and overlay canvas, and throttled (2.5s) live text announcements.
+  - **Touch and keyboard targets**: minimum 44x44px touch targets on all interactive controls and 3px `:focus-visible` outline rings.
+  - **Selectable text**: `user-select: text` on all results and coaching instructions.
+  - **Media query support**: `prefers-reduced-motion` disables animations and pulses; `prefers-contrast: more` renders high-contrast solid borders.
+  - **Font size control**: interactive `A / A+ / A++` selector with `localStorage` persistence.
+
 ## [2.24.1] - 2026-10-09
 
 ### Fixed

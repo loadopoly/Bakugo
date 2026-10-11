@@ -461,6 +461,8 @@ def _measure_payload(image_bytes: bytes, holder: str, lens: str, parent=None,
                 # what centering alone allows, under "ceiling"
                 "score": p.grade_score if p.graded else None,
                 "ceiling": p.grade_score,
+                "wear_ceiling": p.wear_ceiling,
+                "range": list(p.range) if p.range else None,
                 "graded": p.graded,
                 "condition": p.condition_name,
                 "complete": p.complete,
@@ -792,7 +794,7 @@ PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#0B0F15">
@@ -800,36 +802,71 @@ PAGE = """<!DOCTYPE html>
 <title>Bakugo — AR Metrology Hub</title>
 <style>
 :root{
-  --ink:#0B0F15; --surface:#121822; --surface-glass:rgba(18,24,34,0.85);
-  --rise:#1D2635; --rule:#2B384A; --paper:#F3EFE6; --dim:#8E9EAF;
+  --ink:#0B0F15; --surface:#121822; --surface-glass:rgba(18,24,34,0.96);
+  --rise:#1D2635; --rule:#2B384A; --paper:#F3EFE6; --dim:#B8C4D0;
   --key:#4ED2C6; --key-glow:rgba(78,210,198,0.35);
-  --pass:#4EBA82; --hold:#D9A83A; --stop:#D45440;
+  --pass:#5CD496; --hold:#E8B946; --stop:#FF8A7A;
   --radius-lg:16px; --radius-md:12px; --radius-sm:8px;
 }
-*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body, #out, #hud-guidance, .empty-card, .ratio-row, .sub-meta, .mm-table, .id-result, .chip, .strip {
+  user-select: text;
+}
 input,select,textarea{user-select:auto}
-html,body{margin:0;padding:0;background:var(--ink);color:var(--paper);
-  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;
+html{font-size:100%}
+body{margin:0;padding:0;background:var(--ink);color:var(--paper);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  font-size:1rem;line-height:1.5;
   height:100%;overflow-x:hidden;overscroll-behavior-y:contain}
+
+:focus-visible{outline:3px solid var(--key) !important;outline-offset:2px !important}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .hud-chip .radar { animation: none !important; }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --dim: #FFFFFF;
+    --rule: #FFFFFF;
+    --paper: #FFFFFF;
+    --key: #00FFFF;
+    --pass: #00FF66;
+    --hold: #FFFF00;
+    --stop: #FF3333;
+  }
+  .hud-chip, .hud-verdict, .hud-aspects span, .hud-banner, .chip, .strip, #ar-container, .empty-card, .tab-btn {
+    border-color: #FFFFFF !important;
+  }
+}
 
 header.app-bar{padding:calc(10px + env(safe-area-inset-top)) 16px 10px;
   display:flex;align-items:center;gap:10px;position:sticky;top:0;
-  background:rgba(11,15,21,0.92);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  background:rgba(11,15,21,0.95);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
   border-bottom:1px solid var(--rule);z-index:40}
 .brand{display:flex;align-items:baseline;gap:8px}
-.brand h1{font-size:17px;margin:0;font-weight:700;color:#FFF;letter-spacing:-.02em}
-.brand .badge{font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--key);font-weight:700;padding:2px 6px;background:rgba(78,210,198,.12);border-radius:4px}
-.host-pill{margin-left:auto;font-size:10px;padding:3px 8px;border-radius:12px;background:var(--surface);border:1px solid var(--rule);color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:5px}
-.host-pill .dot{width:6px;height:6px;border-radius:50%;background:var(--pass)}
+.brand h1{font-size:1.25rem;margin:0;font-weight:700;color:#FFF;letter-spacing:-.02em}
+.brand .badge{font-size:0.875rem;color:var(--key);font-weight:600;padding:2px 8px;background:rgba(78,210,198,.12);border-radius:4px}
+.text-size-controls{display:flex;align-items:center;gap:4px;margin-left:auto}
+.btn-text-size{min-width:44px;min-height:44px;padding:4px 8px;border:1px solid var(--rule);background:var(--surface);color:var(--paper);border-radius:var(--radius-sm);font-weight:700;font-size:0.875rem;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.btn-text-size.active{border-color:var(--key);background:var(--rise);color:#FFF}
+.host-pill{font-size:0.875rem;min-height:44px;padding:8px 12px;border-radius:22px;background:var(--surface);border:1px solid var(--rule);color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:8px}
+.host-pill .dot{width:8px;height:8px;border-radius:50%;background:var(--pass)}
 
 .tab-nav{display:flex;padding:8px 16px;gap:8px;background:rgba(11,15,21,0.6)}
-.tab-btn{flex:1;padding:8px 12px;border:1px solid var(--rule);background:var(--surface);color:var(--dim);border-radius:var(--radius-md);font-size:12px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;transition:all .15s}
+.tab-btn{flex:1;min-height:44px;padding:10px 14px;border:1px solid var(--rule);background:var(--surface);color:var(--dim);border-radius:var(--radius-md);font-size:0.875rem;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;transition:all .15s}
 .tab-btn.active{background:var(--rise);border-color:var(--key);color:#FFF;box-shadow:0 0 10px var(--key-glow)}
 
 .quick-pills{display:flex;gap:8px;padding:8px 16px;overflow-x:auto;scrollbar-width:none}
 .quick-pills::-webkit-scrollbar{display:none}
-.pill-select{background:var(--surface-glass);border:1px solid var(--rule);color:var(--paper);border-radius:20px;padding:5px 10px;font-size:12px;font-weight:500;display:flex;align-items:center;gap:6px;white-space:nowrap}
-.pill-select select{background:transparent;border:none;color:inherit;font-size:inherit;font-weight:inherit;outline:none;cursor:pointer}
+.pill-select{background:var(--surface-glass);border:1px solid var(--rule);color:var(--paper);border-radius:22px;min-height:44px;padding:6px 12px;font-size:0.875rem;font-weight:500;display:flex;align-items:center;gap:6px;white-space:nowrap}
+.pill-select select{background:transparent;border:none;color:inherit;font-size:inherit;font-weight:inherit;outline:none;cursor:pointer;min-height:36px}
 
 /* AR Viewport */
 #ar-container{position:relative;width:calc(100% - 32px);margin:8px 16px;height:55vh;min-height:360px;border-radius:var(--radius-lg);overflow:hidden;background:#05070A;border:1px solid var(--rule);box-shadow:0 8px 30px rgba(0,0,0,0.5)}
@@ -837,31 +874,37 @@ header.app-bar{padding:calc(10px + env(safe-area-inset-top)) 16px 10px;
 #ar-canvas{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;pointer-events:none}
 #ar-debug{position:absolute;right:10px;bottom:56px;width:30%;max-width:180px;border:1px solid #FF5A5A;border-radius:6px;background:#000;z-index:5}
 #ar-debug.hidden{display:none}
-.ar-hud-overlay{position:absolute;top:10px;left:10px;right:10px;display:flex;justify-content:space-between;align-items:center;pointer-events:none}
-.hud-chip{background:rgba(11,15,21,0.85);backdrop-filter:blur(10px);border:1px solid var(--key);padding:4px 10px;border-radius:20px;font-size:11px;font-family:ui-monospace,"SF Mono",monospace;color:#FFF;display:flex;align-items:center;gap:6px}
-.hud-chip .radar{width:7px;height:7px;border-radius:50%;background:var(--key);animation:p 1s infinite alternate}
+.ar-hud-overlay{position:absolute;top:10px;left:10px;right:10px;display:flex;justify-content:space-between;align-items:center;gap:8px;pointer-events:none}
+.hud-chip{background:var(--surface-glass);backdrop-filter:blur(10px);border:1px solid var(--key);padding:6px 12px;border-radius:20px;font-size:1rem;line-height:1.4;color:#FFF;display:flex;align-items:center;gap:8px}
+.hud-chip .radar{width:8px;height:8px;border-radius:50%;background:var(--key);animation:p 1s infinite alternate;flex-shrink:0}
 @keyframes p{from{opacity:.3;transform:scale(.8)}to{opacity:1;transform:scale(1.2)}}
-.hud-verdict{background:rgba(11,15,21,0.85);backdrop-filter:blur(10px);border:1px solid var(--rule);padding:4px 10px;border-radius:20px;font-size:11px;font-family:ui-monospace,"SF Mono",monospace;color:var(--dim)}
+.hud-verdict{background:var(--surface-glass);backdrop-filter:blur(10px);border:1px solid var(--rule);padding:6px 12px;border-radius:20px;font-size:1rem;line-height:1.4;color:var(--dim);white-space:nowrap}
 .hud-chip.settled{border-color:var(--pass);color:var(--pass)}
-.hud-aspects{position:absolute;top:44px;left:10px;right:10px;display:flex;gap:5px;flex-wrap:wrap;pointer-events:none}
-.hud-aspects span{background:rgba(11,15,21,0.85);backdrop-filter:blur(10px);border:1px solid var(--rule);border-radius:12px;padding:2px 8px;font-size:10px;font-family:ui-monospace,"SF Mono",monospace;color:var(--dim)}
-.hud-aspects span.ok{color:var(--paper);border-color:var(--key)}
-.hud-aspects span.low{color:var(--hold);border-color:var(--hold)}
-.aspect-table td:first-child{width:28%}
-.aspect-table .why{display:block;color:var(--dim);font-size:11px;margin-top:2px}
 .hud-chip.settled .radar{background:var(--pass);animation:none;opacity:1;transform:none}
 
-.hud-banner{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);background:rgba(11,15,21,0.85);backdrop-filter:blur(10px);border:1px solid rgba(78,210,198,0.4);border-radius:20px;padding:5px 14px;font-size:11px;font-weight:600;font-family:ui-monospace,"SF Mono",monospace;color:var(--paper);display:flex;align-items:center;gap:6px;pointer-events:none;transition:all .2s;white-space:normal;text-align:center;line-height:1.35;max-width:92%;width:max-content;z-index:10;box-shadow:0 4px 16px rgba(0,0,0,0.5)}
-.hud-banner.warn{border-color:var(--hold);color:var(--hold)}
-.hud-banner.good{border-color:var(--pass);color:var(--pass)}
-.hud-spirit{position:absolute;top:46px;right:14px;background:rgba(11,15,21,0.8);backdrop-filter:blur(8px);border:1px solid var(--rule);border-radius:14px;padding:3px 8px;font-size:9.5px;font-family:ui-monospace,"SF Mono",monospace;color:var(--dim);display:flex;align-items:center;gap:5px;pointer-events:none;z-index:10}
+.hud-spirit{position:absolute;bottom:10px;right:10px;background:var(--surface-glass);backdrop-filter:blur(8px);border:1px solid var(--rule);border-radius:14px;padding:4px 10px;font-size:0.875rem;line-height:1.4;color:var(--dim);display:flex;align-items:center;gap:6px;pointer-events:none;z-index:10}
 .hud-spirit .spirit-bubble{width:6px;height:6px;border-radius:50%;background:var(--pass);transition:background .2s}
 .hud-spirit.tilted{border-color:var(--hold);color:var(--hold)}
 .hud-spirit.tilted .spirit-bubble{background:var(--hold)}
 
+.ar-info-panel{margin:8px 16px;display:flex;flex-direction:column;gap:8px}
+.hud-aspects{display:flex;gap:6px;flex-wrap:wrap}
+.hud-aspects span{background:var(--surface);border:1px solid var(--rule);border-radius:var(--radius-sm);padding:6px 12px;font-size:0.875rem;line-height:1.4;color:var(--dim)}
+.hud-aspects span.ok{color:#FFF;border-color:var(--pass)}
+.hud-aspects span.low{color:var(--hold);border-color:var(--hold)}
+
+.hud-banner{background:var(--surface);border:1px solid var(--rule);border-radius:var(--radius-md);padding:12px 16px;font-size:1rem;line-height:1.4;color:var(--paper);white-space:normal;text-align:left;box-shadow:0 2px 8px rgba(0,0,0,0.3);transition:border-color .2s,color .2s}
+.hud-banner.warn{border-color:var(--hold);color:var(--hold)}
+.hud-banner.good{border-color:var(--pass);color:var(--pass)}
+
+#zoom-bar{display:flex;align-items:center;gap:10px;padding:8px 16px 0}
+#zoom-bar input[type=range]{flex:1;height:44px;accent-color:var(--key)}
+#zoom-bar .zoom-read{font-size:1rem;color:var(--key);min-width:80px;text-align:right;font-variant-numeric:tabular-nums}
+#zoom-bar button{border:1px solid var(--rule);background:var(--rise);color:var(--paper);border-radius:var(--radius-sm);min-width:44px;min-height:44px;padding:8px 12px;font-size:1.25rem;cursor:pointer}
+
 /* Still & Results Output */
 #out{padding-bottom:90px}
-.empty-card{margin:12px 16px;padding:20px;background:var(--surface);border:1px solid var(--rule);border-radius:var(--radius-lg);font-size:13.5px;line-height:1.6;color:var(--dim)}
+.empty-card{margin:12px 16px;padding:20px;background:var(--surface);border:1px solid var(--rule);border-radius:var(--radius-lg);font-size:1rem;line-height:1.6;color:var(--dim)}
 .empty-card b{color:var(--paper)}
 .empty-card ul{padding-left:18px;margin:10px 0 0}
 .empty-card li{margin-bottom:6px}
@@ -873,52 +916,52 @@ header.app-bar{padding:calc(10px + env(safe-area-inset-top)) 16px 10px;
 .strip .split{position:absolute;top:0;bottom:0;width:2px;background:var(--key);box-shadow:0 0 0 1px rgba(11,15,21,.7)}
 .strip .ci{position:absolute;top:0;bottom:0;background:var(--key);opacity:.25}
 .strip .mid{position:absolute;top:0;bottom:0;left:50%;width:1px;background:var(--paper);opacity:.35}
-.strip .midcap{position:absolute;top:4px;left:50%;transform:translateX(-50%);font-size:8px;letter-spacing:.16em;color:var(--dim);text-transform:uppercase;background:var(--rise);padding:1px 5px;border-radius:3px}
-.strip .tag{position:absolute;bottom:5px;font-size:9.5px;letter-spacing:.1em;color:#AFC0CF;text-transform:uppercase;font-family:ui-monospace,"SF Mono",monospace}
+.strip .midcap{position:absolute;top:4px;left:50%;transform:translateX(-50%);font-size:0.875rem;color:var(--dim);background:var(--rise);padding:2px 6px;border-radius:3px}
+.strip .tag{position:absolute;bottom:4px;font-size:0.875rem;color:#AFC0CF;font-variant-numeric:tabular-nums}
 
 .ratio-row{display:flex;align-items:baseline;gap:10px;padding:14px 16px 2px}
-.ratio-row b{font-size:44px;line-height:.92;font-weight:800;letter-spacing:-.03em;font-variant-numeric:tabular-nums;font-family:ui-monospace,"SF Mono",monospace}
-.ratio-row span{font-size:13px;color:var(--dim);font-variant-numeric:tabular-nums;font-family:ui-monospace,"SF Mono",monospace}
-.sub-meta{padding:0 16px 12px;font-size:12px;color:var(--dim)}
+.ratio-row b{font-size:2.5rem;line-height:1;font-weight:800;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.ratio-row span{font-size:1rem;color:var(--dim);font-variant-numeric:tabular-nums}
+.sub-meta{padding:0 16px 12px;font-size:0.875rem;line-height:1.4;color:var(--dim)}
 
-.sect-title{padding:12px 16px 6px;font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);font-weight:700}
+.sect-title{padding:12px 16px 6px;font-size:1rem;font-weight:700;color:var(--paper)}
 .chips-row{display:flex;gap:8px;padding:0 16px 6px;flex-wrap:wrap}
-.chip{background:var(--surface);border:1px solid var(--rule);border-radius:var(--radius-sm);padding:7px 11px;font-size:12px;font-family:ui-monospace,"SF Mono",monospace;display:flex;align-items:center;gap:6px}
-.chip i{font-style:normal;color:var(--dim);font-size:10px}
+.chip{background:var(--surface);border:1px solid var(--rule);border-radius:var(--radius-sm);min-height:44px;padding:8px 12px;font-size:1rem;display:flex;align-items:center;gap:8px}
+.chip i{font-style:normal;color:var(--dim);font-size:0.875rem}
 .chip.gold{border-color:var(--key);background:rgba(78,210,198,.12);color:#FFF}
 
-table.mm-table{width:calc(100% - 32px);margin:8px 16px 0;border-collapse:collapse;font-family:ui-monospace,"SF Mono",monospace;font-size:12px}
-table.mm-table td{padding:6px 0;border-top:1px solid var(--rule);color:var(--dim)}
+table.mm-table{width:calc(100% - 32px);margin:8px 16px 0;border-collapse:collapse;font-size:1rem}
+table.mm-table th{padding:8px 0;border-top:1px solid var(--rule);color:var(--dim);text-align:left;font-weight:500;font-size:1rem}
+table.mm-table td{padding:8px 0;border-top:1px solid var(--rule);color:var(--dim);font-size:1rem}
 table.mm-table td:last-child{text-align:right;color:var(--paper);font-variant-numeric:tabular-nums}
+.aspect-table th{width:28%}
+.aspect-table .why{display:block;color:var(--dim);font-size:0.875rem;margin-top:4px;font-weight:normal}
 
 img.ov{width:calc(100% - 32px);max-height:44vh;object-fit:contain;margin:12px 16px 0;border-radius:var(--radius-md);border:1px solid var(--rule);display:block;background:var(--surface)}
 
 /* Native Dock */
-.native-dock{position:fixed;left:0;right:0;bottom:0;padding:10px 16px calc(12px + env(safe-area-inset-bottom));background:linear-gradient(to top,var(--ink) 80%,rgba(11,15,21,0));display:flex;align-items:center;gap:10px;z-index:50}
-.btn-primary{flex:1;border:none;border-radius:var(--radius-md);padding:15px;font-size:15px;font-weight:700;background:var(--key);color:#061116;font-family:inherit;cursor:pointer;box-shadow:0 4px 16px var(--key-glow);display:flex;align-items:center;justify-content:center;gap:8px}
+.native-dock{position:fixed;left:0;right:0;bottom:0;padding:10px 16px calc(12px + env(safe-area-inset-bottom));background:linear-gradient(to top,var(--ink) 85%,rgba(11,15,21,0));display:flex;align-items:center;gap:10px;z-index:50}
+.btn-primary{flex:1;border:none;border-radius:var(--radius-md);min-height:48px;padding:12px 16px;font-size:1rem;font-weight:700;background:var(--key);color:#061116;font-family:inherit;cursor:pointer;box-shadow:0 4px 16px var(--key-glow);display:flex;align-items:center;justify-content:center;gap:8px}
 .btn-primary:active{transform:scale(.98)}
 .btn-primary[disabled]{opacity:.45}
-.btn-round{width:50px;height:50px;border-radius:var(--radius-md);border:1px solid var(--rule);background:var(--surface);color:var(--paper);display:flex;align-items:center;justify-content:center;font-size:18px;cursor:pointer}
+.btn-round{min-width:48px;min-height:48px;width:48px;height:48px;border-radius:var(--radius-md);border:1px solid var(--rule);background:var(--surface);color:var(--paper);display:flex;align-items:center;justify-content:center;font-size:1.25rem;cursor:pointer}
 .btn-round:active{transform:scale(.94)}
 .btn-round.active{background:rgba(78,210,198,.2);border-color:var(--key);color:var(--key)}
 
 /* Settings Modal */
 .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.7);backdrop-filter:blur(8px);z-index:100;display:flex;align-items:flex-end;justify-content:center}
 .modal-sheet{background:var(--surface);border-top:1px solid var(--rule);border-radius:var(--radius-lg) var(--radius-lg) 0 0;width:100%;max-width:500px;padding:20px 20px calc(24px + env(safe-area-inset-bottom));box-shadow:0 -10px 40px rgba(0,0,0,0.6)}
-.modal-title{font-size:16px;font-weight:700;color:#FFF;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center}
-#zoom-bar{display:flex;align-items:center;gap:10px;padding:8px 16px 0}
-#zoom-bar input[type=range]{flex:1;accent-color:var(--key)}
-#zoom-bar .zoom-read{font-family:ui-monospace,"SF Mono",monospace;font-size:12px;color:var(--key);min-width:74px;text-align:right}
-#zoom-bar button{border:1px solid var(--rule);background:var(--rise);color:var(--paper);border-radius:var(--radius-sm);padding:4px 8px;font-size:12px;cursor:pointer}
-.fb-row{display:flex;flex-wrap:wrap;gap:6px;padding:8px 16px 12px}
-.fb-row input,.fb-row select{flex:1 1 90px;min-width:0;background:var(--rise);border:1px solid var(--rule);border-radius:var(--radius-sm);padding:7px 8px;color:#FFF;font-size:12px}
-.fb-row button{border:1px solid var(--rule);background:var(--rise);color:var(--paper);border-radius:var(--radius-sm);padding:7px 10px;font-size:12px;cursor:pointer}
+.modal-title{font-size:1.125rem;font-weight:700;color:#FFF;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center}
+.fb-row{display:flex;flex-wrap:wrap;gap:8px;padding:8px 16px 12px}
+.fb-row input,.fb-row select{flex:1 1 120px;min-width:0;min-height:44px;background:var(--rise);border:1px solid var(--rule);border-radius:var(--radius-sm);padding:8px 10px;color:#FFF;font-size:0.875rem}
+.fb-row button{min-height:44px;border:1px solid var(--rule);background:var(--rise);color:var(--paper);border-radius:var(--radius-sm);padding:8px 12px;font-size:0.875rem;cursor:pointer}
 .form-row{margin-bottom:14px}
-.form-row label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);margin-bottom:6px;font-weight:600}
-.form-row input{width:100%;background:var(--rise);border:1px solid var(--rule);border-radius:var(--radius-sm);padding:10px 12px;color:#FFF;font-size:13px;font-family:ui-monospace,"SF Mono",monospace;outline:none}
-.btn-save{width:100%;border:none;background:var(--key);color:#061116;font-weight:700;padding:12px;border-radius:var(--radius-md);cursor:pointer;font-size:14px}
+.form-row label{display:block;font-size:0.875rem;color:var(--dim);margin-bottom:6px;font-weight:600}
+.form-row input,.form-row select{width:100%;min-height:44px;background:var(--rise);border:1px solid var(--rule);border-radius:var(--radius-sm);padding:10px 12px;color:#FFF;font-size:1rem;outline:none}
+.btn-save{width:100%;min-height:44px;border:none;background:var(--key);color:#061116;font-weight:700;padding:12px;border-radius:var(--radius-md);cursor:pointer;font-size:1rem}
 input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
 .hidden{display:none !important}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 </style>
 </head>
 <body>
@@ -928,66 +971,76 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
     <h1>Bakugo</h1>
     <span class="badge">AR Hub</span>
   </div>
-  <div class="host-pill" id="btn-host-settings" title="Backend Connection Settings">
-    <span class="dot"></span>
+  <div class="text-size-controls" role="group" aria-label="Text size">
+    <button type="button" class="btn-text-size active" data-size="100%" aria-label="Standard text size">A</button>
+    <button type="button" class="btn-text-size" data-size="125%" aria-label="Large text size">A+</button>
+    <button type="button" class="btn-text-size" data-size="150%" aria-label="Extra large text size">A++</button>
+  </div>
+  <div class="host-pill" id="btn-host-settings" role="button" tabindex="0" aria-label="Backend connection settings" title="Backend Connection Settings">
+    <span class="dot" aria-hidden="true"></span>
     <span id="host-label">Container</span>
   </div>
 </header>
 
-<div class="tab-nav">
-  <button type="button" class="tab-btn active" id="tab-ar">⚡ Live AR Metrology</button>
-  <button type="button" class="tab-btn" id="tab-still">📷 Single Photo</button>
+<div class="tab-nav" role="tablist">
+  <button type="button" class="tab-btn active" id="tab-ar" role="tab" aria-selected="true">⚡ Live AR Metrology</button>
+  <button type="button" class="tab-btn" id="tab-still" role="tab" aria-selected="false">📷 Single Photo</button>
 </div>
 
 <div class="quick-pills">
-  <div class="pill-select">
+  <label class="pill-select" for="holder">
     <span>Holder:</span>
-    <select id="holder"></select>
-  </div>
-  <div class="pill-select">
+    <select id="holder" aria-label="Card holder type"></select>
+  </label>
+  <label class="pill-select" for="lens">
     <span>Lens:</span>
-    <select id="lens">
+    <select id="lens" aria-label="Camera lens selection">
       <option value="main">Main 1&times;</option>
       <option value="tele2x">Tele 2&times;</option>
       <option value="tele5x">Tele 5&times;</option>
       <option value="ultrawide">Ultrawide</option>
     </select>
-  </div>
-  <div class="pill-select">
+  </label>
+  <label class="pill-select" for="audio-toggle">
     <span>Audio:</span>
-    <select id="audio-toggle">
+    <select id="audio-toggle" aria-label="Audio feedback mode">
       <option value="on">🔊 Synth ON</option>
       <option value="off">🔇 Mute</option>
     </select>
-  </div>
+  </label>
 </div>
 
 <!-- Live AR Section -->
 <div id="section-ar">
+  <h2 class="sr-only">Live AR Metrology Viewport</h2>
+  <div id="hud-sr-summary" class="sr-only" aria-live="polite"></div>
   <div id="ar-container">
-    <video id="ar-video" playsinline muted autoplay></video>
-    <canvas id="ar-canvas"></canvas>
-    <canvas id="ar-debug" title="Detector view (540px frame sent to server). Tap to hide."></canvas>
+    <video id="ar-video" playsinline muted autoplay aria-hidden="true"></video>
+    <canvas id="ar-canvas" aria-hidden="true"></canvas>
+    <canvas id="ar-debug" title="Detector view (540px frame sent to server). Tap to hide." aria-hidden="true"></canvas>
     <div class="ar-hud-overlay">
-      <div class="hud-chip"><span class="radar"></span><span id="hud-status">SEARCHING</span></div>
+      <div class="hud-chip"><span class="radar" aria-hidden="true"></span><span id="hud-status">SEARCHING</span></div>
       <div class="hud-verdict" id="hud-verdict">SPRT IDLE</div>
     </div>
+    <div id="hud-spirit-level" class="hud-spirit"><span class="spirit-bubble" aria-hidden="true"></span><span id="spirit-deg">0° LEVEL</span></div>
+  </div>
+  <div class="ar-info-panel">
     <div id="hud-aspects" class="hud-aspects hidden"></div>
-    <div id="hud-guidance" class="hud-banner">Align card inside viewfinder template</div>
-    <div id="hud-spirit-level" class="hud-spirit"><span class="spirit-bubble"></span><span id="spirit-deg">0° LEVEL</span></div>
+    <div id="hud-guidance" class="hud-banner" role="status" aria-live="polite">Align card inside viewfinder template</div>
   </div>
   <!-- Reach: real zoom where the camera supports it, capture-crop where it
        does not, plus a camera picker so a telephoto module can be chosen. -->
   <div id="zoom-bar">
-    <button type="button" id="zoom-out" title="Zoom out">&minus;</button>
-    <input type="range" id="zoom" min="1" max="8" step="0.1" value="1" aria-label="Zoom">
-    <button type="button" id="zoom-in" title="Zoom in">+</button>
+    <button type="button" id="zoom-out" title="Zoom out" aria-label="Zoom out">&minus;</button>
+    <input type="range" id="zoom" min="1" max="8" step="0.1" value="1" aria-label="Zoom level">
+    <button type="button" id="zoom-in" title="Zoom in" aria-label="Zoom in">+</button>
     <span class="zoom-read" id="zoom-read">1.0&times;</span>
   </div>
 </div>
 
 <!-- Output Section -->
-<div id="out">
+<div id="out" role="region" aria-label="Metrology results" aria-live="polite">
+  <h2 class="sr-only">Measurement and Condition Results</h2>
   <div class="empty-card" id="empty-state">
     Point the rear camera at one collectible card against a contrasting surface.
     <ul>
@@ -999,9 +1052,9 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
 </div>
 
 <div class="native-dock">
-  <input type="file" id="file" accept="image/*" capture="environment">
-  <button type="button" class="btn-round" id="btn-sound-test" title="Sound Synthesizer Test">🎵</button>
-  <button type="button" class="btn-round" id="btn-ar-reset" title="Reset AR Tracking">↺</button>
+  <input type="file" id="file" accept="image/*" capture="environment" aria-label="Upload card image">
+  <button type="button" class="btn-round" id="btn-sound-test" title="Sound Synthesizer Test" aria-label="Test sound synthesizer">🎵</button>
+  <button type="button" class="btn-round" id="btn-ar-reset" title="Reset AR Tracking" aria-label="Reset AR tracking">↺</button>
   <button class="btn-primary" id="btn-action">📸 Measure Card</button>
 </div>
 
@@ -1010,22 +1063,22 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
   <div class="modal-sheet">
     <div class="modal-title">
       <span>Container Backend Settings</span>
-      <span style="cursor:pointer;color:var(--dim)" id="modal-close">&times;</span>
+      <span style="cursor:pointer;color:var(--dim)" id="modal-close" role="button" tabindex="0" aria-label="Close settings">&times;</span>
     </div>
     <div class="form-row">
-      <label>Backend URL (Container API Host)</label>
+      <label for="setting-api-url">Backend URL (Container API Host)</label>
       <input type="text" id="setting-api-url" placeholder="http://127.0.0.1:8765 or http://192.168.1.X:8765">
     </div>
     <div class="form-row">
-      <label>Tenant Device ID</label>
+      <label for="setting-device-id">Tenant Device ID</label>
       <input type="text" id="setting-device-id" readonly>
     </div>
     <div class="form-row">
-      <label>Camera (a telephoto module reaches further than any crop)</label>
+      <label for="setting-camera">Camera (a telephoto module reaches further than any crop)</label>
       <select id="setting-camera"><option value="">Default rear camera</option></select>
     </div>
     <div class="form-row">
-      <label>Owner Token (your devices only: saves confirmed photos to the private inbox)</label>
+      <label for="setting-owner-token">Owner Token (your devices only: saves confirmed photos to the private inbox)</label>
       <input type="password" id="setting-owner-token" autocomplete="off">
     </div>
     <button type="button" class="btn-save" id="setting-save">Save & Ping Container</button>
@@ -1880,18 +1933,43 @@ async function arTick() {
   }
 }
 
+let lastSRAnnounceText = '';
+let lastSRAnnounceTime = 0;
+function announceToSR(text) {
+  if (!text) return;
+  const now = Date.now();
+  if (text !== lastSRAnnounceText && (now - lastSRAnnounceTime >= 2500)) {
+    lastSRAnnounceText = text;
+    lastSRAnnounceTime = now;
+    const sr = document.getElementById('hud-sr-summary');
+    if (sr) sr.textContent = text;
+  }
+}
+
 // The grade is four aspects. One that has no evidence yet is shown as
 // "--", never as a number: until 2.24 the corners/edges/surface here were
 // guessed from detection quality and every soft frame read "~PSA 8".
-const ASPECT_ABBR = { centering: 'CEN', corners: 'CRN', edges: 'EDG', surface: 'SRF' };
+const ASPECT_NAMES = { centering: 'Centering', corners: 'Corners', edges: 'Edges', surface: 'Surface' };
 function gradeText(d) {
-  if (!d || !d.grade_estimate) return null;
-  // Centering alone is not a grade: until corners and edges are read the
-  // chip says so (2.24.0 showed "\u2264PSA 10" for a card nobody had looked at
-  // the corners of, which reads as a 10).
+  if (!d) return null;
+  if (d.wear_ceiling != null) {
+    return `\u2264PSA ${d.wear_ceiling} (partial)`;
+  }
   if (!d.grade_graded) return 'not graded yet';
-  const g = String(d.grade_estimate).replace(/ max$/, '');
-  if (d.grade_complete) return `${g} (${Math.round((d.grade_confidence || 0) * 100)}%)`;
+  let g = '';
+  if (d.range && d.range.length === 2) {
+    const [lo, hi] = d.range;
+    g = (lo === hi) ? `PSA ${lo}` : `PSA ${lo}\u2013${hi}`;
+  } else if (d.grade_estimate) {
+    g = String(d.grade_estimate).replace(/ max$/, '');
+  }
+  const surfUnchecked = !d.aspects || !d.aspects.surface || d.aspects.surface.assessed === 'no';
+  if (surfUnchecked && !d.grade_complete) {
+    return `${g} (surface ?)`;
+  }
+  if (d.grade_complete) {
+    return `${g} (${Math.round((d.grade_confidence || 0) * 100)}%)`;
+  }
   return `\u2264${g}`;
 }
 function renderAspectChips(d) {
@@ -1900,13 +1978,18 @@ function renderAspectChips(d) {
   const a = d && d.aspects;
   if (!a) { box.classList.add('hidden'); box.innerHTML = ''; return; }
   box.classList.remove('hidden');
-  box.innerHTML = Object.keys(ASPECT_ABBR).map(k => {
+  box.innerHTML = Object.keys(ASPECT_NAMES).map(k => {
     const x = a[k];
-    if (!x || x.assessed === 'no' || x.grade == null) return `<span>${ASPECT_ABBR[k]} --</span>`;
-    const cls = (+x.grade >= 9) ? 'ok' : 'low';
+    const name = ASPECT_NAMES[k];
+    if (!x || x.assessed === 'no' || x.grade == null) return `<span>${name} \u2014 not read</span>`;
+    const g = +x.grade;
     const side = x.assessed === 'both' ? ' F+B' : (x.assessed === 'back' ? ' B' : '');
-    return `<span class="${cls}">${ASPECT_ABBR[k]} ${esc(x.grade)}${side}</span>`;
-  }).join('') + (d.face === 'back' ? '<span class="low">BACK</span>' : '');
+    if (g >= 9) {
+      return `<span class="ok">${name} ${esc(x.grade)}${side} \u2713</span>`;
+    } else {
+      return `<span class="low">${name} \u2264${esc(x.grade)}${side} \u26A0</span>`;
+    }
+  }).join('') + (d.face === 'back' ? '<span class="low">Back \u26A0</span>' : '');
 }
 
 function drawARHUD(d, thumb) {
@@ -1986,6 +2069,7 @@ function drawARHUD(d, thumb) {
       banner.textContent = 'Align card inside viewfinder template';
       banner.className = 'hud-banner';
     }
+    announceToSR(banner.textContent);
   }
 
   // Peak-sharpness auto-capture on settlement
@@ -2480,10 +2564,10 @@ function renderResults(d) {
     `<div class="chip ${String(b.label).includes('10')?'gold':''}"><i>${esc(g)}</i><b>${esc(b.label)}</b></div>`).join('')}</div>
   ${renderCardGrade(d)}
   <table class="mm-table">
-    <tr><td>Horizontal Borders (L/R)</td><td>${d.borders.left.toFixed(2)} / ${d.borders.right.toFixed(2)} mm</td></tr>
-    <tr><td>Vertical Borders (T/B)</td><td>${d.borders.top.toFixed(2)} / ${d.borders.bottom.toFixed(2)} mm</td></tr>
-    <tr><td>Sensor Metric Scale</td><td>${d.px_per_mm} px/mm</td></tr>
-    <tr><td>Optical Refraction</td><td>${esc(d.holder)}${d.refraction?' · Snell Corrected':''}</td></tr>
+    <tr><th scope="row">Horizontal Borders (L/R)</th><td>${d.borders.left.toFixed(2)} / ${d.borders.right.toFixed(2)} mm</td></tr>
+    <tr><th scope="row">Vertical Borders (T/B)</th><td>${d.borders.top.toFixed(2)} / ${d.borders.bottom.toFixed(2)} mm</td></tr>
+    <tr><th scope="row">Sensor Metric Scale</th><td>${d.px_per_mm} px/mm</td></tr>
+    <tr><th scope="row">Optical Refraction</th><td>${esc(d.holder)}${d.refraction?' · Snell Corrected':''}</td></tr>
   </table>
   ${d.overlay ? `<img class="ov" alt="Card Metrology" src="data:image/jpeg;base64,${d.overlay}">` : ''}`;
   window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
@@ -2492,18 +2576,36 @@ function renderResults(d) {
 function renderCardGrade(d) {
   const p = d.predicted_grades && d.predicted_grades.PSA;
   if (!p || !p.aspects) return '';
-  const head = !p.graded
-    ? `Not graded <span>${esc((p.missing || []).join(', '))} not readable in this photo -- centering alone allows up to PSA ${esc(p.ceiling)}, which says nothing about wear</span>`
-    : p.complete
-      ? `${esc(p.grade)} <span>${Math.round((p.probability || 0) * 100)}% likely</span>`
-      : `\u2264 ${esc(String(p.grade).replace(/ max$/, ''))} <span>ceiling -- ${esc((p.missing || []).join(', '))} not assessed</span>`;
+  let head = '';
+  if (p.wear_ceiling != null) {
+    head = `\u2264PSA ${p.wear_ceiling} (partial) <span>ceiling from wear already seen; ${esc((p.missing || []).join(', '))} not fully read</span>`;
+  } else if (!p.graded) {
+    head = `Not graded yet <span>${esc((p.missing || []).join(', '))} not measured; centering alone allows up to PSA ${esc(p.ceiling)}, which says nothing about wear</span>`;
+  } else if (p.range && p.range.length === 2) {
+    const [lo, hi] = p.range;
+    const rngStr = (lo === hi) ? `PSA ${lo}` : `PSA ${lo}\u2013${hi}`;
+    const surfNote = (!p.complete && (!p.aspects.surface || p.aspects.surface.assessed === 'no')) ? ' (surface ?)' : '';
+    head = `${rngStr}${surfNote} <span>${p.complete ? `${Math.round((p.probability || 0) * 100)}% likely` : `80% range \u2014 ${esc((p.missing || []).join(', '))} not assessed`}</span>`;
+  } else if (p.complete) {
+    head = `${esc(p.grade)} <span>${Math.round((p.probability || 0) * 100)}% likely</span>`;
+  } else {
+    head = `\u2264 ${esc(String(p.grade).replace(/ max$/, ''))} <span>ceiling \u2014 ${esc((p.missing || []).join(', '))} not assessed</span>`;
+  }
   const names = { centering: 'Centering', corners: 'Corners', edges: 'Edges', surface: 'Surface' };
   const rows = Object.keys(names).map(k => {
     const a = p.aspects[k] || {};
+    let statusSym = '';
+    if (a.assessed === 'no' || a.grade == null) {
+      statusSym = ' \u2014 not read';
+    } else if (+a.grade >= 9) {
+      statusSym = ' \u2713';
+    } else {
+      statusSym = ' \u26A0';
+    }
     const val = (a.assessed === 'no' || a.grade == null)
-      ? 'not assessed'
-      : `${esc(a.grade)} (${Math.round((a.p || 0) * 100)}%)${a.assessed === 'both' ? ' · front+back' : (a.assessed === 'back' ? ' · back' : '')}`;
-    return `<tr><td>${names[k]}</td><td>${val}<span class="why">${esc(a.detail || '')}</span></td></tr>`;
+      ? 'Not assessed'
+      : `${esc(a.grade)} (${Math.round((a.p || 0) * 100)}%)${statusSym}${a.assessed === 'both' ? ' · front+back' : (a.assessed === 'back' ? ' · back' : '')}`;
+    return `<tr><th scope="row">${names[k]}</th><td>${val}<span class="why">${esc(a.detail || '')}</span></td></tr>`;
   }).join('');
   return `<div class="sect-title">Card Grade (PSA, all aspects)</div>
   <div class="ratio-row"><b>${head}</b></div>
@@ -2519,10 +2621,10 @@ function renderIdentify(d) {
     html += `<div class="sub-meta" style="color:var(--stop)">Identify failed: ${esc(d && d.error || 'no response')}</div>`;
   } else if (d.identified) {
     html += `<table class="mm-table">
-      <tr><td>Name</td><td><b>${esc(d.name)}</b>${d.dex != null ? ' &middot; #' + esc(d.dex) : ''}</td></tr>
-      <tr><td>OCR token</td><td>${esc(d.matched_token || '')} (${esc(d.edits)} edits)</td></tr>
-      <tr><td>Corroborated</td><td>${d.corroborated ? 'yes' : 'no'}</td></tr>
-      <tr><td>Engine</td><td>${esc(d.engine)}</td></tr></table>`;
+      <tr><th scope="row">Name</th><td><b>${esc(d.name)}</b>${d.dex != null ? ' &middot; #' + esc(d.dex) : ''}</td></tr>
+      <tr><th scope="row">OCR token</th><td>${esc(d.matched_token || '')} (${esc(d.edits)} edits)</td></tr>
+      <tr><th scope="row">Corroborated</th><td>${d.corroborated ? 'yes' : 'no'}</td></tr>
+      <tr><th scope="row">Engine</th><td>${esc(d.engine)}</td></tr></table>`;
   } else {
     const alts = (d.alternatives || []).slice(0, 5).map(esc).join(', ');
     html += `<div class="sub-meta">Not identified (engine: ${esc(d.engine)}, ${esc(d.tokens_considered)} tokens)${alts ? ' &middot; candidates: ' + alts : ''}</div>`;
@@ -2550,10 +2652,10 @@ function feedbackForm(d) {
   const row = document.createElement('div');
   row.className = 'fb-row';
   row.innerHTML = `
-    <input id="fb-name-${n}" placeholder="Right name">
-    <input id="fb-num-${n}" placeholder="#" inputmode="numeric">
-    <input id="fb-price-${n}" placeholder="Price: $2.50, 3 for $1, 50c">
-    <select id="fb-src-${n}">${PRICE_SOURCES.map(s => `<option value="${s}">${s.replace('_', ' ')}</option>`).join('')}</select>
+    <input id="fb-name-${n}" aria-label="Card name correction" placeholder="Right name">
+    <input id="fb-num-${n}" aria-label="Card number" placeholder="#" inputmode="numeric">
+    <input id="fb-price-${n}" aria-label="Price paid or asked" placeholder="Price: $2.50, 3 for $1, 50c">
+    <select id="fb-src-${n}" aria-label="Price source">${PRICE_SOURCES.map(s => `<option value="${s}">${s.replace('_', ' ')}</option>`).join('')}</select>
     <button type="button" id="fb-ok-${n}">&#10003; Correct</button>
     <button type="button" id="fb-fix-${n}">Fix name</button>
     <button type="button" id="fb-no-${n}">Wrong</button>
@@ -2662,15 +2764,36 @@ $('#btn-ar-reset').onclick = () => {
 };
 $('#audio-toggle').onchange = (e) => { synth.enabled = (e.target.value === 'on'); };
 
+// Text size controls
+try {
+  const savedSize = localStorage.getItem('bakugo_text_size') || '100%';
+  document.documentElement.style.fontSize = savedSize;
+  document.querySelectorAll('.btn-text-size').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.size === savedSize);
+    btn.onclick = () => {
+      document.querySelectorAll('.btn-text-size').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.documentElement.style.fontSize = btn.dataset.size;
+      localStorage.setItem('bakugo_text_size', btn.dataset.size);
+    };
+  });
+} catch (e) {}
+
 $('#btn-host-settings').onclick = () => {
   $('#setting-api-url').value = backendUrl;
   $('#setting-device-id').value = deviceId;
   try { $('#setting-owner-token').value = localStorage.getItem('bakugo_owner_token') || ''; } catch (e) {}
   $('#modal-settings').classList.remove('hidden');
 };
+$('#btn-host-settings').onkeydown = (e) => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('#btn-host-settings').click(); }
+};
 $('#modal-close').onclick = () => { $('#modal-settings').classList.add('hidden'); };
+$('#modal-close').onkeydown = (e) => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('#modal-close').click(); }
+};
 $('#setting-save').onclick = () => {
-  backendUrl = $('#setting-api-url').value.trim().replace(/\\/+$/, '');
+  backendUrl = $('#setting-api-url').value.trim().replace(/[/]+$/, '');
   localStorage.setItem('bakugo_backend_url', backendUrl);
   try {
     const owner = $('#setting-owner-token').value.trim();
@@ -3247,6 +3370,8 @@ class Handler(BaseHTTPRequestHandler):
                     "aspects": status.aspects,
                     "grade_complete": status.grade_complete,
                     "grade_graded": status.grade_graded,
+                    "wear_ceiling": status.wear_ceiling,
+                    "range": list(status.grade_range) if status.grade_range else None,
                     "face": status.face,
                     "condition_hint": status.condition_hint,
                     "verdict": (

@@ -8,7 +8,7 @@ grade. Centering sets a ceiling; the other three attributes decide where under
 that ceiling a card actually lands.
 """
 
-__version__ = "2.24.1"
+__version__ = "2.25.0"
 
 import os as _os
 
@@ -17,6 +17,7 @@ import os as _os
 # serve.decode_image also checks the header before decoding.
 _os.environ.setdefault("OPENCV_IO_MAX_IMAGE_PIXELS", str(64_000_000))
 
+from . import photometrology
 from .centering import measure_centering
 from .cloud import CloudConfig, CloudResult, resolve_config, sync_scan_id, sync_store, upsert_scan
 from .connection import ConnectionManager, ConnectionSpec, EndpointHealth, SyncClient, SyncPayload, SyncResult
@@ -131,5 +132,6 @@ __all__ = [
     "analytics_available",
     "SupabaseTransferEngine",
     "run_transfer",
+    "photometrology",
     "__version__",
 ]

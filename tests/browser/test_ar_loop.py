@@ -125,6 +125,7 @@ def stub():
                                    "guidance": [], "measured_frames": 4, "seen_frames": 9,
                                    "ratio": 66.8, "settled": True, "grade_estimate": "PSA 8",
                                    "grade_confidence": 0.52, "grade_ceiling": "6-10",
+                                   "grade_graded": True,
                                    "verdict": "ABOVE"})
             self._json({"ok": True, "tracking": True, "headline": "tracking", "quad": QUAD,
                         "guidance": [], "measured_frames": 0, "seen_frames": 1, "ratio": None,
@@ -357,6 +358,7 @@ def test_tap_on_the_preview_picks_the_card(page, stub):
     n0 = len(stub["pushes"])
     page.mouse.click(box["x"] + box["width"] * 0.25, box["y"] + box["height"] * 0.5)
     page.wait_for_function("() => arStats.aim !== ''", timeout=5000)
+    page.wait_for_function(f"() => arStats.pushes > {n0}", timeout=10000)
     page.wait_for_timeout(1500)
     aimed = [p for p in stub["pushes"][n0:] if "aim_x" in p]
     assert len(aimed) == 1, stub["pushes"][n0:]

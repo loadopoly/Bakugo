@@ -94,6 +94,8 @@ def _result_dict(res: CenteringResult, bands: dict, model: Optional[GradeOutcome
                 "grade": pred.grade_label,
                 "score": pred.grade_score if pred.graded else None,
                 "ceiling": pred.grade_score,
+                "wear_ceiling": pred.wear_ceiling,
+                "range": list(pred.range) if pred.range else None,
                 "graded": pred.graded,
                 "condition": pred.condition_name,
                 "complete": pred.complete,

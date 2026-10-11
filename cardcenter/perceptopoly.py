@@ -203,6 +203,8 @@ def analyse(image_bytes: bytes, holder: str, lens: str) -> dict:
                     "grade": p.grade_label,
                     "condition": p.condition_name,
                     "score": p.grade_score if p.graded else None,
+                    "wear_ceiling": p.wear_ceiling,
+                    "range": list(p.range) if p.range else None,
                     "graded": p.graded,
                     "subgrades": {
                         "centering": p.centering_subgrade,

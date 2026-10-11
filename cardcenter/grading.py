@@ -243,18 +243,63 @@ def _key(g: float) -> str:
     return str(int(g)) if float(g).is_integer() else str(g)
 
 
+def upper_bound(distribution: Dict[float, float], p_min: float = 0.10) -> Optional[float]:
+    """Highest grade with at least ``p_min`` (default 10%) probability."""
+    if not distribution:
+        return None
+    cands = [g for g, p in distribution.items() if p >= p_min - 1e-9]
+    return max(cands) if cands else max(distribution.keys())
+
+
+def credible_range(distribution: Dict[float, float], mass: float = 0.80) -> Optional[tuple[float, float]]:
+    """Central credible interval (default 80% range) over discrete grades: (lo, hi)."""
+    if not distribution:
+        return None
+    items = sorted(distribution.items(), key=lambda kv: kv[0])
+    if len(items) == 1:
+        return (items[0][0], items[0][0])
+    alpha = (1.0 - mass) / 2.0
+    cum = 0.0
+    lo = items[0][0]
+    for g, p in items:
+        cum += p
+        if cum >= alpha - 1e-9:
+            lo = g
+            break
+    cum = 0.0
+    hi = items[-1][0]
+    for g, p in reversed(items):
+        cum += p
+        if cum >= alpha - 1e-9:
+            hi = g
+            break
+    if lo > hi:
+        lo, hi = hi, lo
+    return (lo, hi)
+
+
 @dataclass(frozen=True)
 class AspectGrade:
     """One aspect's grade distribution and how it was arrived at."""
 
     aspect: str
-    assessed: str                       # "no", "front", "back", "both"
+    assessed: str                       # "no", "front", "back", "both", "partial"
     distribution: Dict[float, float]    # grade -> probability
     detail: str = ""
 
     @property
     def is_assessed(self) -> bool:
         return self.assessed != "no" and bool(self.distribution)
+
+    @property
+    def is_partial(self) -> bool:
+        return self.assessed == "partial"
+
+    @property
+    def upper(self) -> Optional[float]:
+        if not self.distribution:
+            return None
+        return upper_bound(self.distribution, 0.10)
 
     @property
     def modal(self) -> Optional[float]:
@@ -273,6 +318,8 @@ class AspectGrade:
             "assessed": self.assessed,
             "grade": None if self.modal is None else _key(self.modal),
             "p": round(self.p_modal, 2),
+            "upper": None if self.upper is None else _key(self.upper),
+            "is_partial": self.is_partial,
             "distribution": {_key(k): round(v, 3) for k, v in sorted(self.distribution.items(), reverse=True)
                              if v >= 0.005},
             "detail": self.detail,
@@ -412,21 +459,31 @@ def corner_aspect(summary: Optional[dict]) -> AspectGrade:
                 continue
             phys = c if face == "front" else BACK_TO_FRONT_CORNER[c]
             per[phys].append(_categories(est.value, est.sigma, bounds))
+    read_corners = [c for c in CORNERS if per[c]]
     missing = [c for c in CORNERS if not per[c]]
-    if missing:
+    if not read_corners:
         return AspectGrade("corners", "no", {},
                            "not yet read: " + ", ".join(_CORNER_ABBR[c] for c in missing))
     items, words = [], []
     for c in CORNERS:
-        d = per[c][0]
-        for more in per[c][1:]:
-            d = _max_categories(d, more)
-        items.append(d)
-        words.append(f"{_CORNER_ABBR[c]} {names[int(np.argmax(d))]}")
-    faces = _faces_of(summary)
-    assessed = "both" if faces == ["front", "back"] and all(
-        summary["back"]["corners"][c] is not None for c in CORNERS) else faces[0]
-    return AspectGrade("corners", assessed, _enumerate(items, corner_grade_rule), "; ".join(words))
+        if per[c]:
+            d = per[c][0]
+            for more in per[c][1:]:
+                d = _max_categories(d, more)
+            items.append(d)
+            words.append(f"{_CORNER_ABBR[c]} {names[int(np.argmax(d))]}")
+        else:
+            # Unread assumed perfect (sharp)
+            items.append([1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    if missing:
+        assessed = "partial"
+        detail = "; ".join(words) + " (" + ", ".join(_CORNER_ABBR[c] for c in missing) + " not read)"
+    else:
+        faces = _faces_of(summary)
+        assessed = "both" if faces == ["front", "back"] and all(
+            summary["back"]["corners"][c] is not None for c in CORNERS) else faces[0]
+        detail = "; ".join(words)
+    return AspectGrade("corners", assessed, _enumerate(items, corner_grade_rule), detail)
 
 
 def edge_aspect(summary: Optional[dict]) -> AspectGrade:
@@ -451,20 +508,30 @@ def edge_aspect(summary: Optional[dict]) -> AspectGrade:
             if w is not None:
                 d = _max_categories(d, _categories(w.value, w.sigma, wb))
             per[phys].append(d)
+    read_sides = [s for s in SIDES if per[s]]
     missing = [s for s in SIDES if not per[s]]
-    if missing:
+    if not read_sides:
         return AspectGrade("edges", "no", {}, "not yet read: " + ", ".join(missing))
     items, words = [], []
     for s in SIDES:
-        d = per[s][0]
-        for more in per[s][1:]:
-            d = _max_categories(d, more)
-        items.append(d)
-        words.append(f"{s} {names[int(np.argmax(d))]}")
-    faces = _faces_of(summary)
-    assessed = "both" if faces == ["front", "back"] and all(
-        summary["back"]["edges"][s]["nick"] is not None for s in SIDES) else faces[0]
-    return AspectGrade("edges", assessed, _enumerate(items, edge_grade_rule), "; ".join(words))
+        if per[s]:
+            d = per[s][0]
+            for more in per[s][1:]:
+                d = _max_categories(d, more)
+            items.append(d)
+            words.append(f"{s} {names[int(np.argmax(d))]}")
+        else:
+            # Unread assumed perfect (clean)
+            items.append([1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    if missing:
+        assessed = "partial"
+        detail = "; ".join(words) + " (" + ", ".join(missing) + " not read)"
+    else:
+        faces = _faces_of(summary)
+        assessed = "both" if faces == ["front", "back"] and all(
+            summary["back"]["edges"][s]["nick"] is not None for s in SIDES) else faces[0]
+        detail = "; ".join(words)
+    return AspectGrade("edges", assessed, _enumerate(items, edge_grade_rule), detail)
 
 
 def surface_aspect(summary: Optional[dict]) -> AspectGrade:
@@ -597,6 +664,8 @@ class CardGradePrediction:
     # "not graded". A 51.6/48.4 card read "PSA 10 max" in 2.24.0 and was
     # taken, reasonably, for a grade of 10.
     graded: bool = False
+    range: Optional[tuple[float, float]] = None
+    wear_ceiling: Optional[float] = None
 
     def describe(self) -> str:
         def sub(v):
@@ -613,7 +682,11 @@ class CardGradePrediction:
             f"  Centering Ceiling  : {self.grade_ceiling.best if self.grade_ceiling.is_single else f'{self.grade_ceiling.worst}-{self.grade_ceiling.best}'}",
             f"  Notes              : {self.summary}",
         ]
-        if not self.graded:
+        if self.wear_ceiling is not None:
+            lines.append("  Wear ceiling       : " + f"{self.grader} {_key(self.wear_ceiling)} (partial) "
+                         + "-- wear already seen caps the grade; "
+                         + ", ".join(self.missing) + " not fully read")
+        elif not self.graded:
             lines.append("  Not graded         : " + ", ".join(self.missing)
                          + " not measured; centering alone allows up to "
                          + f"{self.grader} {_key(self.grade_score)}, which says nothing about wear")
@@ -706,25 +779,54 @@ def predict_overall_grade(
         "edges": edge_aspect(summ),
         "surface": surface_aspect(summ),
     }
+    corners_partial = aspects["corners"].is_partial
+    edges_partial = aspects["edges"].is_partial
+    has_partial = corners_partial or edges_partial
+    graded = (aspects["corners"].is_assessed and not corners_partial) and (aspects["edges"].is_assessed and not edges_partial)
     missing = tuple(k for k, a in aspects.items() if not a.is_assessed)
-    complete = not missing
-    graded = aspects["corners"].is_assessed and aspects["edges"].is_assessed
+    complete = not missing and not has_partial
     dist = compose(list(aspects.values()), grader)
     probs = {_key(k): float(v) for k, v in sorted(dist.items(), reverse=True)}
     final_score = max(dist.items(), key=lambda kv: (kv[1], kv[0]))[0]
     conf = float(dist[final_score])
 
-    def label(score: float) -> str:
-        g = int(score) if float(score).is_integer() else score
+    # Wear ceiling: when wear already seen on corners/edges caps the grade
+    wear_ceiling: Optional[float] = None
+    if has_partial:
+        c_up = aspects["corners"].upper if aspects["corners"].is_assessed else 10.0
+        e_up = aspects["edges"].upper if aspects["edges"].is_assessed else 10.0
+        if (c_up is not None and c_up < 10.0) or (e_up is not None and e_up < 10.0):
+            wear_ceiling = upper_bound(dist, 0.10)
+
+    crange = credible_range(dist, 0.80)
+
+    def label(score: float, rng=crange) -> str:
+        if wear_ceiling is not None:
+            return f"{grader} <={_key(wear_ceiling)} (partial)"
         if not graded:
             return f"{grader} not graded"
-        return f"{grader} {g}" if complete else f"{grader} {g} max"
+        if rng is not None:
+            lo, hi = rng
+            base = f"{grader} {_key(lo)}" if lo == hi else f"{grader} {_key(lo)}-{_key(hi)}"
+        else:
+            g = int(score) if float(score).is_integer() else score
+            base = f"{grader} {g}"
+        return base if complete else f"{base} max"
 
     centering_sub = centering.modal if centering.modal is not None else 1.0
     final_score = max(1.0, min(10.0, final_score))
-    cond_name = CONDITION_NAMES.get(final_score, "Authentic") if graded else "Not graded"
+    if wear_ceiling is not None:
+        cond_name = CONDITION_NAMES.get(wear_ceiling, "Partial")
+    elif graded:
+        cond_name = CONDITION_NAMES.get(final_score, "Authentic")
+    else:
+        cond_name = "Not graded"
     grade_label = label(final_score)
-    if complete:
+    if wear_ceiling is not None:
+        summary = (f"Ceiling {grade_label} ({cond_name}) from wear already seen; "
+                   + ("not fully read: " + ", ".join(missing) if missing else "partial evidence")
+                   + ". The card cannot grade above this and may grade below it.")
+    elif complete:
         summary = (f"Predicted {grade_label} ({cond_name}) from measured centering, corners, "
                    f"edges and surface.")
     elif not graded:
@@ -779,8 +881,9 @@ def predict_overall_grade(
                         final_score = _snap_grade(expected / mass, grader)
                         if ceiling is not None:
                             final_score = min(final_score, ceiling)
+                        crange = credible_range({float(k): v for k, v in probs.items() if parse_issued_grade(k) is not None}, 0.80)
                         cond_name = CONDITION_NAMES.get(final_score, "Authentic")
-                        grade_label = label(final_score)
+                        grade_label = label(final_score, crange)
                     used_learned = True
                     conf = float(probs.get(_key(final_score), conf))
                     summary = (
@@ -790,6 +893,7 @@ def predict_overall_grade(
                         f"blended with the measured evidence."
                     )
 
+    range_tuple = crange if (graded or wear_ceiling is not None) else None
     return CardGradePrediction(
         grader=grader,
         grade_score=float(final_score),
@@ -809,6 +913,8 @@ def predict_overall_grade(
         aspects=aspects,
         missing=missing,
         graded=graded,
+        range=range_tuple,
+        wear_ceiling=wear_ceiling,
     )
 
 

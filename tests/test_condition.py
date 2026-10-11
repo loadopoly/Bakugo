@@ -379,3 +379,18 @@ def test_centering_alone_is_never_shown_as_a_grade(clean) -> None:
     seen = predict_overall_grade(res.worst_ratio, condition=v)
     assert seen.graded and not seen.complete
     assert seen.grade_label.endswith("max") and seen.grade_label != "PSA not graded"
+
+
+def test_coarse_tier_from_downscaled_view(clean) -> None:
+    v, _ = clean
+    for c in v.corners.values():
+        if c.resolvable:
+            assert c.coarse is False
+
+    v_coarse, _ = _view({}, distance=450.0)
+    assert v_coarse.px_per_mm < 6.0
+    for c in v_coarse.corners.values():
+        if c.resolvable:
+            assert c.coarse is True
+            assert c.whitening_resolvable is False
+
