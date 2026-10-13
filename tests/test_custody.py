@@ -50,3 +50,23 @@ def test_the_code_is_found_despite_ocr_confusions():
     assert custody.challenge_in("k7q 4mp", "K7Q-4MP")
     assert custody.challenge_in("XX K7Q-4MP YY", "K7Q-4MP")
     assert not custody.challenge_in("K7Q 4MQ", "K7Q-4MP")
+
+
+def test_asset_id_matches_the_shard_forge():
+    assert custody.asset_id_for("identifications", "uwdOhnwBlQzuVUM7") == "bakugo:identifications:bc46ebcab4b7537a"
+
+
+def test_cards_for_lists_only_this_devices_identifications(tmp_path):
+    import sqlite3
+
+    db = tmp_path / "cc.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE identifications (id TEXT, name TEXT, dex INTEGER, created_at TEXT, device_id TEXT)")
+    conn.executemany("INSERT INTO identifications VALUES (?,?,?,?,?)", [
+        ("a1", "Pikachu", 25, "2026-10-01", "dev_me"), ("b2", "Mew", 151, "2026-10-02", "dev_other")])
+    conn.commit()
+    conn.close()
+    cards = custody.cards_for(str(db), "dev_me")
+    assert [c["name"] for c in cards] == ["Pikachu"]
+    assert cards[0]["asset_id"] == custody.asset_id_for("identifications", "a1")
+    assert custody.cards_for(str(tmp_path / "missing" / "x.db"), "dev_me") == []

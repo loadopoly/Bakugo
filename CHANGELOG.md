@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.27.0] - 2026-10-13
+
+### Added
+- **Custody tab on the main page.** A "🔐 Custody" tab next to the capture modes walks through proving a card is in
+  hand: enter the challenge code from Holon or the GARD Exchange, pick the card's asset id, and take a photo of the card
+  beside the written code. The tab lists the cards this device identified with their GARD asset ids, the photos it has
+  sent, and can reveal the device key used to link Bakugo in Holon. Scanning a card still does not make anyone its
+  custodian; only an attested custody claim does.
+- `GET /custody/cards` returns this device's identifications with their asset ids; `GET /custody/evidence` no longer
+  requires a challenge code.
+- `custody.asset_id_for` and `custody.cards_for`, matching the fleet shard forge's asset ids.
+
 ## [2.26.0] - 2026-10-13
 
 ### Added

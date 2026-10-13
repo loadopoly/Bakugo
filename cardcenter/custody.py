@@ -128,20 +128,47 @@ def record_evidence(device_id: str, challenge: str, asset_id: str, image_bytes: 
     return doc
 
 
-def evidence_for(device_id: str, challenge: str) -> list[dict]:
-    """This device's evidence for one challenge, newest first."""
+def evidence_for(device_id: str, challenge: str = "", limit: int = 20) -> list[dict]:
+    """This device's evidence (for one challenge, or all of it), newest first."""
     root = custody_dir()
     if not root.exists():
         return []
+    want = str(challenge or "").strip().upper()
     out = []
     for p in sorted(root.glob("*.json"), reverse=True):
         try:
             d = json.loads(p.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if d.get("device_id") == device_id and d.get("challenge") == str(challenge or "").strip().upper():
+        if d.get("device_id") == device_id and (not want or d.get("challenge") == want):
             out.append({k: v for k, v in d.items() if k != "ocr_text"})
+            if len(out) >= limit:
+                break
     return out
+
+
+def asset_id_for(table: str, row_id) -> str:
+    """The GARD asset id the shard forge gives a record with an id (services/shardforge in the fleet repository)."""
+    canon = json.dumps({"table": table, "id": row_id}, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
+    return f"bakugo:{table}:{hashlib.sha256(canon.encode('ascii')).hexdigest()[:16]}"
+
+
+def cards_for(db_path: str, device_id: str, limit: int = 100) -> list[dict]:
+    """The cards this device identified, each with the GARD asset id a custody claim names. Scanning a card does not
+    make anyone its custodian; this list only saves typing the asset id."""
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(db_path, timeout=10)
+        try:
+            rows = conn.execute("SELECT id, name, dex, created_at FROM identifications WHERE device_id = ? "
+                                "ORDER BY created_at DESC LIMIT ?", (device_id, int(limit))).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return []
+    return [{"identification": rid, "name": name, "dex": dex, "created_at": created,
+             "asset_id": asset_id_for("identifications", rid)} for rid, name, dex, created in rows]
 
 
 PAGE = """<!doctype html>

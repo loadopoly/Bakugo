@@ -961,6 +961,20 @@ img.ov{width:calc(100% - 32px);max-height:44vh;object-fit:contain;margin:12px 16
 .btn-save{width:100%;min-height:44px;border:none;background:var(--key);color:#061116;font-weight:700;padding:12px;border-radius:var(--radius-md);cursor:pointer;font-size:1rem}
 input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
 .hidden{display:none !important}
+#section-custody{padding:4px 16px 32px}
+#section-custody p{color:var(--dim);line-height:1.5;margin:8px 0 12px}
+#section-custody h3{font-size:1.05rem;margin:22px 0 8px}
+.cust-card{background:var(--surface);border:1px solid var(--rule);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:12px}
+.cust-steps{margin:0;padding-left:20px;color:var(--dim);line-height:1.6}
+.cust-list{list-style:none;margin:0;padding:0}
+.cust-list li{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--rule)}
+.cust-list li:last-child{border-bottom:none}
+.cust-list code,.cust-key{font:0.8rem ui-monospace,Consolas,monospace;color:var(--dim);overflow-wrap:anywhere}
+.btn-ghost{min-height:44px;padding:8px 14px;border:1px solid var(--rule);background:var(--rise);color:var(--paper);border-radius:var(--radius-sm);cursor:pointer;font-size:0.95rem;white-space:nowrap}
+.btn-photo{display:flex;align-items:center;justify-content:center;width:100%;min-height:48px;border:1px dashed var(--key);border-radius:var(--radius-md);color:var(--key);cursor:pointer;font-weight:600;margin-bottom:14px}
+.cust-msg{margin:12px 0 0;padding:12px 14px;border-radius:var(--radius-md);border:1px solid var(--rule);line-height:1.5}
+.cust-msg.ok{border-color:var(--key)}
+.cust-msg.err{border-color:var(--stop);color:var(--stop)}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 </style>
 </head>
@@ -985,6 +999,7 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
 <div class="tab-nav" role="tablist">
   <button type="button" class="tab-btn active" id="tab-ar" role="tab" aria-selected="true">⚡ Live AR Metrology</button>
   <button type="button" class="tab-btn" id="tab-still" role="tab" aria-selected="false">📷 Single Photo</button>
+  <button type="button" class="tab-btn" id="tab-custody" role="tab" aria-selected="false">🔐 Custody</button>
 </div>
 
 <div class="quick-pills">
@@ -1035,6 +1050,50 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
     <input type="range" id="zoom" min="1" max="8" step="0.1" value="1" aria-label="Zoom level">
     <button type="button" id="zoom-in" title="Zoom in" aria-label="Zoom in">+</button>
     <span class="zoom-read" id="zoom-read">1.0&times;</span>
+  </div>
+</div>
+
+<!-- Custody: proving you physically hold a card, so its GARD Shards can move (custody.py) -->
+<div id="section-custody" class="hidden" role="region" aria-labelledby="custody-title">
+  <h2 id="custody-title" class="sr-only">Card custody</h2>
+  <p>A scan shows what a card is, not who holds it. A card's GARD Shards can be traded only after the ledger names its verified custodian. To become it, photograph the card next to a one-time code from your own device; someone else then checks the photo.</p>
+  <div class="cust-card">
+    <ol class="cust-steps">
+      <li>Get a code in Holon: <code>holon market custody claim &lt;card asset id&gt;</code></li>
+      <li>Write the code on paper and lay it next to the card.</li>
+      <li>Fill in both below and take the photo here.</li>
+      <li>Submit in Holon: <code>holon market custody submit &lt;claim&gt;</code></li>
+    </ol>
+  </div>
+
+  <h3>Send the photo</h3>
+  <div class="cust-card">
+    <div class="form-row">
+      <label for="cust-challenge">Challenge code</label>
+      <input type="text" id="cust-challenge" placeholder="K7Q-4MP" autocapitalize="characters" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="form-row">
+      <label for="cust-asset">Card asset id</label>
+      <input type="text" id="cust-asset" placeholder="bakugo:identifications:…" autocomplete="off" spellcheck="false">
+    </div>
+    <input type="file" id="cust-file" accept="image/*" capture="environment" aria-label="Photo of the card and the written code">
+    <label for="cust-file" class="btn-photo" id="cust-file-label">📷 Photograph the card and the code</label>
+    <button type="button" class="btn-save" id="cust-send">Send the photo</button>
+    <div id="cust-out" aria-live="polite"></div>
+  </div>
+
+  <h3>Cards you identified</h3>
+  <p>Tap one to use its asset id. Identifying a card does not make you its custodian; the photo and the ledger do.</p>
+  <div class="cust-card"><ul class="cust-list" id="cust-cards"><li>Loading…</li></ul></div>
+
+  <h3>Photos you sent</h3>
+  <div class="cust-card"><ul class="cust-list" id="cust-evidence"><li>None yet.</li></ul></div>
+
+  <h3>Link this device to Holon</h3>
+  <p>Holon needs this device's key once, to know your photos are yours: <code>holon market link bakugo --device-token &lt;key&gt;</code>. Anyone with the key can act as this device, so keep it private.</p>
+  <div class="cust-card">
+    <button type="button" class="btn-ghost" id="cust-show-key">Show this device's key</button>
+    <p class="cust-key" id="cust-key"></p>
   </div>
 </div>
 
@@ -1210,11 +1269,22 @@ refreshConfig();
 // Tab switching
 $('#tab-ar').onclick = () => setMode('ar');
 $('#tab-still').onclick = () => setMode('still');
+$('#tab-custody').onclick = () => setMode('custody');
 function setMode(m) {
   currentMode = m;
   $('#tab-ar').classList.toggle('active', m === 'ar');
   $('#tab-still').classList.toggle('active', m === 'still');
+  $('#tab-custody').classList.toggle('active', m === 'custody');
+  for (const id of ['tab-ar', 'tab-still', 'tab-custody']) $('#' + id).setAttribute('aria-selected', String(id === 'tab-' + m));
   $('#section-ar').classList.toggle('hidden', m !== 'ar');
+  const custody = m === 'custody';
+  $('#section-custody').classList.toggle('hidden', !custody);
+  for (const sel of ['.quick-pills', '#out', '.native-dock']) { const el = $(sel); if (el) el.classList.toggle('hidden', custody); }
+  if (custody) {
+    stopARStream();
+    loadCustody();
+    return;
+  }
   if (m === 'ar') {
     $('#btn-action').textContent = '⚡ Freeze AR Frame';
     startARStream();
@@ -1223,6 +1293,59 @@ function setMode(m) {
     stopARStream();
   }
 }
+
+// Custody: the photo of a card beside a GARD Exchange code, sent as this device (custody.py)
+function custEsc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function custSay(text, ok) { $('#cust-out').innerHTML = text ? `<div class="cust-msg ${ok ? 'ok' : 'err'}">${text}</div>` : ''; }
+async function loadCustody() {
+  try {
+    const r = await api('/custody/cards');
+    const d = await r.json();
+    const cards = (d && d.cards) || [];
+    $('#cust-cards').innerHTML = cards.length ? cards.map(c => `<li><div><b>${custEsc(c.name || 'Unnamed card')}</b>${c.dex ? ' #' + custEsc(c.dex) : ''}<br><code>${custEsc(c.asset_id)}</code></div>
+      <button type="button" class="btn-ghost" data-asset="${custEsc(c.asset_id)}">Use</button></li>`).join('')
+      : '<li>No cards identified on this device yet. Any card asset id can be claimed, though: custody is about who holds the card.</li>';
+    document.querySelectorAll('#cust-cards [data-asset]').forEach(b => b.onclick = () => { $('#cust-asset').value = b.dataset.asset; $('#cust-challenge').focus(); });
+  } catch (e) { $('#cust-cards').innerHTML = `<li>${custEsc(String(e))}</li>`; }
+  try {
+    const r = await api('/custody/evidence');
+    const d = await r.json();
+    const ev = (d && d.evidence) || [];
+    $('#cust-evidence').innerHTML = ev.length ? ev.map(e => `<li><div><b>${custEsc(e.challenge)}</b> · ${custEsc((e.card || {}).name || 'card not read')}<br>
+      <code>${custEsc(e.asset_id)}</code><br><span class="cust-key">${new Date(e.unix * 1000).toLocaleString()} · code ${e.challenge_seen ? 'read' : 'not read'}</span></div></li>`).join('')
+      : '<li>None yet.</li>';
+  } catch (e) { /* the list is a convenience */ }
+}
+$('#cust-file').addEventListener('change', () => {
+  const f = $('#cust-file').files[0];
+  $('#cust-file-label').textContent = f ? '📷 ' + f.name + ' (tap to retake)' : '📷 Photograph the card and the code';
+});
+$('#cust-send').onclick = async () => {
+  const f = $('#cust-file').files[0];
+  const challenge = $('#cust-challenge').value.trim().toUpperCase();
+  const asset = $('#cust-asset').value.trim();
+  if (!challenge || !asset || !f) { custSay('Fill in the code and the card asset id, and take the photo.', false); return; }
+  const fd = new FormData();
+  fd.append('challenge', challenge);
+  fd.append('asset_id', asset);
+  fd.append('image', f, f.name || 'custody.jpg');
+  $('#cust-send').disabled = true;
+  custSay('Sending and reading the photo…', true);
+  try {
+    const r = await api('/custody/evidence', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!d.ok) { custSay(custEsc(d.error || 'The photo was refused.'), false); return; }
+    const c = d.evidence.card || {};
+    custSay(`Kept as evidence ${custEsc(d.evidence.evidence_id)}.<br>Card read: ${custEsc(c.name || 'not read')}${c.dex ? ' #' + custEsc(c.dex) : ''}.<br>
+      Code ${d.evidence.challenge_seen ? 'read in the photo' : 'not read (a verifier will look)'}.<br>Now submit the claim in Holon.`, true);
+    loadCustody();
+  } catch (e) { custSay(custEsc(String(e)), false); }
+  finally { $('#cust-send').disabled = false; }
+};
+$('#cust-show-key').onclick = async () => {
+  try { const d = await (await api('/custody/device')).json(); $('#cust-key').textContent = d.device_token || ''; }
+  catch (e) { $('#cust-key').textContent = String(e); }
+};
 
 // Gyroscope spirit level tracking (DeviceOrientation)
 let deviceTiltDeg = 0;
@@ -3030,6 +3153,12 @@ class Handler(BaseHTTPRequestHandler):
             challenge = (parse_qs(parsed.query).get("challenge") or [""])[0]
             self._send(200, _dumps({"ok": True, "evidence": evidence_for(self._extract_device_id(), challenge)}).encode(),
                        "application/json")
+        elif path == "/custody/cards":
+            # this device's identified cards with the GARD asset id a custody claim names (scanning is not custody)
+            from .custody import cards_for
+
+            cards = cards_for(os.environ.get("CARDCENTER_DB", "cardcenter.db"), self._extract_device_id())
+            self._send(200, _dumps({"ok": True, "cards": cards}).encode(), "application/json")
         elif path == "/sw.js":
             from .embed import sw_source
 
