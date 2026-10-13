@@ -3011,6 +3011,25 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, PAGE.encode(), "text/html; charset=utf-8")
         elif path == "/manifest.json":
             self._send(200, MANIFEST_JSON.encode(), "application/json")
+        elif path == "/custody":
+            # physical custody evidence: photograph a card beside a GARD Exchange challenge code (custody.py)
+            from .custody import PAGE as CUSTODY_PAGE
+
+            self._send(200, CUSTODY_PAGE.encode(), "text/html; charset=utf-8")
+        elif path == "/custody/device":
+            # this device's own key, shown to this device only (cookie or bearer), for linking it in Holon
+            tok = self._request_token()
+            if tok is None:
+                tok = self._minted_token = new_device_token()
+            self._send(200, _dumps({"device_id": device_id_for_token(tok), "device_token": tok}).encode(), "application/json")
+        elif path == "/custody/evidence":
+            from urllib.parse import parse_qs
+
+            from .custody import evidence_for
+
+            challenge = (parse_qs(parsed.query).get("challenge") or [""])[0]
+            self._send(200, _dumps({"ok": True, "evidence": evidence_for(self._extract_device_id(), challenge)}).encode(),
+                       "application/json")
         elif path == "/sw.js":
             from .embed import sw_source
 
@@ -3197,7 +3216,7 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
 
         routes = {"/measure", "/ar/push", "/identify", "/ar/session", "/ar/reset",
-                  "/identify/vote", "/feedback"}
+                  "/identify/vote", "/feedback", "/custody/evidence"}
         if _flag("CARDCENTER_ENABLE_MARKETPLACE"):
             routes.add("/marketplace/tokenize")
         if path not in routes:
@@ -3416,6 +3435,20 @@ class Handler(BaseHTTPRequestHandler):
                 payload = _identify_payload(
                     image_bytes, device_id, owner_token_matches(self.headers.get("X-Bakugo-Owner"))
                 )
+
+            elif path == "/custody/evidence":
+                # a photo of the card beside the exchange's challenge code, from this device (custody.py)
+                from .custody import CustodyError, record_evidence
+
+                def _get(name: str) -> str:
+                    return fields.get(name, b"").decode("utf-8", "replace").strip() if fields.get(name) else ""
+
+                try:
+                    doc = record_evidence(device_id, _get("challenge"), _get("asset_id"), fields.get("image") or b"",
+                                          identify=lambda img: _identify_payload(img, device_id, False), version=__version__)
+                    payload = {"ok": True, "evidence": {k: v for k, v in doc.items() if k != "ocr_text"}}
+                except CustodyError as exc:
+                    payload = {"ok": False, "error": str(exc)}
 
             elif path == "/identify/vote":
                 payload = _vote_payload(_json_body(body), device_id)

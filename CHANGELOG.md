@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.26.0] - 2026-10-13
+
+### Added
+- **Physical custody evidence** (`cardcenter/custody.py`). A scan says what a card is, not who holds it. To become a card's custodian of record (the only state in which its GARD Shards can move on the marketplace), a person gets a challenge code from the GARD Exchange and photographs the card beside it, written on paper, from their own device.
+  - `POST /custody/evidence` (multipart: `image`, `challenge`, `asset_id`; device from its token) keeps the photo with what Bakugo could check: the card reader's name and dex for it, and whether Tesseract read the code (a miss is a hint for the human verifier, not a refusal).
+  - Evidence is kept in `custody/` beside the database (`CARDCENTER_CUSTODY_DIR`), never rotated, and written atomically so the exchange can read it from the shared volume.
+  - `GET /custody` is a phone page: camera, code, card asset id. It also shows the device's own key for linking it in Holon (`GET /custody/device`, same device only). `GET /custody/evidence?challenge=` lists this device's evidence.
+- 7 tests (`tests/test_custody.py`).
+
+
 ## [2.25.0] - 2026-10-11
 
 ### Added
