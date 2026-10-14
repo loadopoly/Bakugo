@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.27.1] - 2026-10-13
+
+### Fixed
+- **A custody photo no longer records an identification.** Reading the card in a custody photo also saved it as a new
+  identification, which the fleet's shard forge would have minted as a second asset for the same card. The photo is
+  evidence about a card already in the ledger: it is read (`_identify_payload(..., record=False)`) and not recorded.
+- **`test_still_capture_falls_back_to_the_video_frame` no longer fails in full runs.** The page auto-captures when the stub
+  reports a settled card; an auto-capture already running took the camera's photo, and the test's own Freeze returned
+  without doing anything. The test now waits for any capture in progress before starting its own (12 of 12 runs pass).
+
 ## [2.27.0] - 2026-10-13
 
 ### Added

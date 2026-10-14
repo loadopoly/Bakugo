@@ -567,7 +567,7 @@ def _rectify_for_reading(image: np.ndarray, quad: np.ndarray, px_per_mm: float):
     return rect, (0.0, (my + NAME_BAND * h) / (h + 2 * my))
 
 
-def _identify_payload(image_bytes: bytes, device_id: str, owner: bool) -> dict:
+def _identify_payload(image_bytes: bytes, device_id: str, owner: bool, record: bool = True) -> dict:
     """OCR identification of one still, recorded for feedback and the second
     vote. The outline comes from locate_card (find_card_quad plus the
     information snap), and its information floor feeds the decision."""
@@ -659,7 +659,9 @@ def _identify_payload(image_bytes: bytes, device_id: str, owner: bool) -> dict:
         )
         payload["decision"] = gated.decision.value
         payload["decision_reason"] = gated.reason
-        ident = store.record_identification(device_id, payload)
+        # A custody photo only reads the card (record=False): it is evidence about a card already in the
+        # ledger, and recording it would make the shard forge mint that card a second time.
+        ident = store.record_identification(device_id, payload) if record else None
     payload["identification_id"] = ident
     if owner:
         from .insitu import PENDING
@@ -3574,7 +3576,7 @@ class Handler(BaseHTTPRequestHandler):
 
                 try:
                     doc = record_evidence(device_id, _get("challenge"), _get("asset_id"), fields.get("image") or b"",
-                                          identify=lambda img: _identify_payload(img, device_id, False), version=__version__)
+                                          identify=lambda img: _identify_payload(img, device_id, False, record=False), version=__version__)
                     payload = {"ok": True, "evidence": {k: v for k, v in doc.items() if k != "ocr_text"}}
                 except CustodyError as exc:
                     payload = {"ok": False, "error": str(exc)}

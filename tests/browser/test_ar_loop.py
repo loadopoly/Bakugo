@@ -231,6 +231,11 @@ def test_still_capture_falls_back_to_the_video_frame(page, stub):
     page.evaluate("window.ImageCapture = undefined")
     page.evaluate("""() => { window.__sent = null;
                              window.sendStillPhoto = (b) => { window.__sent = b.size; }; }""")
+    # The loop auto-captures when the stub reports a settled card. One that started before ImageCapture was
+    # removed takes the camera's photo, and while it runs triggerARFreeze returns without doing anything.
+    # Let it finish, then start clean: any capture from here on, ours or the loop's, uses the video frame.
+    page.wait_for_function("() => !stillBusy && arVideo.videoWidth > 0", timeout=10000)
+    page.evaluate("() => { window.__sent = null; arStats.still = ''; }")
     page.evaluate("triggerARFreeze()")
     page.wait_for_function("() => window.__sent > 0", timeout=10000)
     assert page.evaluate("arStats.still").startswith("frame ")

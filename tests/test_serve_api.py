@@ -492,3 +492,24 @@ def test_measure_reports_every_aspect_and_joins_the_live_session(test_server):
     assert data["condition"]["corners"]
     assert before >= 1
     assert session.condition.n_views == before + 1
+
+
+def test_a_custody_photo_reads_the_card_without_recording_an_identification(test_server, monkeypatch, tmp_path):
+    """Recording it would add the same card to the ledger a second time when the shard forge next runs."""
+    monkeypatch.setenv("CARDCENTER_CUSTODY_DIR", str(tmp_path / "custody"))
+    calls = []
+
+    def fake_identify(image_bytes, device_id, owner, record=True):
+        calls.append(record)
+        return {"identified": True, "name": "Probopass", "dex": 476, "identification_id": None}
+
+    monkeypatch.setattr(serve_mod, "_identify_payload", fake_identify)
+    token = _new_token(test_server)
+    body, ctype = _multipart({"challenge": "ABC-DEF", "asset_id": "bakugo:identifications:aa"}, _card_jpeg())
+    req = urllib.request.Request(f"{test_server}/custody/evidence", data=body, method="POST")
+    req.add_header("Content-Type", ctype)
+    req.add_header("Authorization", f"Bearer {token}")
+    status, _, raw = _open(req)
+    assert status == 200, raw
+    assert calls == [False]
+    assert json.loads(raw)["evidence"]["card"]["name"] == "Probopass"
