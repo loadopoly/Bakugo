@@ -1,0 +1,248 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bakugo.loadopoly.com/schemas/metrology_record.v1.schema.json",
+  "title": "Bakugo metrology record, version 1",
+  "description": "One measurement of one face of one card: capture, optics, centering, condition and labeled defects. Units are in the field names; measured numbers carry a 1-sigma uncertainty. Lengths are millimetres on the card. Coordinates are in the card frame: origin at the top-left corner of the face as photographed, x to the right, y down, 63.5 x 88.9 mm for a standard card. What the pipeline cannot yet produce is stated (a status field), never invented.",
+  "type": "object",
+  "required": ["schema", "record_id", "created_utc", "software", "subject", "capture", "holder", "centering", "condition", "defects", "grading", "quality"],
+  "additionalProperties": false,
+  "$defs": {
+    "measured": {
+      "description": "A value with a 1-sigma uncertainty. sigma 0 means the uncertainty is not known, not that it is zero.",
+      "type": "object",
+      "required": ["value", "sigma"],
+      "additionalProperties": false,
+      "properties": {
+        "value": {"type": "number"},
+        "sigma": {"type": "number", "minimum": 0}
+      }
+    },
+    "pair": {
+      "type": "array", "prefixItems": [{"type": "number"}, {"type": "number"}], "minItems": 2, "maxItems": 2
+    },
+    "region": {
+      "type": "string",
+      "enum": ["corner_tl", "corner_tr", "corner_br", "corner_bl", "edge_top", "edge_right", "edge_bottom", "edge_left", "surface", "border_front", "artwork", "holo_window"]
+    },
+    "label_source": {
+      "type": "object",
+      "required": ["source"],
+      "additionalProperties": false,
+      "properties": {
+        "source": {"enum": ["model", "human", "model_reviewed"]},
+        "model": {"type": "string", "description": "pipeline component and version that produced it"},
+        "labeler": {"type": "string", "description": "pseudonymous labeler id, never a name"},
+        "reviewed_by": {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "defect": {
+      "type": "object",
+      "required": ["defect_id", "type", "region", "magnitude", "label"],
+      "additionalProperties": false,
+      "properties": {
+        "defect_id": {"type": "string"},
+        "type": {
+          "enum": ["whitening", "silvering", "corner_loss", "nick", "holo_scratch", "surface_scratch", "surface_smudge", "print_line", "crease", "dent", "stain"],
+          "description": "silvering: front print lifted at the edge, exposing foil or stock. surface_smudge is wipeable; holo_scratch and surface_scratch are damage to the layer and persist across lighting angles."
+        },
+        "region": {"$ref": "#/$defs/region"},
+        "geometry": {
+          "description": "Where it is, in card mm. Omitted when only the region is known.",
+          "type": "object",
+          "required": ["kind", "points_mm"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"enum": ["point", "polyline", "polygon"]},
+            "points_mm": {"type": "array", "items": {"$ref": "#/$defs/pair"}, "minItems": 1}
+          }
+        },
+        "magnitude": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "area_mm2": {"$ref": "#/$defs/measured"},
+            "length_mm": {"$ref": "#/$defs/measured"},
+            "depth_mm": {"$ref": "#/$defs/measured", "description": "inward from the cut edge (whitening, silvering, nick, corner loss)"},
+            "fraction_of_edge": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "views": {"type": "integer", "minimum": 1},
+            "lighting_angles_deg": {"type": "array", "items": {"type": "number"}},
+            "persists_without_highlight": {"type": ["boolean", "null"], "description": "true separates a scratch from a smudge or a reflection"},
+            "evidence_ids": {"type": "array", "items": {"type": "string"}}
+          }
+        },
+        "label": {"$ref": "#/$defs/label_source"}
+      }
+    }
+  },
+  "properties": {
+    "schema": {"const": "bakugo.metrology_record/1"},
+    "record_id": {"type": "string", "pattern": "^mr_[0-9a-f]{24}$", "description": "from the image hash, the software version and the face, so the same photo measured by the same release gets the same id"},
+    "created_utc": {"type": "string", "format": "date-time"},
+    "software": {
+      "type": "object", "required": ["name", "version"], "additionalProperties": false,
+      "properties": {"name": {"const": "cardcenter"}, "version": {"type": "string"}}
+    },
+    "subject": {
+      "type": "object", "required": ["face"], "additionalProperties": false,
+      "properties": {
+        "face": {"enum": ["front", "back"]},
+        "asset_id": {"type": ["string", "null"], "description": "GARD asset id when the card is in the ledger"},
+        "identification_id": {"type": ["string", "null"]},
+        "card": {
+          "type": ["object", "null"], "additionalProperties": false,
+          "properties": {
+            "name": {"type": "string"}, "dex": {"type": ["integer", "null"]},
+            "set_code": {"type": ["string", "null"]}, "number": {"type": ["string", "null"]},
+            "rarity": {"type": ["string", "null"]}
+          }
+        }
+      }
+    },
+    "capture": {
+      "type": "object", "required": ["image", "lens", "px_per_mm"], "additionalProperties": false,
+      "properties": {
+        "image": {
+          "type": "object", "required": ["width_px", "height_px", "sha256"], "additionalProperties": false,
+          "properties": {
+            "width_px": {"type": "integer"}, "height_px": {"type": "integer"},
+            "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "source": {"enum": ["video_frame", "camera_photo", "upload", "unknown"]}
+          }
+        },
+        "device": {
+          "type": ["object", "null"], "additionalProperties": false,
+          "properties": {
+            "make": {"type": ["string", "null"]}, "model": {"type": ["string", "null"]},
+            "source": {"enum": ["exif", "client_reported", "unknown"]}
+          }
+        },
+        "lens": {
+          "type": "object", "required": ["label", "distortion"], "additionalProperties": false,
+          "properties": {
+            "label": {"type": "string", "description": "main, tele, ultra ..."},
+            "fov_deg": {"type": ["number", "null"]},
+            "focal_px": {"type": ["number", "null"]},
+            "principal_point_px": {"oneOf": [{"$ref": "#/$defs/pair"}, {"type": "null"}]},
+            "distortion": {
+              "type": "object", "required": ["status"], "additionalProperties": false,
+              "properties": {
+                "status": {"enum": ["corrected", "not_corrected"], "description": "not_corrected: the pinhole model was used, so any barrel distortion is in the measurement"},
+                "model": {"enum": ["brown_conrady"]},
+                "profile_id": {"type": "string", "description": "key in the lens profile database (make/model/lens)"},
+                "k1": {"type": "number"}, "k2": {"type": "number"}, "k3": {"type": "number"},
+                "p1": {"type": "number"}, "p2": {"type": "number"},
+                "rms_reprojection_px": {"type": "number", "minimum": 0}
+              }
+            }
+          }
+        },
+        "px_per_mm": {"type": "number", "exclusiveMinimum": 0},
+        "tilt_deg": {"type": ["number", "null"]}
+      }
+    },
+    "holder": {
+      "type": "object", "required": ["preset", "layers", "refraction_applied"], "additionalProperties": false,
+      "properties": {
+        "preset": {"type": "string", "description": "raw, penny_sleeve, toploader, psa, bgs, cgc, case_* ..."},
+        "layers": {
+          "type": "array",
+          "items": {
+            "type": "object", "required": ["name", "refractive_index", "thickness_mm", "source"], "additionalProperties": false,
+            "properties": {
+              "name": {"type": "string"},
+              "refractive_index": {"$ref": "#/$defs/measured", "description": "sodium D line, ~589 nm"},
+              "thickness_mm": {"$ref": "#/$defs/measured", "description": "solid plastic on the viewed face, not overall holder depth"},
+              "source": {"enum": ["preset", "measured"]}
+            }
+          }
+        },
+        "refraction_applied": {"type": "boolean"},
+        "max_refraction_shift_mm": {"type": "number", "minimum": 0}
+      }
+    },
+    "centering": {
+      "type": "object", "required": ["borders_mm", "ratios", "worst", "inner_confidence"], "additionalProperties": false,
+      "properties": {
+        "borders_mm": {
+          "type": "object", "required": ["left", "right", "top", "bottom"], "additionalProperties": false,
+          "properties": {
+            "left": {"$ref": "#/$defs/measured"}, "right": {"$ref": "#/$defs/measured"},
+            "top": {"$ref": "#/$defs/measured"}, "bottom": {"$ref": "#/$defs/measured"}
+          }
+        },
+        "ratios": {
+          "type": "object", "required": ["horizontal", "vertical"], "additionalProperties": false,
+          "description": "the larger border's share in percent, e.g. 55 for 55/45",
+          "properties": {
+            "horizontal": {"$ref": "#/$defs/measured"},
+            "vertical": {"$ref": "#/$defs/measured"}
+          }
+        },
+        "worst": {
+          "type": "object", "required": ["axis", "ratio", "interval95", "wider"], "additionalProperties": false,
+          "properties": {
+            "axis": {"enum": ["horizontal", "vertical"]},
+            "ratio": {"$ref": "#/$defs/measured"},
+            "interval95": {"$ref": "#/$defs/pair"},
+            "wider": {"type": "string"}
+          }
+        },
+        "inner_confidence": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "condition": {
+      "type": ["object", "null"],
+      "description": "the pipeline's own condition readings for this view; null when the view gave none",
+      "additionalProperties": false,
+      "properties": {
+        "corners": {"type": "object", "additionalProperties": {"type": "object"}},
+        "edges": {"type": "object", "additionalProperties": {"type": "object"}},
+        "surface": {"type": "object"}
+      }
+    },
+    "defects": {"type": "array", "items": {"$ref": "#/$defs/defect"}},
+    "convergence": {
+      "type": ["object", "null"],
+      "description": "Wald SPRT across views against a grading boundary, when a session ran one",
+      "additionalProperties": false,
+      "properties": {
+        "method": {"const": "sprt"},
+        "threshold_ratio": {"type": "number"}, "margin": {"type": "number"},
+        "alpha": {"type": "number"}, "beta": {"type": "number"},
+        "llr": {"type": "number"}, "lower": {"type": "number"}, "upper": {"type": "number"},
+        "views": {"type": "integer", "minimum": 0},
+        "verdict": {"type": "string"}
+      }
+    },
+    "grading": {
+      "type": "object", "required": ["centering_bands", "predicted", "caveat"], "additionalProperties": false,
+      "properties": {
+        "centering_bands": {"type": "object", "additionalProperties": {"type": "object"}},
+        "predicted": {"type": "object", "additionalProperties": {"type": "object"}},
+        "caveat": {"const": "Estimates from a photo, not a grade issued by any grading company."}
+      }
+    },
+    "quality": {
+      "type": "object", "required": ["warnings"], "additionalProperties": false,
+      "properties": {
+        "warnings": {"type": "array", "items": {"type": "string"}},
+        "outer_residual_px": {"type": "number"}
+      }
+    },
+    "provenance": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "device_id": {"type": ["string", "null"], "description": "Bakugo's hashed device id, never the token"},
+        "scan_id": {"type": ["integer", "string", "null"]},
+        "evidence_ids": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

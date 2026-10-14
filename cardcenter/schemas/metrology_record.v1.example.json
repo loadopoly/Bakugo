@@ -1,0 +1,327 @@
+{
+  "schema": "bakugo.metrology_record/1",
+  "record_id": "mr_09866aa2e7545b1dfe17ee5b",
+  "created_utc": "2026-10-13T00:00:00Z",
+  "software": {
+    "name": "cardcenter",
+    "version": "2.28.0"
+  },
+  "subject": {
+    "face": "front",
+    "asset_id": null,
+    "identification_id": null,
+    "card": null
+  },
+  "capture": {
+    "image": {
+      "width_px": 1400,
+      "height_px": 1800,
+      "sha256": "cd802965adcdd85909fc5b8f0c338b1c30ae2ba1d36f751fa8d8bdf92dd4a4de",
+      "source": "unknown"
+    },
+    "device": null,
+    "lens": {
+      "label": "main",
+      "fov_deg": 68.0,
+      "focal_px": 1037.79,
+      "principal_point_px": [
+        522.0,
+        660.0
+      ],
+      "distortion": {
+        "status": "not_corrected"
+      }
+    },
+    "px_per_mm": 10.912,
+    "tilt_deg": 1.16
+  },
+  "holder": {
+    "preset": "toploader",
+    "layers": [
+      {
+        "name": "toploader",
+        "refractive_index": {
+          "value": 1.58,
+          "sigma": 0.03
+        },
+        "thickness_mm": {
+          "value": 0.55,
+          "sigma": 0.15
+        },
+        "source": "preset"
+      }
+    ],
+    "refraction_applied": true,
+    "max_refraction_shift_mm": 0.0961
+  },
+  "centering": {
+    "borders_mm": {
+      "left": {
+        "value": 2.4789,
+        "sigma": 0.0405
+      },
+      "right": {
+        "value": 3.4841,
+        "sigma": 0.0402
+      },
+      "top": {
+        "value": 2.9311,
+        "sigma": 0.0452
+      },
+      "bottom": {
+        "value": 3.0259,
+        "sigma": 0.0451
+      }
+    },
+    "ratios": {
+      "horizontal": {
+        "value": 58.4289,
+        "sigma": 0.4863
+      },
+      "vertical": {
+        "value": 50.7955,
+        "sigma": 0.5359
+      }
+    },
+    "worst": {
+      "axis": "horizontal",
+      "ratio": {
+        "value": 58.4289,
+        "sigma": 0.4863
+      },
+      "interval95": [
+        57.476,
+        59.382
+      ],
+      "wider": "right"
+    },
+    "inner_confidence": 0.9411
+  },
+  "condition": {
+    "corners": {
+      "top_left": {
+        "resolvable": false,
+        "reason": "the corner is too soft to place its outline",
+        "px_per_mm": 10.91,
+        "loss_mm": 0.0,
+        "whitening_mm": 0.0,
+        "whitening_len_mm": 0.0,
+        "whitening_resolvable": false,
+        "glare": false,
+        "blur_mm": 9.9,
+        "sigma_mm": 0.0,
+        "coarse": false
+      },
+      "top_right": {
+        "resolvable": false,
+        "reason": "the corner is too soft to place its outline",
+        "px_per_mm": 10.91,
+        "loss_mm": 0.0,
+        "whitening_mm": 0.0,
+        "whitening_len_mm": 0.0,
+        "whitening_resolvable": false,
+        "glare": false,
+        "blur_mm": 9.9,
+        "sigma_mm": 0.0,
+        "coarse": false
+      },
+      "bottom_right": {
+        "resolvable": false,
+        "reason": "the corner is too soft to place its outline",
+        "px_per_mm": 10.91,
+        "loss_mm": 0.0,
+        "whitening_mm": 0.0,
+        "whitening_len_mm": 0.0,
+        "whitening_resolvable": false,
+        "glare": false,
+        "blur_mm": 9.9,
+        "sigma_mm": 0.0,
+        "coarse": false
+      },
+      "bottom_left": {
+        "resolvable": false,
+        "reason": "the corner is too soft to place its outline",
+        "px_per_mm": 10.91,
+        "loss_mm": 0.0,
+        "whitening_mm": 0.0,
+        "whitening_len_mm": 0.0,
+        "whitening_resolvable": false,
+        "glare": false,
+        "blur_mm": 9.9,
+        "sigma_mm": 0.0,
+        "coarse": false
+      }
+    },
+    "edges": {
+      "top": {
+        "resolvable": true,
+        "reason": "",
+        "px_per_mm": 10.91,
+        "whitening_frac": 0.0,
+        "whitening_resolvable": true,
+        "usable_frac": 1.0,
+        "nick_count": 0,
+        "nick_max_mm": 0.0,
+        "noise_mm": 0.0,
+        "blur_mm": 0.097,
+        "side_face_mm": 0.0,
+        "coarse": false
+      },
+      "right": {
+        "resolvable": true,
+        "reason": "",
+        "px_per_mm": 10.91,
+        "whitening_frac": 0.0,
+        "whitening_resolvable": true,
+        "usable_frac": 1.0,
+        "nick_count": 0,
+        "nick_max_mm": 0.0,
+        "noise_mm": 0.0,
+        "blur_mm": 0.099,
+        "side_face_mm": 0.0,
+        "coarse": false
+      },
+      "bottom": {
+        "resolvable": true,
+        "reason": "",
+        "px_per_mm": 10.91,
+        "whitening_frac": 0.0,
+        "whitening_resolvable": true,
+        "usable_frac": 1.0,
+        "nick_count": 0,
+        "nick_max_mm": 0.0,
+        "noise_mm": 0.0,
+        "blur_mm": 0.121,
+        "side_face_mm": 0.0,
+        "coarse": false
+      },
+      "left": {
+        "resolvable": true,
+        "reason": "",
+        "px_per_mm": 10.91,
+        "whitening_frac": 0.0,
+        "whitening_resolvable": true,
+        "usable_frac": 1.0,
+        "nick_count": 0,
+        "nick_max_mm": 0.0,
+        "noise_mm": 0.0,
+        "blur_mm": 0.095,
+        "side_face_mm": 0.0,
+        "coarse": false
+      }
+    },
+    "surface": {
+      "resolvable": true,
+      "reason": "no highlight on the card in this view",
+      "px_per_mm": 10.91,
+      "glare_frac": 0.0,
+      "texture": 0.0,
+      "candidates": 0,
+      "inspected_frac": 0.0
+    }
+  },
+  "defects": [],
+  "convergence": null,
+  "grading": {
+    "centering_bands": {
+      "PSA": {
+        "label": "9\u201310",
+        "limited_by": "standards ambiguity -- sources disagree on this threshold, and better photography will not resolve it"
+      },
+      "BGS": {
+        "label": "9\u20139.5",
+        "limited_by": "standards ambiguity -- sources disagree on this threshold, and better photography will not resolve it"
+      },
+      "CGC": {
+        "label": "9\u20139.5",
+        "limited_by": "standards ambiguity -- sources disagree on this threshold, and better photography will not resolve it"
+      },
+      "SGC": {
+        "label": "9\u20139.5",
+        "limited_by": "standards ambiguity -- sources disagree on this threshold, and better photography will not resolve it"
+      }
+    },
+    "predicted": {
+      "PSA": {
+        "grade": "PSA not graded",
+        "score": null,
+        "ceiling": 9.0,
+        "range": null,
+        "graded": false,
+        "probability": 0.73,
+        "missing": [
+          "corners",
+          "surface"
+        ],
+        "subgrades": {
+          "centering": 9.0,
+          "corners": null,
+          "edges": 10.0,
+          "surface": null
+        }
+      },
+      "BGS": {
+        "grade": "BGS not graded",
+        "score": null,
+        "ceiling": 9.5,
+        "range": null,
+        "graded": false,
+        "probability": 0.48,
+        "missing": [
+          "corners",
+          "surface"
+        ],
+        "subgrades": {
+          "centering": 9.0,
+          "corners": null,
+          "edges": 10.0,
+          "surface": null
+        }
+      },
+      "CGC": {
+        "grade": "CGC not graded",
+        "score": null,
+        "ceiling": 9.0,
+        "range": null,
+        "graded": false,
+        "probability": 0.73,
+        "missing": [
+          "corners",
+          "surface"
+        ],
+        "subgrades": {
+          "centering": 9.0,
+          "corners": null,
+          "edges": 10.0,
+          "surface": null
+        }
+      },
+      "SGC": {
+        "grade": "SGC not graded",
+        "score": null,
+        "ceiling": 9.0,
+        "range": null,
+        "graded": false,
+        "probability": 0.59,
+        "missing": [
+          "corners",
+          "surface"
+        ],
+        "subgrades": {
+          "centering": 9.5,
+          "corners": null,
+          "edges": 10.0,
+          "surface": null
+        }
+      }
+    },
+    "caveat": "Estimates from a photo, not a grade issued by any grading company."
+  },
+  "quality": {
+    "warnings": [],
+    "outer_residual_px": 0.0
+  },
+  "provenance": {
+    "device_id": null
+  }
+}

@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.28.0] - 2026-10-13
+
+### Added
+- **Standard metrology record** (`bakugo.metrology_record/1`). Every `/measure` response now carries `record`: the same
+  measurement as one JSON document, built from the pipeline's objects rather than the rounded display numbers.
+  - Capture: image size and sha256, camera make/model from EXIF when the photo has it, lens label, field of view, focal
+    length and principal point in pixels, px/mm, tilt.
+  - Lens distortion is reported as `not_corrected` (the camera model is a pinhole). The schema already holds the
+    Brown-Conrady coefficients and a lens profile id for when a profile database exists.
+  - Holder optics: each layer's refractive index and face thickness with their 1-sigma uncertainty, marked `preset`.
+  - Centering: all four borders and both ratios with uncertainty, the worst axis with its 95% interval.
+  - Condition readings and **defects** in the card frame (mm, origin top-left of the face): corner whitening and loss,
+    edge whitening and nicks, each with its magnitude and a `label` saying whether a model or a person made it.
+    Silvering, holo scratches and smudges are defined for human labels; one view cannot tell them from artwork.
+  - Grading bands and predicted grades with the caveat that they are estimates from a photo.
+  - `record_id` comes from the image hash, the software version and the face, so a re-measure of the same photo by the
+    same release has the same id.
+- `cardcenter/schemas/metrology_record.v1.schema.json` (JSON Schema 2020-12), served at `GET /schema/metrology-record`,
+  and an example record made from a synthetic card in a toploader.
+- 5 tests (`tests/test_metrology_record.py`): the schema is valid, `/measure` records validate against it and keep their
+  uncertainties, holder optics carry through, ids are stable, and only resolved wear becomes a defect.
+
 ## [2.27.1] - 2026-10-13
 
 ### Fixed

@@ -427,6 +427,19 @@ def _measure_payload(image_bytes: bytes, holder: str, lens: str, parent=None,
 
     w = result.worst_ratio
     lo, hi = w.interval()
+    preds = {
+        name: predict_overall_grade(
+            w, quality=result.quality, grader=name, model=maybe_load_grade_model(),
+            face=face, condition=evidence, back_ratio=back_ratio,
+        )
+        for name in bands.keys()
+    }
+    warnings = list(result.quality.warnings) + list(quality.guidance)
+    from .metrology_record import build_record
+
+    record = build_record(image_bytes=image_bytes, image_shape=source.shape, result=result, bands=bands, preds=preds,
+                          view=view, face=face, lens=lens, fov_deg=fov, capture=capture, warnings=warnings,
+                          device_id=getattr(session, "device_id", None))
     return {
         "ok": True,
         "ratio": round(w.value, 1),
@@ -479,16 +492,13 @@ def _measure_payload(image_bytes: bytes, holder: str, lens: str, parent=None,
                 "used_learned": p.used_learned,
                 "n_observations": p.n_observations,
             }
-            for g, p in {
-                name: predict_overall_grade(
-                    w, quality=result.quality, grader=name, model=maybe_load_grade_model(),
-                    face=face, condition=evidence, back_ratio=back_ratio,
-                )
-                for name in bands.keys()
-            }.items()
+            for g, p in preds.items()
         },
-        "warnings": list(result.quality.warnings) + list(quality.guidance),
+        "warnings": warnings,
         "overlay": overlay_b64,
+        # The same measurement as a standard record (cardcenter/schemas/metrology_record.v1.schema.json,
+        # GET /schema/metrology-record): full precision, uncertainties, holder optics, resolved defects.
+        "record": record,
     }
 
 
@@ -3155,6 +3165,10 @@ class Handler(BaseHTTPRequestHandler):
             challenge = (parse_qs(parsed.query).get("challenge") or [""])[0]
             self._send(200, _dumps({"ok": True, "evidence": evidence_for(self._extract_device_id(), challenge)}).encode(),
                        "application/json")
+        elif path == "/schema/metrology-record":
+            from .metrology_record import SCHEMA_PATH
+
+            self._send(200, SCHEMA_PATH.read_bytes(), "application/schema+json")
         elif path == "/custody/cards":
             # this device's identified cards with the GARD asset id a custody claim names (scanning is not custody)
             from .custody import cards_for
