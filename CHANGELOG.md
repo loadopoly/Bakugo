@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.30.0] - 2026-10-13
+
+From the field session of 2026-10-13 (a Thievul, MEG 090/132, on a steel stand and granite; 97 logged frames, 4
+stills, 4 identifications).
+
+### Fixed
+- **Flavour text no longer names the card.** Three of four identifications were wrong: "Boltund" twice, from "Boltund
+  is its natural enemy", and "Nickit" once, from "Evolves from Nickit".
+  - A word below the name bar now names the card only when the bar gave no text at all. On the field still the name
+    read "ttievl"; the exact "Boltund" in the flavour text matched first and stopped the search before the enlarged
+    second read of the name bar, which reads "Thievul". Replayed, that still now identifies as Thievul; the other two
+    give no name instead of a wrong one.
+  - "Evolves from" is recognised with one OCR slip ("{rom"), so the previous stage is never taken for the card.
+  - When a name-bar word is one edit past the budget from exactly one species, the refusal says so ("the name bar reads
+    'ttievl', 2 letters from Thievul ... confirm it with Fix name"). It is a suggestion, never an identification.
+- **A card cut off by the frame is refused for that reason.** A still with the card's top 1.4 mm from the edge of the
+  photo was refused as "border detection confidence too low ... even, diffuse lighting". `sides_at_frame_edge`
+  (framing.py) finds sides within 1.5 mm of the photo's edge, and the refusal now says which and to step back.
+
+### Known, not fixed here
+- On this layout (silver border, name bar with the "STAGE 1" tab and the evolution badge crossing the top inner edge)
+  the top border's confidence was 0.00-0.10 on two stills of a whole, well-lit card. Live views and the one accepted
+  still agree on top/bottom ~2.4/2.9 mm, but there is no caliper reference yet to say whether that is the card or the
+  detector.
+
 ## [2.29.0] - 2026-10-13
 
 ### Added

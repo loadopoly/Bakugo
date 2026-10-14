@@ -371,6 +371,21 @@ def match_species(
     return _best(cands, vocabulary)
 
 
+def _is_marker(key: str, word: str) -> bool:
+    """``key`` reads as ``word`` ("from", "evolves") allowing one OCR slip: the 2026-10-13 field still read
+    "Evolves {rom Nickit", and an exact test let the previous stage name the card."""
+    return len(key) >= len(word) - 1 and levenshtein(key, word) <= 1
+
+
+def _band_was_read(words: Sequence[Word], lo: float, hi: float) -> bool:
+    """Did OCR read any text in the name bar at all (three or more letters in one word, boilerplate included)?"""
+    for w in words:
+        if np.isfinite(w.top) and lo <= w.top + 0.5 * w.height <= hi:
+            if sum(c.isalpha() for c in w.text) >= 3:
+                return True
+    return False
+
+
 def match_words(
     words: Sequence[Word], vocabulary: Sequence[Species],
     name_band: tuple[float, float] = (0.0, NAME_BAND),
@@ -386,14 +401,21 @@ def match_words(
     beats any word below it, and the word after "from" ("Evolves from
     Bayleef") is the previous stage, never the card.
 
+    A word below the bar names the card only when the bar itself gave no text.
+    Flavour text names other Pokemon as a matter of course: a Thievul
+    (2026-10-13) was named Boltund from "Boltund is its natural enemy" when its
+    own name read "ttievl", one letter past the budget. When the bar was read and
+    holds no species, the honest answer is no name, not one from the prose.
+
     ``name_band``: where the name bar is, as fractions of the image height --
     (0, NAME_BAND) for a card rectified edge to edge; a caller that
     rectifies with a margin (see serve._identify_payload) says so."""
     lo, hi = name_band
+    band_read = _band_was_read(words, lo, hi)
     cands = []
     for i, w in enumerate(words):
         prev = [x for x in words[max(0, i - 2):i] if x.line == w.line]
-        if any(species_key(x.text) == "from" for x in prev):
+        if any(_is_marker(species_key(x.text), "from") or _is_marker(species_key(x.text), "evolves") for x in prev):
             continue
         in_band = np.isfinite(w.top) and lo <= w.top + 0.5 * w.height <= hi
         seq = [(w.text, species_key(w.text))]
@@ -403,9 +425,40 @@ def match_words(
         for token, key in seq:
             if in_band or not np.isfinite(w.top):
                 cands.append((0, token, key))
-            else:
+            elif not band_read:
                 cands.append((1, token, key))
     return _best(cands, vocabulary)
+
+
+def near_miss(words: Sequence[Word], vocabulary: Sequence[Species],
+              name_band: tuple[float, float] = (0.0, NAME_BAND)) -> Optional[tuple[str, str, int]]:
+    """(token, species, edits) for a name-bar word one edit past the budget from exactly one species, else None.
+    Never an identification: a suggestion for the person to confirm (Fix name)."""
+    lo, hi = name_band
+    found: dict = {}
+    for i, w in enumerate(words):
+        if not (np.isfinite(w.top) and lo <= w.top + 0.5 * w.height <= hi):
+            continue
+        prev = [x for x in words[max(0, i - 2):i] if x.line == w.line]
+        if any(_is_marker(species_key(x.text), "from") or _is_marker(species_key(x.text), "evolves") for x in prev):
+            continue
+        key = species_key(w.text)
+        if len(key) < 6 or key in _BOILERPLATE:
+            continue
+        budget = _allowed_edits(key) + 1
+        for sk, sp in _keyed(tuple(vocabulary)):
+            d = levenshtein(key, sk)
+            if d <= budget:
+                found.setdefault(key, []).append((d, sp.name, w.text))
+    best = None
+    for key, hits in found.items():
+        hits.sort()
+        if len(hits) > 1 and hits[1][0] == hits[0][0]:
+            continue                                   # as close to two species: no suggestion
+        d, name, text = hits[0]
+        if best is None or d < best[2]:
+            best = (text, name, d)
+    return best
 
 
 def recognise_card(
@@ -491,10 +544,17 @@ def recognise_card(
             "refusing rather than picking one."
         )
     elif sp is None:
-        warnings.append(
-            "no OCR token was close enough to a known species name. The card "
-            "may be outside the vocabulary, face-down, or too glared to read."
-        )
+        miss = near_miss(words, vocab, name_band)
+        if miss is not None:
+            warnings.append(
+                f"the name bar reads {miss[0]!r}, {miss[2]} letters from {miss[1]} -- too far to name the card on "
+                f"its own. If it is {miss[1]}, confirm it with Fix name."
+            )
+        else:
+            warnings.append(
+                "no OCR token was close enough to a known species name. The card "
+                "may be outside the vocabulary, face-down, or too glared to read."
+            )
 
     # Cross-check: a printed dex number and a read name must agree.
     if sp is not None and dex is not None and sp.dex is not None and sp.dex != dex:

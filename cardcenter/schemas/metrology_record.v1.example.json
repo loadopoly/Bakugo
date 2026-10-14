@@ -1,10 +1,10 @@
 {
   "schema": "bakugo.metrology_record/1",
-  "record_id": "mr_d5ce82c3a03bf604cf0702eb",
+  "record_id": "mr_777a2769b22ec8c87bfa4c02",
   "created_utc": "2026-10-13T00:00:00Z",
   "software": {
     "name": "cardcenter",
-    "version": "2.29.0"
+    "version": "2.30.0"
   },
   "subject": {
     "face": "front",

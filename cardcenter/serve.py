@@ -400,6 +400,16 @@ def _measure_payload(image_bytes: bytes, holder: str, lens: str, parent=None,
         result = measure_centering(image, slab=resolve_holder(holder), capture=capture,
                                    card_quad=framed.quad, quad_residual_px=framed.residual_px)
     except DetectionError as exc:
+        from .framing import sides_at_frame_edge
+
+        clipped = sides_at_frame_edge(framed)
+        if clipped:
+            # Before blaming focus or light: a card at the edge of the photo has no background beyond that edge to
+            # find it against.
+            raise DetectionError(
+                f"the card's {' and '.join(clipped)} edge {'is' if len(clipped) == 1 else 'are'} at the edge of the "
+                "photo, so the border there can't be measured. Step back or zoom out until there is a little "
+                f"background on every side of the card. (It failed on: {exc})") from exc
         sharp = still_sharpness(image, framed.quad)
         if sharp is not None and sharp < SOFT_STILL:
             # A soft photo fails in whatever check comes first -- border

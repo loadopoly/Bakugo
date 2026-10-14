@@ -237,3 +237,28 @@ def frame_card_for_measure(
                    (x0, y0, x1, y1) != (0, 0, w, h),
                    short_px / STANDARD_CARD_W_MM, image.shape[:2],
                    framed_quad, residual * scale)
+
+
+# A border is measured from the card's cut edge inward, and the cut edge is found against what lies outside it. A
+# card within this much of the photo's edge has too little background beyond it on that side (a 2026-10-13 field
+# still had the top of a Thievul 1.4 mm from the frame; the refusal blamed the lighting).
+FRAME_CLEARANCE_MM = 1.5
+
+
+def sides_at_frame_edge(framing: "Framing", min_mm: float = FRAME_CLEARANCE_MM) -> list:
+    """The card sides ("top", "right", "bottom", "left") that sit within ``min_mm`` of the photo's edge, judged in
+    the source photo. Empty when no outline was found."""
+    if framing is None or framing.quad is None or not framing.scale:
+        return []
+    from .edge_probe import order_quad
+    from .types import STANDARD_CARD_H_MM, STANDARD_CARD_W_MM
+
+    q = order_quad(np.asarray(framing.quad, dtype=np.float64) / framing.scale + np.asarray(framing.origin, dtype=np.float64))
+    h, w = framing.source_shape[:2]
+    tl, tr, br, bl = q
+    px_mm = 0.5 * (np.linalg.norm(tr - tl) + np.linalg.norm(br - bl)) / STANDARD_CARD_W_MM
+    px_mm = max(px_mm, 0.5 * (np.linalg.norm(bl - tl) + np.linalg.norm(br - tr)) / STANDARD_CARD_H_MM)
+    gap = {"top": min(tl[1], tr[1]), "right": (w - 1) - max(tr[0], br[0]),
+           "bottom": (h - 1) - max(br[1], bl[1]), "left": min(tl[0], bl[0])}
+    return [s for s in ("top", "right", "bottom", "left") if gap[s] < min_mm * px_mm]
+

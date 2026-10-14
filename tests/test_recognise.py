@@ -245,3 +245,49 @@ def test_prepare_for_text_returns_grayscale_within_bounds() -> None:
                            max_long_side=1700)
     assert out.ndim == 2
     assert max(out.shape) <= 1700
+
+
+# --------------------------------------------------------------------------
+# Where a word sits: the 2026-10-13 Thievul field stills
+# --------------------------------------------------------------------------
+
+from cardcenter.recognise import Word, match_words, near_miss
+
+FIELD_VOCAB = (Species("Thievul", 828), Species("Nickit", 827), Species("Boltund", 836), Species("Seaking", 119))
+_FLAVOUR = ["With", "a", "lithe", "body", "and", "sharp", "claws,", "it", "goes", "around", "stealing", "food",
+            "and", "eggs.", "Boltund", "is", "its", "natural", "enemy."]
+
+
+def _words(band: list, lower: list) -> list:
+    """Words in the name bar (top 0.13) on one line, and flavour text near the bottom (top 0.85) on another."""
+    out = [Word(t, 0.13, 0.05, ("bar",)) for t in band]
+    out += [Word(t, 0.85, 0.02, ("flavour",)) for t in lower]
+    return out
+
+
+def test_flavour_text_does_not_name_the_card_when_the_name_bar_was_read() -> None:
+    """The name read as 'ttievl' (one edit past the budget); 'Boltund' in the flavour text used to win."""
+    sp, token, _, _ = match_words(_words(["ttievl", "1200"], _FLAVOUR), FIELD_VOCAB)
+    assert sp is None
+
+
+def test_a_misread_from_still_marks_the_previous_stage() -> None:
+    """'Evolves {rom Nick! dt.' named the card Nickit."""
+    # the "Evolves from" line sits inside the name band, just under the name
+    words = _words(["Thievul"], []) + [Word(t, 0.145, 0.01, ("evo",)) for t in ["Evolves", "{rom", "Nickit"]]
+    assert match_words(words, FIELD_VOCAB)[0].name == "Thievul"
+    only_evo = [Word(t, 0.145, 0.01, ("evo",)) for t in ["Evolves", "{rom", "Nickit"]] + _words([], _FLAVOUR)
+    assert match_words(only_evo, FIELD_VOCAB)[0] is None              # neither the previous stage nor the flavour text
+
+
+def test_a_name_below_the_bar_still_counts_when_the_bar_gave_nothing() -> None:
+    assert match_words(_words([], ["Sableye"]), VOCAB)[0].name == "Sableye"
+
+
+def test_the_name_bar_still_beats_the_flavour_text() -> None:
+    assert match_words(_words(["Thievul"], _FLAVOUR), FIELD_VOCAB)[0].name == "Thievul"
+
+
+def test_a_near_miss_in_the_name_bar_is_offered_not_taken() -> None:
+    assert near_miss(_words(["ttievl"], _FLAVOUR), FIELD_VOCAB) == ("ttievl", "Thievul", 2)
+    assert near_miss(_words(["xqzwvk"], []), FIELD_VOCAB) is None
