@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.29.0] - 2026-10-13
+
+### Added
+- **Edge probe** (`cardcenter/edge_probe.py`, `record.edge_probe`). Each of the card's four cut edges is located at ~40
+  points with sub-pixel precision:
+  - **Sagitta** (bow of the edge off its chord, mm, with 1-sigma) and RMS about a straight line. `bow` names the pattern:
+    `all_outward` / `all_inward` (every edge the same way: radial lens distortion), `top_bottom` / `left_right` (one
+    opposing pair: a holder face curved across that direction, e.g. a bowed toploader), `none` or `mixed`. A bow counts
+    only above 0.05 mm and 3 sigma. Noise floor on synthetic flat cards: ~0.02 mm (median |z| 0.5 over 8 poses).
+  - **Colour split**: the edge located separately in red, green and blue; median red-minus-green and blue-minus-green
+    per side in pixels (positive outward). This is the lens's lateral chromatic aberration; a holder's own dispersion
+    is a few micrometres (0.06-0.2 px).
+  - First real photo (a phone still of a Probopass): three edges bow inward 0.35-0.5 mm, colour split under 0.16 px.
+- **Holder error from paired measurements.** `/measure` takes an optional `card_ref` (the user's label for one physical
+  card). Records are stored in a `metrology_records` table beside the scans. `python -m cardcenter.metrology_record
+  holder-study` pairs each card's bare (`raw`) and in-holder measurements from the same device and face and reports per
+  holder: bias per border (what the refraction model leaves uncorrected), extra scatter beyond both measurements' own
+  sigmas, and the mean change in the centering ratio.
+- `record.provenance` now carries the device id and scan id.
+- 14 tests (`tests/test_metrology_record.py`).
+
+### Changed
+- `optics.py`: the docstring called the 0.27 mm apparent shift through a slab "a ~9% border error". It is not: the cut
+  edge and the inner border sit under the same plastic and shift almost equally. Uncorrected, a centred card under 2 mm
+  of polystyrene seen at 20 degrees reads 50.04/49.96. The correction is unchanged.
+
 ## [2.28.0] - 2026-10-13
 
 ### Added

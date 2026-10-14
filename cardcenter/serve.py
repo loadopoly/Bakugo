@@ -375,7 +375,7 @@ def _condition_for_still(image, result, capture, session=None):
 
 
 def _measure_payload(image_bytes: bytes, holder: str, lens: str, parent=None,
-                     session=None) -> dict:
+                     session=None, card_ref: Optional[str] = None) -> dict:
     source = decode_image(image_bytes, "file")
 
     # Spend the 2400 px budget on the card, not on the room around it: capping
@@ -437,9 +437,18 @@ def _measure_payload(image_bytes: bytes, holder: str, lens: str, parent=None,
     warnings = list(result.quality.warnings) + list(quality.guidance)
     from .metrology_record import build_record
 
+    try:
+        from .edge_probe import probe_edges
+
+        edge_probe = probe_edges(image, result.corners_px)
+    except Exception as exc:  # pragma: no cover - the probe never fails a measurement
+        import logging
+
+        logging.getLogger("cardcenter.serve").warning("edge probe failed: %s", exc)
+        edge_probe = None
     record = build_record(image_bytes=image_bytes, image_shape=source.shape, result=result, bands=bands, preds=preds,
                           view=view, face=face, lens=lens, fov_deg=fov, capture=capture, warnings=warnings,
-                          device_id=getattr(session, "device_id", None))
+                          device_id=getattr(session, "device_id", None), edge_probe=edge_probe, card_ref=card_ref)
     return {
         "ok": True,
         "ratio": round(w.value, 1),
@@ -516,6 +525,11 @@ def persist_measure(payload: dict, source: str = "serve", *, cloud: bool = True)
         with ScanStore(db) as store:
             scan_id = store.add_scan_from_measure(payload, source=source)
             extra["scan_id"] = scan_id
+            if payload.get("record"):
+                from .metrology_record import save_record
+
+                payload["record"]["provenance"]["scan_id"] = scan_id
+                save_record(db, payload["record"], scan_id)
             extra["scan_count"] = store.scan_count()
             extra["saved_local"] = True
             if not cloud:
@@ -3423,8 +3437,11 @@ class Handler(BaseHTTPRequestHandler):
                     fields.get("lens", b"main").decode("utf-8", "replace"),
                     _parent_crop(fields, image),
                     session=live,
+                    card_ref=fields.get("card_ref", b"").decode("utf-8", "replace") or None,
                 )
                 payload["device_id"] = device_id
+                if payload.get("record"):
+                    payload["record"]["provenance"]["device_id"] = device_id
                 if notes:
                     payload["notes"] = notes
                 if payload.get("ok"):

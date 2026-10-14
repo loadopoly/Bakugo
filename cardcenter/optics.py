@@ -44,10 +44,16 @@ degrees, 23% at 40 degrees. This module uses (1).
 MAGNITUDE, HONESTLY
 -------------------
 BGS-style acrylic, t=1.6mm of PMMA (n=1.49), viewed at 25 degrees off-normal:
-delta = 0.27mm. Against a ~3mm border that is a ~9% error, which is roughly
-one grading step at the tight end of the scale. Real but not enormous. If you
-plug in a 3.25mm *total slab depth* instead of the ~1.6mm acrylic face you get
-0.55mm and overcorrect by 2x. Measure your slabs.
+delta = 0.27mm. That is the apparent shift of one point, and it is NOT a border
+error: the card's cut edge and the inner border both sit under the same
+plastic, so both move by almost the same amount and the border's width barely
+changes. What survives is the difference in shift across the ~3mm of a border,
+from the small difference in viewing angle between its two edges. Uncorrected,
+a centred card under 2mm of polystyrene seen at 20 degrees reads 50.04/49.96
+(checked 2026-10-13 with this module's formula). The correction is still
+applied: it is exact and cheap, and it matters more for the absolute border
+widths in mm than for the ratio. If you plug in a 3.25mm *total slab depth*
+instead of the ~1.6mm acrylic face you overcorrect by 2x. Measure your slabs.
 """
 
 from __future__ import annotations

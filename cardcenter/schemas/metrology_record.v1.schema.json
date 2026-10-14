@@ -94,6 +94,7 @@
       "properties": {
         "face": {"enum": ["front", "back"]},
         "asset_id": {"type": ["string", "null"], "description": "GARD asset id when the card is in the ledger"},
+        "card_ref": {"type": ["string", "null"], "pattern": "^[A-Za-z0-9_.:-]{1,64}$", "description": "the user's own label for one physical card, so measurements of it bare and in holders can be paired"},
         "identification_id": {"type": ["string", "null"]},
         "card": {
           "type": ["object", "null"], "additionalProperties": false,
@@ -205,6 +206,30 @@
         "corners": {"type": "object", "additionalProperties": {"type": "object"}},
         "edges": {"type": "object", "additionalProperties": {"type": "object"}},
         "surface": {"type": "object"}
+      }
+    },
+    "edge_probe": {
+      "type": ["object", "null"],
+      "description": "Straightness and colour split of the four cut edges (cardcenter/edge_probe.py). Sagitta: how far the middle of an edge sits off the chord between its ends, mm, positive outward. bow: none; all_outward / all_inward (radial lens distortion); top_bottom / left_right (a holder face curved across that direction); mixed.",
+      "additionalProperties": false,
+      "properties": {
+        "sides": {
+          "type": "object", "additionalProperties": false,
+          "patternProperties": {
+            "^(top|right|bottom|left)$": {
+              "type": "object", "required": ["points"], "additionalProperties": false,
+              "properties": {
+                "points": {"type": "integer", "minimum": 0},
+                "sagitta_mm": {"$ref": "#/$defs/measured"},
+                "line_rms_mm": {"type": "number", "minimum": 0},
+                "red_minus_green_px": {"type": ["number", "null"]},
+                "blue_minus_green_px": {"type": ["number", "null"]}
+              }
+            }
+          }
+        },
+        "bowed": {"type": "array", "items": {"enum": ["top", "right", "bottom", "left"]}},
+        "bow": {"enum": ["none", "all_outward", "all_inward", "top_bottom", "left_right", "mixed"]}
       }
     },
     "defects": {"type": "array", "items": {"$ref": "#/$defs/defect"}},
