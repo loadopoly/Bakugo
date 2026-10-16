@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.31.0] - 2026-10-16
+
+Fixes from the 2026-10-15 field screenshots (16 shots, 7:26-7:33 pm) and the
+Hideout logs for the same evening.
+
+### Fixed
+- **Guidance from an old frame.** When the server has not answered for
+  2.5 s (or 2.5x the usual round trip), the banner now says "waiting for the
+  server ... last reply N s ago" instead of keeping guidance about a scene
+  the camera has left ("top edge not visible" over a card on red cloth, from
+  a reply about granite).
+- **Which server is answering.** The header pill showed the server's own IP,
+  which reads 127.0.0.1 for both the Hideout container (internal network) and
+  a Termux copy on the phone. It now shows the host the page talks to
+  (`bakugo.loadopoly.com`, or "this phone"), and "(saved)" when a Backend URL
+  saved in settings overrides the page's own address.
+- **"border detection failed:" with no reason.** The live HUD took only the
+  first line of a multi-line error. It now names the sides whose printed
+  border was not found.
+- **Bottom buttons cut off by Android's navigation bar.** Dropped
+  `viewport-fit=cover`, so Chrome keeps the page above the system bars; the
+  dock is now solid rather than a gradient.
+- **Zoom row half under the buttons.** The zoom controls moved into the fixed
+  dock, above the buttons, so they cannot be covered.
+- **Still-photo button looked stuck.** "Calculating Metrology..." is now
+  "Measuring photo... N s", counting while /measure and /identify run.
+- **Status chips in capitals.** Chips are sentence case ("Push timed out",
+  "Tracking", "8 deg level"); "SPRT: UNDECIDED" is now "Centering: undecided".
+- **Broken-pipe tracebacks.** A reply the phone had already stopped waiting for
+  logged a full traceback (19 in 6 h); it is now one line.
+
+### Infrastructure (Hideout compose, not this repo)
+- The named Cloudflare tunnel now runs `--protocol http2`. One of its four
+  QUIC connections (edge 198.41.200.43) failed every few minutes for 20+ hours.
+
 ## [2.30.0] - 2026-10-13
 
 From the field session of 2026-10-13 (a Thievul, MEG 090/132, on a steel stand and granite; 97 logged frames, 4

@@ -830,7 +830,7 @@ PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#0B0F15">
@@ -939,7 +939,7 @@ header.app-bar{padding:calc(10px + env(safe-area-inset-top)) 16px 10px;
 #zoom-bar button{border:1px solid var(--rule);background:var(--rise);color:var(--paper);border-radius:var(--radius-sm);min-width:44px;min-height:44px;padding:8px 12px;font-size:1.25rem;cursor:pointer}
 
 /* Still & Results Output */
-#out{padding-bottom:90px}
+#out{padding-bottom:calc(150px + env(safe-area-inset-bottom, 0px))}
 .empty-card{margin:12px 16px;padding:20px;background:var(--surface);border:1px solid var(--rule);border-radius:var(--radius-lg);font-size:1rem;line-height:1.6;color:var(--dim)}
 .empty-card b{color:var(--paper)}
 .empty-card ul{padding-left:18px;margin:10px 0 0}
@@ -976,7 +976,8 @@ table.mm-table td:last-child{text-align:right;color:var(--paper);font-variant-nu
 img.ov{width:calc(100% - 32px);max-height:44vh;object-fit:contain;margin:12px 16px 0;border-radius:var(--radius-md);border:1px solid var(--rule);display:block;background:var(--surface)}
 
 /* Native Dock */
-.native-dock{position:fixed;left:0;right:0;bottom:0;padding:10px 16px calc(12px + env(safe-area-inset-bottom));background:linear-gradient(to top,var(--ink) 85%,rgba(11,15,21,0));display:flex;align-items:center;gap:10px;z-index:50}
+.native-dock{position:fixed;left:0;right:0;bottom:0;padding:8px 16px calc(12px + env(safe-area-inset-bottom, 0px));background:var(--ink);border-top:1px solid var(--rule);display:flex;flex-wrap:wrap;align-items:center;gap:10px;z-index:50}
+.native-dock #zoom-bar{flex:0 0 100%;padding:0}
 .btn-primary{flex:1;border:none;border-radius:var(--radius-md);min-height:48px;padding:12px 16px;font-size:1rem;font-weight:700;background:var(--key);color:#061116;font-family:inherit;cursor:pointer;box-shadow:0 4px 16px var(--key-glow);display:flex;align-items:center;justify-content:center;gap:8px}
 .btn-primary:active{transform:scale(.98)}
 .btn-primary[disabled]{opacity:.45}
@@ -1070,10 +1071,10 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
     <canvas id="ar-canvas" aria-hidden="true"></canvas>
     <canvas id="ar-debug" title="Detector view (540px frame sent to server). Tap to hide." aria-hidden="true"></canvas>
     <div class="ar-hud-overlay">
-      <div class="hud-chip"><span class="radar" aria-hidden="true"></span><span id="hud-status">SEARCHING</span></div>
-      <div class="hud-verdict" id="hud-verdict">SPRT IDLE</div>
+      <div class="hud-chip"><span class="radar" aria-hidden="true"></span><span id="hud-status">Searching</span></div>
+      <div class="hud-verdict" id="hud-verdict">Centering: waiting</div>
     </div>
-    <div id="hud-spirit-level" class="hud-spirit"><span class="spirit-bubble" aria-hidden="true"></span><span id="spirit-deg">0° LEVEL</span></div>
+    <div id="hud-spirit-level" class="hud-spirit"><span class="spirit-bubble" aria-hidden="true"></span><span id="spirit-deg">0° level</span></div>
   </div>
   <div class="ar-info-panel">
     <div id="hud-aspects" class="hud-aspects hidden"></div>
@@ -1081,12 +1082,6 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
   </div>
   <!-- Reach: real zoom where the camera supports it, capture-crop where it
        does not, plus a camera picker so a telephoto module can be chosen. -->
-  <div id="zoom-bar">
-    <button type="button" id="zoom-out" title="Zoom out" aria-label="Zoom out">&minus;</button>
-    <input type="range" id="zoom" min="1" max="8" step="0.1" value="1" aria-label="Zoom level">
-    <button type="button" id="zoom-in" title="Zoom in" aria-label="Zoom in">+</button>
-    <span class="zoom-read" id="zoom-read">1.0&times;</span>
-  </div>
 </div>
 
 <!-- Custody: proving you physically hold a card, so its GARD Shards can move (custody.py) -->
@@ -1147,6 +1142,14 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
 </div>
 
 <div class="native-dock">
+  <!-- Zoom lives in the dock so the fixed buttons can never cover it
+       (2.30.0 field shots: the row sat half under the buttons). -->
+  <div id="zoom-bar">
+    <button type="button" id="zoom-out" title="Zoom out" aria-label="Zoom out">&minus;</button>
+    <input type="range" id="zoom" min="1" max="8" step="0.1" value="1" aria-label="Zoom level">
+    <button type="button" id="zoom-in" title="Zoom in" aria-label="Zoom in">+</button>
+    <span class="zoom-read" id="zoom-read">1.0&times;</span>
+  </div>
   <input type="file" id="file" accept="image/*" capture="environment" aria-label="Upload card image">
   <button type="button" class="btn-round" id="btn-sound-test" title="Sound Synthesizer Test" aria-label="Test sound synthesizer">🎵</button>
   <button type="button" class="btn-round" id="btn-ar-reset" title="Reset AR Tracking" aria-label="Reset AR tracking">↺</button>
@@ -1194,6 +1197,16 @@ function isCrossOrigin() {
   catch (e) { return false; }
 }
 function tokenKey() { return 'bakugo_device_token:' + backendUrl; }
+// Which server answers: the page's own site, this phone, or a saved
+// override. The server's own IP read 127.0.0.1 for both the Hideout
+// container and a Termux copy, so it could not tell them apart.
+function backendLabel() {
+  let host = '';
+  try { host = new URL(backendUrl).hostname; } catch (e) { host = String(backendUrl || ''); }
+  const local = host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]';
+  const override = backendUrl !== window.location.origin;
+  return (local ? 'this phone' : host) + (override ? ' (saved)' : '');
+}
 function api(path, opts) {
   opts = Object.assign({ credentials: 'include' }, opts || {});
   const headers = Object.assign({}, opts.headers || {});
@@ -1294,7 +1307,8 @@ function refreshConfig() {
         $('#holder').innerHTML = d.holders.map(h =>
           `<option value="${h.id}"${h.id==='raw'?' selected':''}>${h.label}</option>`).join('');
       }
-      $('#host-label').textContent = (d.ip ? d.ip : 'Connected') + ' v' + d.version;
+      $('#host-label').textContent = backendLabel() + ' v' + d.version;
+      $('#btn-host-settings').title = 'Server: ' + backendUrl + (d.ip ? ' (reports ' + d.ip + ')' : '');
     })
     .catch(() => {
       $('#host-label').textContent = 'Offline / Standalone';
@@ -1313,6 +1327,7 @@ function setMode(m) {
   $('#tab-custody').classList.toggle('active', m === 'custody');
   for (const id of ['tab-ar', 'tab-still', 'tab-custody']) $('#' + id).setAttribute('aria-selected', String(id === 'tab-' + m));
   $('#section-ar').classList.toggle('hidden', m !== 'ar');
+  $('#zoom-bar').classList.toggle('hidden', m !== 'ar');
   const custody = m === 'custody';
   $('#section-custody').classList.toggle('hidden', !custody);
   for (const sel of ['.quick-pills', '#out', '.native-dock']) { const el = $(sel); if (el) el.classList.toggle('hidden', custody); }
@@ -1396,7 +1411,7 @@ function setupGyroscope() {
       deviceTiltDeg = Math.min(90, Math.max(0, tilt));
       const spirit = $('#hud-spirit-level'), spiritText = $('#spirit-deg');
       if (spirit && spiritText) {
-        spiritText.textContent = `${deviceTiltDeg}° ${deviceTiltDeg <= 16 ? 'LEVEL' : 'TILT'}`;
+        spiritText.textContent = `${deviceTiltDeg}° ${deviceTiltDeg <= 16 ? 'level' : 'tilted'}`;
         spirit.classList.toggle('tilted', deviceTiltDeg > 16);
       }
     }, true);
@@ -1537,7 +1552,7 @@ function selectCardAt(clientX, clientY) {
   lastLocked = false;
   arStats.aim = ax.toFixed(2) + ',' + ay.toFixed(2);
   const chip = $('#hud-status');
-  if (chip) chip.textContent = 'PICKING CARD';
+  setChip('PICKING CARD');
   return true;
 }
 arVideo.addEventListener('click', (ev) => {
@@ -1885,9 +1900,19 @@ function startARLoop() {
   return true;
 }
 
-function setPushStatus(text) {
+// Status chips in sentence case (Part A): an all-caps label is harder to
+// read. Acronyms the app shows stay in capitals.
+function sentence(text) {
+  let s = String(text || '');
+  if (!/[a-z]/.test(s)) s = s.toLowerCase().replace(/\b(psa|sprt|ar|ocr|ok)\b/g, m => m.toUpperCase());
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+function setChip(text) {
   const chip = $('#hud-status');
-  if (chip && !lastHUDData) chip.textContent = text;
+  if (chip) chip.textContent = sentence(text);
+}
+function setPushStatus(text) {
+  if (!lastHUDData) setChip(text);
 }
 
 function drawDebugInset(d) {
@@ -1966,7 +1991,7 @@ async function startARStream() {
       }
     }, 500);
   } catch(err) {
-    $('#hud-status').textContent = 'CAMERA BLOCKED';
+    setChip('CAMERA BLOCKED');
     arStats.error = 'getUserMedia: ' + (err && err.name || err);
     console.warn("Camera streaming unavailable:", err);
   }
@@ -2181,7 +2206,7 @@ function drawARHUD(d, thumb) {
     const est = gradeText(d);
     renderAspectChips(d);
     if (!d.ratio) {
-      chip.textContent = 'TRACKING';
+      setChip('TRACKING');
       if (chipBox) chipBox.classList.remove('settled');
     } else if (d.settled && stillRefusedAt) {
       chip.textContent = `live ${d.ratio.toFixed(1)}% · photo refused, not confirmed`;
@@ -2198,7 +2223,7 @@ function drawARHUD(d, thumb) {
     targetQuad = null;
     quadBase = null;
     lastLocked = false;
-    $('#hud-status').textContent = 'SEARCHING';
+    setChip('SEARCHING');
     const chipBox = document.querySelector('.hud-chip');
     if (chipBox) chipBox.classList.remove('settled');
   }
@@ -2252,7 +2277,9 @@ function drawARHUD(d, thumb) {
     clearTimeout(autoCaptureTimer);
   }
 
-  $('#hud-verdict').textContent = d.verdict ? `SPRT: ${d.verdict}` : (d.settled ? 'SPRT SETTLED' : 'ACCUMULATING');
+  const VERDICT = { above: 'passes', below: 'below threshold', undecided: 'undecided', inconsistent: 'views disagree' };
+  const v = String(d.verdict || '').toLowerCase();
+  $('#hud-verdict').textContent = 'Centering: ' + (VERDICT[v] || (d.settled ? 'settled' : 'collecting views'));
 }
 
 // 60fps Smooth Canvas Render: Viewfinder reticle, lerped quad, laser caliper sweep, glowing lock
@@ -2272,9 +2299,22 @@ function renderARHUDContinuous() {
       lastLocked = false;
       arStats.stale++;
       lastHUDData = null;
-      $('#hud-status').textContent = arStats.error ? 'RECONNECTING' : 'SEARCHING';
+      setChip(arStats.error ? 'RECONNECTING' : 'SEARCHING');
       const chipBox = document.querySelector('.hud-chip');
       if (chipBox) chipBox.classList.remove('settled');
+    }
+
+    // The guidance under the preview describes the frame the server last
+    // answered. Once that answer is old it describes a scene the camera has
+    // left (2.30.0 field shots: "top edge not visible" over a card on red
+    // cloth, from a reply about granite). Say the server is slow instead.
+    const lastAge = arStats.lastOkAt ? Date.now() - arStats.lastOkAt : 0;
+    const slowAfter = Math.max(2500, overlayStaleMs());
+    const guide = $('#hud-guidance');
+    if (guide && ((arStats.lastOkAt && lastAge > slowAfter) || (!arStats.lastOkAt && arStats.timeouts > 0))) {
+      const secs = arStats.lastOkAt ? Math.round(lastAge / 1000) + ' s ago' : 'none yet';
+      const text = '⚠ waiting for the server (' + backendLabel() + ') -- last reply ' + secs + '. Keep the card in view; guidance resumes when it answers.';
+      if (guide.textContent !== text) { guide.textContent = text; guide.className = 'hud-banner warn'; }
     }
 
     updateMotion(false);
@@ -2650,7 +2690,11 @@ function apiTimed(path, opts, ms) {
 
 async function sendStillPhoto(fileOrBlob, track) {
   $('#btn-action').disabled = true;
-  $('#btn-action').textContent = 'Calculating Metrology…';
+  const stillT0 = Date.now();
+  $('#btn-action').textContent = 'Measuring photo…';
+  const stillTick = setInterval(() => {
+    $('#btn-action').textContent = 'Measuring photo… ' + Math.round((Date.now() - stillT0) / 1000) + ' s';
+  }, 1000);
   $('#out').innerHTML = '<div class="strip"><div class="seg segL" style="width:50%"></div><div class="seg segR" style="width:50%"></div></div><div class="sub-meta" style="padding:14px 16px;color:var(--key)">🔬 Ray-tracing Snell refraction & calculating confidence intervals…</div>';
 
   try {
@@ -2679,6 +2723,7 @@ async function sendStillPhoto(fileOrBlob, track) {
   } catch (e) {
     $('#out').innerHTML = `<div class="empty-card" style="border-color:var(--stop)"><b style="color:var(--stop)">Connection Error</b><div>${esc(String(e))}</div></div>`;
   } finally {
+    clearInterval(stillTick);
     $('#btn-action').disabled = false;
     $('#btn-action').textContent = currentMode === 'ar' ? '⚡ Freeze AR Frame' : '📸 Measure Photo';
     $('#file').value = '';
@@ -3059,7 +3104,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("X-Device-Token", self._minted_token)
         self.end_headers()
         if self.command != "HEAD":
-            self.wfile.write(body)
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                # The phone gave up waiting (PUSH_TIMEOUT_MS) and closed the
+                # connection before this reply was ready. Nothing to send it
+                # to; record it in one line, not a traceback.
+                self.close_connection = True
+                sys.stderr.write(f"[serve] client left before reply: {self.command} {self.path}\n")
 
     def _send_static(self, body: bytes, ctype: str, cache: str, extra: Optional[dict] = None) -> None:
         self.send_response(200)

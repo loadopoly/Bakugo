@@ -698,6 +698,31 @@ class ARStatus:
         )
 
 
+def _detection_guidance(exc: Exception) -> str:
+    """One line for the HUD from a DetectionError.
+
+    detect_all_borders() puts its reasons on the lines after
+    "border detection failed:", so the first line alone read
+    "border detection failed:" with nothing after it (2.30.0 field shot).
+    """
+    lines = [ln.strip(" -") for ln in str(exc).splitlines() if ln.strip(" -")]
+    if not lines:
+        return "the card's printed border could not be measured -- hold steady"
+    if lines[0].rstrip(":") == "border detection failed" and len(lines) > 1:
+        sides = []
+        for ln in lines[1:]:
+            if ln.startswith("side '"):
+                side = ln[len("side '"):].split("'", 1)[0]
+                if side not in sides:
+                    sides.append(side)
+        if sides:
+            return (f"printed border not found on the {', '.join(sides)} "
+                    f"side{'s' if len(sides) > 1 else ''} -- reduce glare or "
+                    f"move closer so the border shows clearly")[:140]
+        return lines[1][:140]
+    return lines[0][:140]
+
+
 @dataclass
 class ARSession:
     """Continuous measurement of one card while the camera is pointed at it.
@@ -1292,7 +1317,7 @@ class ARSession:
                     px_per_mm=quality.px_per_mm,
                     tilt_deg=quality.tilt_deg,
                     passed=False,
-                    guidance=(str(exc).split("\n")[0][:110],),
+                    guidance=(_detection_guidance(exc),),
                 )
 
         grade_ceil = None

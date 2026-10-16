@@ -168,7 +168,7 @@ def test_loop_starts_and_posts_frames(page, stub):
                           "status: arStats.status, error: arStats.error})")
     assert stats["ok"] >= 3 and stats["fail"] == 0 and stats["status"] == 200
     assert stats["error"] == ""
-    assert page.evaluate("document.querySelector('#hud-status').textContent") == "TRACKING"
+    assert page.evaluate("document.querySelector('#hud-status').textContent") == "Tracking"
 
 
 def test_posted_frame_is_the_region_the_user_frames(page, stub):
@@ -287,7 +287,7 @@ def test_stale_overlay_is_dropped(page, stub):
     stub["mode"] = "hang"
     page.wait_for_function("() => targetQuad === null", timeout=15000)
     chip = page.evaluate("document.querySelector('#hud-status').textContent")
-    assert chip in ("RECONNECTING", "SEARCHING", "PUSH TIMED OUT"), chip
+    assert chip in ("Reconnecting", "Searching", "Push timed out"), chip
     assert page.evaluate("arStats.stale") > 0
 
 
