@@ -461,6 +461,28 @@ def near_miss(words: Sequence[Word], vocabulary: Sequence[Species],
     return best
 
 
+def prefix_candidates(words: Sequence[Word], vocabulary: Sequence[Species],
+                      name_band: tuple[float, float] = (0.0, NAME_BAND)) -> Optional[tuple[str, list]]:
+    """(token, names) for a name-bar word that is the start of one or more species names.
+
+    Glare across the end of a name leaves its first letters: "Fletch" from
+    Fletchinder (2026-10-21 field still). That is too far from the full name to
+    match, and it is the start of Fletchling too, so it never identifies the
+    card. It does say which names to offer the person. Longest token wins."""
+    lo, hi = name_band
+    best = None
+    for w in words:
+        if not (np.isfinite(w.top) and lo <= w.top + 0.5 * w.height <= hi):
+            continue
+        key = species_key(w.text)
+        if len(key) < 5 or key in _BOILERPLATE:
+            continue
+        names = [sp.name for sk, sp in _keyed(tuple(vocabulary)) if sk.startswith(key) and sk != key]
+        if names and (best is None or len(key) > len(species_key(best[0]))):
+            best = (w.text, names[:4])
+    return best
+
+
 def recognise_card(
     rect_bgr: np.ndarray,
     vocabulary: Optional[Sequence[Species]] = None,
@@ -512,6 +534,8 @@ def recognise_card(
     orientation = "upright"
     try:
         found = None
+        matched = False
+        bands: dict = {}
         for label, img in (("upright", prepared),
                            ("rotated 180", cv2.rotate(prepared, cv2.ROTATE_180))):
             text, words = read(img)
@@ -519,13 +543,20 @@ def recognise_card(
                 found = (text, words, label)
             if match_words(words, vocab, name_band)[0] is not None:
                 found = (text, words, label)
+                matched = True
                 break
             if hasattr(engine, "read_words"):
                 bw = read_band(img)
+                bands[label] = bw
                 if match_words(bw, vocab, name_band)[0] is not None:
                     found = (text, bw + words, label)
+                    matched = True
                     break
         raw_text, words, orientation = found
+        if not matched:
+            # keep the enlarged name-bar read: what it got, even a part of a
+            # name, is what the warnings below can tell the person
+            words = bands.get(orientation, []) + list(words)
     except OcrUnavailable as exc:
         return Recognition(
             name=None, dex=None, matched_token=None, edits=None,
@@ -551,10 +582,19 @@ def recognise_card(
                 f"its own. If it is {miss[1]}, confirm it with Fix name."
             )
         else:
-            warnings.append(
-                "no OCR token was close enough to a known species name. The card "
-                "may be outside the vocabulary, face-down, or too glared to read."
-            )
+            pre = prefix_candidates(words, vocab, name_band)
+            if pre is not None:
+                token_, names = pre
+                options = names[0] if len(names) == 1 else ', '.join(names[:-1]) + ' or ' + names[-1]
+                warnings.append(
+                    f"the name bar reads only {token_!r}, the start of {options} -- glare or blur may hide the "
+                    "rest. Tilt the card so the reflection moves off the name, or pick the name with Fix name."
+                )
+            else:
+                warnings.append(
+                    "no OCR token was close enough to a known species name. The card "
+                    "may be outside the vocabulary, face-down, or too glared to read."
+                )
 
     # Cross-check: a printed dex number and a read name must agree.
     if sp is not None and dex is not None and sp.dex is not None and sp.dex != dex:

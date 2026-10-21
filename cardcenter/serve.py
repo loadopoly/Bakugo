@@ -885,14 +885,16 @@ body{margin:0;padding:0;background:var(--ink);color:var(--paper);
 header.app-bar{padding:calc(10px + env(safe-area-inset-top)) 16px 10px;
   display:flex;align-items:center;gap:10px;position:sticky;top:0;
   background:rgba(11,15,21,0.95);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
-  border-bottom:1px solid var(--rule);z-index:40}
+  border-bottom:1px solid var(--rule);z-index:40;flex-wrap:wrap}
+html{overflow-x:hidden}
 .brand{display:flex;align-items:baseline;gap:8px}
 .brand h1{font-size:1.25rem;margin:0;font-weight:700;color:#FFF;letter-spacing:-.02em}
 .brand .badge{font-size:0.875rem;color:var(--key);font-weight:600;padding:2px 8px;background:rgba(78,210,198,.12);border-radius:4px}
 .text-size-controls{display:flex;align-items:center;gap:4px;margin-left:auto}
 .btn-text-size{min-width:44px;min-height:44px;padding:4px 8px;border:1px solid var(--rule);background:var(--surface);color:var(--paper);border-radius:var(--radius-sm);font-weight:700;font-size:0.875rem;cursor:pointer;display:flex;align-items:center;justify-content:center}
 .btn-text-size.active{border-color:var(--key);background:var(--rise);color:#FFF}
-.host-pill{font-size:0.875rem;min-height:44px;padding:8px 12px;border-radius:22px;background:var(--surface);border:1px solid var(--rule);color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:8px}
+.host-pill{font-size:0.875rem;min-height:44px;padding:8px 12px;border-radius:22px;background:var(--surface);border:1px solid var(--rule);color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:8px;min-width:0;max-width:100%}
+#host-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .host-pill .dot{width:8px;height:8px;border-radius:50%;background:var(--pass)}
 
 .tab-nav{display:flex;padding:8px 16px;gap:8px;background:rgba(11,15,21,0.6)}
@@ -1692,13 +1694,25 @@ function coverCrop() {
 const DETAIL_ON = true;
 const DETAIL_EVERY_MS = 700, DETAIL_OUT_MM = 6, DETAIL_IN_MM = 11, DETAIL_END_MM = 3;
 let lastDetailAt = 0;
+// Upload speed decides how much detail a push can carry. On 5G the strips
+// made pushes 100-350 KB against 26 KB without; the server answered in
+// 0.2-1.5 s but the uploads ran past the 6 s limit (2026-10-21 logs). So the
+// strips are sent only when they fit the measured uplink, re-encoded smaller
+// first, and less often after a timeout.
+let detailEveryMs = DETAIL_EVERY_MS;
+let uplinkBytesPerMs = 0;            // estimated from finished pushes; 0 = not yet known
+const PUSH_TARGET_MS = 1500;         // aim for a round trip this long
+function detailBudgetBytes(frameBytes) {
+  if (!uplinkBytesPerMs) return 60000;
+  return Math.max(0, Math.min(250000, uplinkBytesPerMs * PUSH_TARGET_MS * 0.8 - frameBytes));
+}
 function detailTargetPxmm() {
   const avg = arStats.msAvg || 0;
   if (avg > 3500) return 0;
   return avg > 2000 ? 8 : 11;
 }
 function cutDetailStrips(crop) {
-  if (!DETAIL_ON || !crop || Date.now() - lastDetailAt < DETAIL_EVERY_MS) return null;
+  if (!DETAIL_ON || !crop || Date.now() - lastDetailAt < detailEveryMs) return null;
   const track = freshTrackQuad();
   if (!track) return null;
   const target = detailTargetPxmm();
@@ -2051,13 +2065,23 @@ async function arTick() {
     // full-resolution Measure Card photo would have
     fd.append('source_scale', String(crop.w / (offscreenCanvas.width || crop.w)));
     fd.append('zoom', zoomFactor().toFixed(2));
+    let sentBytes = blob.size;
     if (strips) {
-      const blobs = await Promise.all(strips.canvases.map(c => encodeCanvas(c, 0.85)));
-      if (blobs.every(b => b)) {
+      const budget = detailBudgetBytes(blob.size);
+      const encodeAll = q => Promise.all(strips.canvases.map(c => encodeCanvas(c, q)));
+      const total = bs => bs.reduce((a, b) => a + (b ? b.size : 0), 0);
+      let blobs = await encodeAll(0.85);
+      if (blobs.every(b => b) && total(blobs) > budget) blobs = await encodeAll(0.6);
+      lastDetailAt = Date.now();
+      if (blobs.every(b => b) && total(blobs) <= budget) {
         fd.append('detail_meta', JSON.stringify({ m: strips.m, strips: strips.rects }));
         blobs.forEach((b, i) => fd.append('detail_' + i, b, 'strip' + i + '.jpg'));
-        arStats.detailBytes = blobs.reduce((a, b) => a + b.size, 0);
-        lastDetailAt = Date.now();
+        arStats.detailBytes = total(blobs);
+        sentBytes += arStats.detailBytes;
+      } else {
+        // too big for this link: send the frame alone, and try strips less often
+        arStats.detailSkipped = (arStats.detailSkipped || 0) + 1;
+        detailEveryMs = Math.min(5000, detailEveryMs * 2);
       }
     }
     if (pendingAim) {
@@ -2083,6 +2107,13 @@ async function arTick() {
       arStats.error = '';
       arStats.lastOkAt = Date.now();
       arStats.serverMs = d.server_ms;
+      const transit = arStats.ms - (d.server_ms || 0);
+      if (transit > 30 && sentBytes > 4000) {
+        const rate = sentBytes / transit;
+        uplinkBytesPerMs = uplinkBytesPerMs ? 0.7 * uplinkBytesPerMs + 0.3 * rate : rate;
+        arStats.uplinkKBs = Math.round(uplinkBytesPerMs);   // bytes/ms = KB/s
+      }
+      if (arStats.ms < PUSH_TARGET_MS) detailEveryMs = Math.max(DETAIL_EVERY_MS, detailEveryMs * 0.8);
     } else if (d && d.busy) {
       // the server is still on the previous frame: not an error, and the
       // next tick sends a newer frame
@@ -2104,7 +2135,12 @@ async function arTick() {
     arStats.fail++;
     arStats.ms = Date.now() - t0;
     const aborted = e && e.name === 'AbortError';
-    if (aborted) arStats.timeouts++;
+    if (aborted) {
+      arStats.timeouts++;
+      // the upload did not finish in time: assume the link is slower than measured
+      detailEveryMs = Math.min(5000, detailEveryMs * 2);
+      if (uplinkBytesPerMs) uplinkBytesPerMs *= 0.5;
+    }
     arStats.error = aborted
       ? `no reply in ${PUSH_TIMEOUT_MS / 1000}s (${arStats.timeouts} timeouts)`
       : String((e && e.message) || e).slice(0, 140);
@@ -2695,7 +2731,7 @@ async function sendStillPhoto(fileOrBlob, track) {
   const stillTick = setInterval(() => {
     $('#btn-action').textContent = 'Measuring photo… ' + Math.round((Date.now() - stillT0) / 1000) + ' s';
   }, 1000);
-  $('#out').innerHTML = '<div class="strip"><div class="seg segL" style="width:50%"></div><div class="seg segR" style="width:50%"></div></div><div class="sub-meta" style="padding:14px 16px;color:var(--key)">🔬 Ray-tracing Snell refraction & calculating confidence intervals…</div>';
+  $('#out').innerHTML = '<div class="sub-meta" style="padding:14px 16px;color:var(--key)">Measuring the photo and reading the card name. This takes a few seconds.</div>';
 
   try {
     const prep = await prepareStill(fileOrBlob, track);

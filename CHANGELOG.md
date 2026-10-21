@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.32.0] - 2026-10-21
+
+From the 2026-10-21 field screenshots (Fletchinder, 6:11-6:13 pm) and the
+Hideout logs for the same session.
+
+### Fixed
+- **Live view stalled on 5G.** The server answered each push in 0.2-1.5 s, but
+  pushes carrying the full-resolution edge strips were 100-350 KB (26 KB
+  without), and their uploads ran past the phone's 6 s limit. The page now
+  measures its upload speed and sends strips only when they fit a 1.5 s round
+  trip: re-encoded at lower quality first, otherwise the frame goes alone and
+  strips are tried less often (up to every 5 s, halved again after a timeout).
+- **"Fletch" read as nothing.** Glare over the end of a name left its first
+  letters, which is too far from any full name to match. Recognition still
+  refuses (it is the start of Fletchling and Fletchinder), but now says so and
+  names the candidates. The enlarged name-bar read is kept for these warnings
+  when it does not match; it was discarded before.
+- **Page wider than the screen.** The header did not wrap, so a long server
+  name pushed the page sideways and clipped the Freeze button and zoom
+  readout. The header now wraps and the server name truncates.
+- **Measuring placeholder.** Replaced the empty bar and "Ray-tracing Snell
+  refraction" line with a plain sentence.
+
+### Infrastructure (Hideout compose, not this repo)
+- `bakugo-app` now has 4 CPUs (was 2): a Freeze runs /measure and /identify
+  at once beside the live pushes, and on 2 CPUs they took 10-14 s each.
+
 ## [2.31.0] - 2026-10-16
 
 Fixes from the 2026-10-15 field screenshots (16 shots, 7:26-7:33 pm) and the
