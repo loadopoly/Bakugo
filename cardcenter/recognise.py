@@ -553,10 +553,10 @@ def recognise_card(
                     matched = True
                     break
         raw_text, words, orientation = found
-        if not matched:
-            # keep the enlarged name-bar read: what it got, even a part of a
-            # name, is what the warnings below can tell the person
-            words = bands.get(orientation, []) + list(words)
+        # The enlarged name-bar read, kept for the prefix warning only: it
+        # also picks up the stage label ("TRMIGE" from STAGE 1), which the
+        # near-miss suggestion must not see (it offered Mr. Mime).
+        band_words = [] if matched else bands.get(orientation, [])
     except OcrUnavailable as exc:
         return Recognition(
             name=None, dex=None, matched_token=None, edits=None,
@@ -582,7 +582,7 @@ def recognise_card(
                 f"its own. If it is {miss[1]}, confirm it with Fix name."
             )
         else:
-            pre = prefix_candidates(words, vocab, name_band)
+            pre = prefix_candidates(list(band_words) + list(words), vocab, name_band)
             if pre is not None:
                 token_, names = pre
                 options = names[0] if len(names) == 1 else ', '.join(names[:-1]) + ' or ' + names[-1]
