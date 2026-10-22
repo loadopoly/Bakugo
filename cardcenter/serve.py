@@ -374,8 +374,29 @@ def _condition_for_still(image, result, capture, session=None):
     return view, view
 
 
+def _quad_hint(fields: dict, image_bytes: bytes):
+    """The outline the phone was tracking, in the uploaded image's pixels
+    (``quad_hint`` = JSON [[x, y] x 4]), or None. Only a hint: the server
+    still locates the card, it just starts where the phone says it is."""
+    raw = fields.get("quad_hint")
+    if not raw:
+        return None
+    try:
+        q = np.asarray(json.loads(raw.decode("utf-8", "replace")), dtype=np.float64).reshape(4, 2)
+    except (ValueError, TypeError):
+        return None
+    dims = _image_dims(image_bytes)
+    if dims is None or not np.all(np.isfinite(q)):
+        return None
+    w, h = dims
+    pad = 0.05 * max(w, h)
+    if q[:, 0].min() < -pad or q[:, 1].min() < -pad or q[:, 0].max() > w + pad or q[:, 1].max() > h + pad:
+        return None
+    return q
+
+
 def _measure_payload(image_bytes: bytes, holder: str, lens: str, parent=None,
-                     session=None, card_ref: Optional[str] = None) -> dict:
+                     session=None, card_ref: Optional[str] = None, hint=None) -> dict:
     source = decode_image(image_bytes, "file")
 
     # Spend the 2400 px budget on the card, not on the room around it: capping
@@ -383,7 +404,7 @@ def _measure_payload(image_bytes: bytes, holder: str, lens: str, parent=None,
     # resolution for nothing. framing crops to the card and carries the
     # intrinsics and the located outline with it.
     fov = LENS_FOV.get(lens, LENS_FOV["main"])
-    framed = frame_card_for_measure(source, fov_deg=fov, max_side=2400, parent=parent)
+    framed = frame_card_for_measure(source, fov_deg=fov, max_side=2400, parent=parent, hint=hint)
     if framed.px_per_mm is not None and framed.px_per_mm < MIN_PX_PER_MM:
         # Measured on synthetic captures: at 4.9 px/mm the ratio came back
         # 0.08 pp from truth, at 4.0 px/mm it came back 25 pp out with an
@@ -601,7 +622,8 @@ def _rectify_for_reading(image: np.ndarray, quad: np.ndarray, px_per_mm: float):
     return rect, (0.0, (my + NAME_BAND * h) / (h + 2 * my))
 
 
-def _identify_payload(image_bytes: bytes, device_id: str, owner: bool, record: bool = True) -> dict:
+def _identify_payload(image_bytes: bytes, device_id: str, owner: bool, record: bool = True,
+                      hint=None) -> dict:
     """OCR identification of one still, recorded for feedback and the second
     vote. The outline comes from locate_card (find_card_quad plus the
     information snap), and its information floor feeds the decision."""
@@ -611,7 +633,7 @@ def _identify_payload(image_bytes: bytes, device_id: str, owner: bool, record: b
     from .recognise import recognise_card
     from .types import STANDARD_CARD_W_MM
 
-    from .framing import card_region, locate_coarse_to_fine, min_area_frac_for
+    from .framing import card_region, locate_coarse_to_fine, locate_from_hint, min_area_frac_for
 
     image = decode_image(image_bytes, "image")
     # Across a counter the card is a small part of the photo, and a 1400 px
@@ -619,7 +641,12 @@ def _identify_payload(image_bytes: bytes, device_id: str, owner: bool, record: b
     # Locate it coarse to fine first (the same search /measure uses), then do
     # the identification inside a generous crop of the original pixels.
     work, origin = image, (0, 0)
-    found = locate_coarse_to_fine(image)
+    # The coarse search only chooses the crop below; the phone's tracked
+    # outline, once the fine stage agrees with it, chooses it in a third of
+    # the time (see framing.locate_from_hint).
+    found = locate_from_hint(image, hint) if hint is not None else None
+    if found is None:
+        found = locate_coarse_to_fine(image)
     if found is not None:
         x0, y0, x1, y1 = card_region(image.shape, found[0])
         if (x1 - x0) * (y1 - y0) < 0.5 * image.shape[0] * image.shape[1]:
@@ -920,7 +947,7 @@ html{overflow-x:hidden}
 .hud-chip.settled{border-color:var(--pass);color:var(--pass)}
 .hud-chip.settled .radar{background:var(--pass);animation:none;opacity:1;transform:none}
 
-.hud-spirit{position:absolute;bottom:10px;right:10px;background:var(--surface-glass);backdrop-filter:blur(8px);border:1px solid var(--rule);border-radius:14px;padding:4px 10px;font-size:0.875rem;line-height:1.4;color:var(--dim);display:flex;align-items:center;gap:6px;pointer-events:none;z-index:10}
+.hud-spirit{position:absolute;bottom:10px;left:10px;background:var(--surface-glass);backdrop-filter:blur(8px);border:1px solid var(--rule);border-radius:14px;padding:4px 10px;font-size:0.875rem;line-height:1.4;color:var(--dim);display:flex;align-items:center;gap:6px;pointer-events:none;z-index:10}
 .hud-spirit .spirit-bubble{width:6px;height:6px;border-radius:50%;background:var(--pass);transition:background .2s}
 .hud-spirit.tilted{border-color:var(--hold);color:var(--hold)}
 .hud-spirit.tilted .spirit-bubble{background:var(--hold)}
@@ -1399,6 +1426,40 @@ $('#cust-show-key').onclick = async () => {
   try { const d = await (await api('/custody/device')).json(); $('#cust-key').textContent = d.device_token || ''; }
   catch (e) { $('#cust-key').textContent = String(e); }
 };
+
+// Is the phone being held still? The rotation rate says so directly: a tap
+// on Freeze turns the phone a few degrees, and the 2026-10-21 Freeze photos
+// came out with 9.9 mm of motion blur while the live view was sharp.
+const STILL_DEG_S = 8;              // below this rotation rate the hand is steady
+let rotRate = null, stillSince = 0, motionSeen = false;
+window.addEventListener('devicemotion', (e) => {
+  const r = e.rotationRate;
+  if (!r || r.alpha == null) return;
+  motionSeen = true;
+  const m = Math.hypot(r.alpha || 0, r.beta || 0, r.gamma || 0);
+  rotRate = rotRate == null ? m : 0.6 * rotRate + 0.4 * m;
+  if (rotRate < STILL_DEG_S) { if (!stillSince) stillSince = Date.now(); }
+  else stillSince = 0;
+}, true);
+// ms the phone has been still; -1 when the browser gives no motion data
+function phoneStillMs() {
+  if (!motionSeen) return -1;
+  return stillSince ? Date.now() - stillSince : 0;
+}
+
+// How sharp the live view of this card has been lately: the yardstick a
+// Freeze frame is judged against (Laplacian units depend on the scene, so
+// only a comparison within one scene means anything).
+let sharpHist = [];
+function noteLiveSharpness(track) {
+  if (!track) return;
+  const now = Date.now();
+  sharpHist.push({ t: now, v: frameSharpness(track) });
+  sharpHist = sharpHist.filter(e => now - e.t < 4000);
+}
+function liveSharpBaseline() {
+  return sharpHist.length ? Math.max(...sharpHist.map(e => e.v)) : 0;
+}
 
 // Gyroscope spirit level tracking (DeviceOrientation)
 let deviceTiltDeg = 0;
@@ -2129,6 +2190,12 @@ async function arTick() {
     drawARHUD(d, thumb);
     maybeAutoZoom(d);
     maybeLiveHiRes(d);
+    if (d && d.ok && d.tracking) {
+      noteLiveSharpness(freshTrackQuad());
+      maybeAutoCapture();
+    } else if (d && d.ok && !d.tracking) {
+      autoDoneForCard = false;        // the card left the view: the next one gets its own photo
+    }
   } catch(e) {
     // A dropped frame and a broken loop look identical until one of them is
     // reported: say which, on screen and in the console.
@@ -2511,7 +2578,8 @@ function stillSource(vw, vh, hasPhoto) {
   return (!hasPhoto || vw * vh >= STILL_VIDEO_MIN_PIXELS) ? 'frame' : 'photo';
 }
 let lastStillSource = '';
-async function grabStill(track) {
+let lastStillInfo = null;
+async function grabStill(track, auto) {
   const hasPhoto = !!videoTrack && typeof ImageCapture !== 'undefined';
   lastStillSource = stillSource(arVideo.videoWidth, arVideo.videoHeight, hasPhoto);
   if (lastStillSource === 'photo') {
@@ -2526,9 +2594,10 @@ async function grabStill(track) {
     }
   }
   lastStillSource = 'frame';
-  const c = await sharpestFrame(track);
-  arStats.still = 'frame ' + c.width + 'x' + c.height + ' best of ' + STILL_BURST +
-    ' (sharp ' + c.sharp.map(v => v.toFixed(0)).join('/') + ')';
+  const c = await sharpestFrame(track, auto);
+  lastStillInfo = { best: c.best, base: c.base, ms: c.ms };
+  arStats.still = 'frame ' + c.width + 'x' + c.height + ' best of ' + c.sharp.length + ' in ' + c.ms + 'ms' +
+    ' (sharp ' + c.sharp.map(v => v.toFixed(0)).join('/') + ', live ' + c.base.toFixed(0) + ')';
   return await new Promise(res => c.toBlob(res, 'image/jpeg', 0.92));
 }
 
@@ -2570,21 +2639,39 @@ function frameSharpness(track) {
   return n ? sum / n : 0;
 }
 
-async function sharpestFrame(track) {
+// The burst used to start at the tap, so all four frames carried the tap's
+// shake. Now: let the tap settle, then take frames until one is about as
+// sharp as the live view of this card has been, waiting for the gyroscope to
+// say the phone is still. At most STILL_MAX_MS.
+const STILL_SETTLE_MS = 180;        // after a tap; an automatic capture skips it
+const STILL_MAX_MS = 1100;
+const STILL_GOOD_FRAC = 0.85;       // of the live baseline: good enough, stop
+const STILL_BLUR_FRAC = 0.45;       // below this the photo is refused on the phone
+async function sharpestFrame(track, auto) {
   const full = document.createElement('canvas');
   full.width = arVideo.videoWidth;
   full.height = arVideo.videoHeight;
   const ctx = full.getContext('2d');
+  const base = liveSharpBaseline();
+  const t0 = Date.now();
+  if (!auto) await new Promise(r => setTimeout(r, STILL_SETTLE_MS));
   let best = -1;
   const seen = [];
-  for (let i = 0; i < STILL_BURST; i++) {
-    if (i) await new Promise(r => setTimeout(r, STILL_BURST_GAP_MS));
+  for (let i = 0; Date.now() - t0 < STILL_MAX_MS; i++) {
+    if (i) await new Promise(r => setTimeout(r, STILL_BURST_GAP_MS / 2));
+    const still = phoneStillMs();
+    if (still === 0 && Date.now() - t0 < 0.7 * STILL_MAX_MS) continue;   // moving: wait
     // measured and drawn in the same turn: the same video frame
     const v = frameSharpness(track);
     seen.push(v);
     if (v > best) { best = v; ctx.drawImage(arVideo, 0, 0); }
+    if (base > 0 ? v >= STILL_GOOD_FRAC * base : seen.length >= STILL_BURST) break;
   }
+  if (best < 0) { best = frameSharpness(track); seen.push(best); ctx.drawImage(arVideo, 0, 0); }
   full.sharp = seen;
+  full.best = best;
+  full.base = base;
+  full.ms = Date.now() - t0;
   return full;
 }
 
@@ -2618,7 +2705,7 @@ async function prepareStill(blob, track) {
   try { bmp = await createImageBitmap(blob); } catch (e) { bmp = null; }
   if (!bmp) return { blob: blob, parent: null, note: 'sent as taken' };
   const pw = bmp.width, ph = bmp.height;
-  let box = null;
+  let box = null, hintXs = null, hintYs = null;
   // The preview is (at most) a centred crop of the photo's field of view, so
   // the photo covers it at the smaller of the two scales. Skip the crop when
   // the orientations disagree: the mapping would be a guess.
@@ -2626,6 +2713,7 @@ async function prepareStill(blob, track) {
     const s = Math.min(pw / track.vw, ph / track.vh);
     const xs = track.quad.map(p => (p[0] - track.vw / 2) * s + pw / 2);
     const ys = track.quad.map(p => (p[1] - track.vh / 2) * s + ph / 2);
+    hintXs = xs; hintYs = ys;
     const side = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
     // the video frame is the frame the outline came from: no mapping to allow for
     const m = (lastStillSource === 'frame' ? STILL_FRAME_MARGIN : STILL_CROP_MARGIN) * side;
@@ -2637,19 +2725,21 @@ async function prepareStill(blob, track) {
       box = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
     }
   }
+  // the outline the phone tracked, where it falls in the image being sent
+  const hintAt = (dx, dy, k) => hintXs ? hintXs.map((x, i) => [(x - dx) * k, (hintYs[i] - dy) * k]) : null;
   if (box) {
     const c = document.createElement('canvas');
     c.width = box.w; c.height = box.h;
     c.getContext('2d').drawImage(bmp, box.x, box.y, box.w, box.h, 0, 0, box.w, box.h);
     if (bmp.close) bmp.close();
     const out = await encodeCanvas(c, 0.92);
-    if (out) return { blob: out, parent: { x: box.x, y: box.y, w: pw, h: ph },
+    if (out) return { blob: out, parent: { x: box.x, y: box.y, w: pw, h: ph }, hint: hintAt(box.x, box.y, 1),
                       note: 'card crop ' + box.w + 'x' + box.h + ' of ' + pw + 'x' + ph };
     return { blob: blob, parent: null, note: 'crop failed; sent as taken' };
   }
   if (pw * ph <= STILL_MAX_PIXELS && blob.size <= STILL_MAX_BYTES) {
     if (bmp.close) bmp.close();
-    return { blob: blob, parent: null, note: 'full photo ' + pw + 'x' + ph };
+    return { blob: blob, parent: null, hint: hintAt(0, 0, 1), note: 'full photo ' + pw + 'x' + ph };
   }
   // Too big for the server as it stands: shrink the whole photo (the server
   // still crops to the card before its own cap).
@@ -2660,7 +2750,8 @@ async function prepareStill(blob, track) {
   if (bmp.close) bmp.close();
   let out = await encodeCanvas(c, 0.9);
   if (out && out.size > STILL_MAX_BYTES) out = await encodeCanvas(c, 0.8);
-  return { blob: out || blob, parent: null, note: 'resized ' + c.width + 'x' + c.height };
+  return { blob: out || blob, parent: null, hint: out ? hintAt(0, 0, k) : null,
+           note: 'resized ' + c.width + 'x' + c.height };
 }
 
 // Keep the screen on while the camera is up: a phone that dims mid-shop
@@ -2681,18 +2772,51 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && videoStream) holdScreenOn();
 });
 
-async function triggerARFreeze() {
+async function triggerARFreeze(opts) {
   if (!arVideo.videoWidth || stillBusy) return;
+  const auto = !!(opts && opts.auto);
   // Take the outline before anything else: the loop pauses for the upload and
   // the overlay goes stale while the photo is being taken.
   const track = freshTrackQuad();
   stillBusy = true;
+  lastStillInfo = null;
+  if (auto) setChip('Hold still -- taking the photo');
   try {
-    const blob = await grabStill(track);
+    const blob = await grabStill(track, auto);
+    const si = lastStillSource === 'frame' ? lastStillInfo : null;
+    if (si && si.base > 0 && si.best < STILL_BLUR_FRAC * si.base) {
+      // A blurred photo cannot be measured or read; saying so now beats a
+      // 10 s round trip that ends in "out of focus".
+      synth.playWarn();
+      $('#out').innerHTML = `<div class="empty-card" style="border-color:var(--hold)"><b style="color:var(--hold)">Photo blurred -- not sent</b><div>The sharpest frame was ${Math.round(100 * si.best / si.base)}% as sharp as the live view of this card. Hold the phone still for a moment: Bakugo takes the photo itself once it is steady.</div></div>`;
+      return;
+    }
     if (blob) await sendStillPhoto(blob, track);
+    if (auto) autoDoneForCard = true;
   } finally {
     stillBusy = false;
   }
+}
+
+// Automatic capture: the decision should not depend on holding the live view
+// until a statistical test settles (it rarely did -- the 2026-10-21 session
+// measured no live frame in six minutes). Once the card is tracked and the
+// phone has been still for AUTO_STILL_MS (gyroscope), take the photo.
+const AUTO_CAPTURE = true;
+const AUTO_STILL_MS = 300;
+const AUTO_GAP_MS = 4000;
+let lastAutoAt = 0, autoDoneForCard = false, trackedSince = 0;
+function maybeAutoCapture() {
+  if (!AUTO_CAPTURE || stillBusy || currentMode !== 'ar' || autoDoneForCard) return;
+  const track = freshTrackQuad();
+  if (!track) { trackedSince = 0; return; }
+  if (!trackedSince) trackedSince = Date.now();
+  if (Date.now() - lastAutoAt < AUTO_GAP_MS) return;
+  // Only with a gyroscope: without one there is no telling a steady hand
+  // from a moving one, and a photo taken mid-move is the blurred one.
+  if (phoneStillMs() < AUTO_STILL_MS) return;
+  lastAutoAt = Date.now();
+  triggerARFreeze({ auto: true });
 }
 
 // Action button
@@ -2751,6 +2875,11 @@ async function sendStillPhoto(fileOrBlob, track) {
     // legibility gate, so a frame /measure refuses can still be named.
     const idFd = new FormData();
     idFd.append('image', prep.blob, 'shot.jpg');
+    if (prep.hint) {
+      const h = JSON.stringify(prep.hint.map(p => [Math.round(p[0] * 10) / 10, Math.round(p[1] * 10) / 10]));
+      fd.append('quad_hint', h);
+      idFd.append('quad_hint', h);
+    }
     const idReq = apiTimed('/identify', { method: 'POST', body: idFd }, STILL_TIMEOUT_MS);
 
     const d = await apiTimed('/measure', { method: 'POST', body: fd }, STILL_TIMEOUT_MS);
@@ -3536,6 +3665,7 @@ class Handler(BaseHTTPRequestHandler):
                     _parent_crop(fields, image),
                     session=live,
                     card_ref=fields.get("card_ref", b"").decode("utf-8", "replace") or None,
+                    hint=_quad_hint(fields, image),
                 )
                 payload["device_id"] = device_id
                 if payload.get("record"):
@@ -3693,7 +3823,8 @@ class Handler(BaseHTTPRequestHandler):
 
                 field = ("identify", image_bytes, {"device": str(device_id)[:8]})
                 payload = _identify_payload(
-                    image_bytes, device_id, owner_token_matches(self.headers.get("X-Bakugo-Owner"))
+                    image_bytes, device_id, owner_token_matches(self.headers.get("X-Bakugo-Owner")),
+                    hint=_quad_hint(fields, image_bytes),
                 )
 
             elif path == "/custody/evidence":

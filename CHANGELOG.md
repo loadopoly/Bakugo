@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.33.0] - 2026-10-21
+
+Toward a decision within about 2 s of holding a card still. From the
+2026-10-21 evening session: six minutes of live view measured no frame, both
+Freeze photos had 9.9 mm of motion blur, and the server spent 4-5 s of each
+request finding the card it was already told about.
+
+### Added
+- **Automatic capture.** While a card is tracked, the photo is taken once the
+  gyroscope shows the phone still for 0.3 s. Once per card; the next card gets
+  its own. No gyroscope data (desktop, or iOS without motion permission): no
+  automatic capture.
+- **Locate hint.** The phone sends the outline it tracked (`quad_hint`) with
+  /measure and /identify. The server runs only the fine stage of its search on
+  the crop the full search would have chosen, and falls back to the full
+  search unless the result agrees with the hint (IoU >= 0.7). On the field
+  stills the phone had cropped: identical outline, 1.5-2 s instead of 4-5 s.
+
+### Fixed
+- **Freeze shot at the tap.** The burst started at the tap, so every frame
+  carried its shake. It now waits 180 ms, then takes frames while the
+  gyroscope says the phone is still, until one is 85% as sharp as the live
+  view of the card (at most 1.1 s).
+- **Blurred photos uploaded anyway.** A frame under 45% of the live view's
+  sharpness is refused on the phone at once, instead of after a 10 s round
+  trip ending in "out of focus".
+- **Tilt chip under the detector inset.** It moved to the bottom-left.
+
 ## [2.32.0] - 2026-10-21
 
 From the 2026-10-21 field screenshots (Fletchinder, 6:11-6:13 pm) and the

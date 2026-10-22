@@ -241,7 +241,8 @@ def test_still_capture_falls_back_to_the_video_frame(page, stub):
     assert page.evaluate("arStats.still").startswith("frame ")
     assert page.evaluate("arStats.still").split(" ")[1] == page.evaluate("arStats.video")
     # the sharpest of a burst, not whichever frame the button caught
-    assert "best of 4" in page.evaluate("arStats.still")
+    # the sharpest of a burst that stops once a frame is as sharp as the live view
+    assert re.search(r"best of \d+ in \d+ms", page.evaluate("arStats.still"))
 
 
 def test_camera_picker_lists_the_cameras(page):
@@ -452,7 +453,7 @@ def test_edge_strips_are_cut_along_the_tracked_outline(page, stub):
     costs about the same -- it then carries the face for surface grading too.
     Fewer pixels when round trips run long, none past 3.5 s."""
     _wait_pushes(page)
-    page.wait_for_function("() => freshTrackQuad() !== null", timeout=10000)
+    page.wait_for_function("() => !stillBusy && freshTrackQuad() !== null", timeout=10000)
     got = page.evaluate("""() => { lastDetailAt = 0; arStats.msAvg = 500;
         const s = cutDetailStrips(coverCrop());
         const q = freshTrackQuad().quad;
@@ -464,6 +465,9 @@ def test_edge_strips_are_cut_along_the_tracked_outline(page, stub):
         # the single region holds the whole tracked card (frame pixels)
         x, y, w, h = got["rects"][0]
         assert w > 0 and h > 0
+    # a capture (the stub's settled card triggers one) pauses the loop and
+    # lets the outline go stale; cut the strips between captures
+    page.wait_for_function("() => !stillBusy && freshTrackQuad() !== null", timeout=10000)
     slow = page.evaluate("""() => { lastDetailAt = 0; arStats.msAvg = 2500;
         const s = cutDetailStrips(coverCrop()); return s && s.canvases.map(c => c.width); }""")
     assert slow and sum(slow) <= sum(got["w"])

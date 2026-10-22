@@ -143,6 +143,38 @@ def _bbox(quad, image_shape, margin_frac):
     return x0, y0, x1, y1
 
 
+def locate_from_hint(image: np.ndarray, hint) -> Optional[tuple]:
+    """The fine stage of ``_locate`` only, around an outline the phone tracked.
+
+    ``_locate`` runs its multi-scale coarse pass to choose where to crop, then
+    locates again inside that crop. When the phone already tracked the card,
+    its outline answers the first question: this runs the second stage on the
+    same crop ``_locate`` would have used, and returns None (run the full
+    search) unless the result agrees with the hint. Measured on the
+    2026-10-21 field stills the phone had cropped: identical outline (0.0 px),
+    1.5-2 s instead of 4-5 s."""
+    from .edge_information import _quad_iou
+
+    try:
+        h_q = np.asarray(hint, dtype=np.float64).reshape(4, 2)
+    except (TypeError, ValueError):
+        return None
+    if not np.all(np.isfinite(h_q)) or _area(h_q) < 64 * 64:
+        return None
+    x0, y0, x1, y1 = _bbox(h_q, image.shape, COARSE_MARGIN_FRAC)
+    crop = image[y0:y1, x0:x1]
+    if min(crop.shape[:2]) < 64:
+        return None
+    refined = _locate_in(crop, None, DETECT_SCALES[-1])
+    if refined is None:
+        return None
+    fine, fine_res = refined
+    fine = fine + np.array([x0, y0], dtype=np.float64)
+    if _area(fine) < 0.8 * _area(h_q) or _quad_iou(fine, h_q, image.shape[:2]) < 0.7:
+        return None
+    return fine, fine_res
+
+
 def locate_coarse_to_fine(image: np.ndarray, prefer_point=None):
     """Public name for the two-pass locate: (quad, residual_px) in the
     image's own pixels, or None."""
@@ -202,6 +234,7 @@ def frame_card_for_measure(
     margin_frac: float = MARGIN_FRAC,
     prefer_point=None,
     parent=None,
+    hint=None,
 ) -> Framing:
     """Crop to the card, then cap. Falls back to a plain cap when no card is
     found, so a frame this cannot locate behaves exactly as before.
@@ -211,7 +244,9 @@ def frame_card_for_measure(
     h, w = image.shape[:2]
     residual = 0.0
     if quad is None:
-        found = _locate(image, prefer_point)
+        found = locate_from_hint(image, hint) if hint is not None else None
+        if found is None:
+            found = _locate(image, prefer_point)
         if found is not None:
             quad, residual = found
     if quad is not None:
