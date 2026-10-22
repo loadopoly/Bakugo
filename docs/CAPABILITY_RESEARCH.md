@@ -1,5 +1,11 @@
 # Bakugo capability-expansion research plan
 
+> Research notes (Copilot agent, 2026-10-15), kept for reference. The working
+> plan is the Bakugo project's `bakugo-plan.md`; items from here are adopted
+> there (Part C: interval coverage, leak-free splits, QUIPU feedback audit).
+> Some statements predate v2.24 (live corner/edge/surface measurement).
+
+
 ## Objective
 
 Expand what Bakugo can reliably observe, while preserving honest uncertainty,
@@ -63,17 +69,17 @@ that the proposed capabilities have already been validated.
 
 ## Repository grounding
 
-- [README](README.md): centering scope, grade bands, and shop-capture limits.
-- [Architecture](docs/ARCHITECTURE.md): existing metrology, AR, recognition,
+- [README](../README.md): centering scope, grade bands, and shop-capture limits.
+- [Architecture](ARCHITECTURE.md): existing metrology, AR, recognition,
   provenance, learning, and market subsystems.
-- [Field capture](docs/FIELD_CAPTURE.md): resolution limits and capture workflow.
-- [In-situ learning](docs/IN_SITU_LEARNING.md): per-device confirmation, owner
+- [Field capture](FIELD_CAPTURE.md): resolution limits and capture workflow.
+- [In-situ learning](IN_SITU_LEARNING.md): per-device confirmation, owner
   review, embedding gates, and the documented prior-feedback concern.
-- [Recognition evaluator](eval/recognition_eval.py): existing OCR baseline and
+- [Recognition evaluator](../eval/recognition_eval.py): existing OCR baseline and
   acceptance-versus-abstention evaluation.
-- [Detail capture](cardcenter/detail.py): full-resolution edge strips supporting
+- [Detail capture](../cardcenter/detail.py): full-resolution edge strips supporting
   the measurement pipeline.
-- [Photogrammetry](cardcenter/photogrammetry.py): reference-based dimensions and
+- [Photogrammetry](../cardcenter/photogrammetry.py): reference-based dimensions and
   scale uncertainty.
-- [Valuation](cardcenter/valuation.py): grade priors, downside risk, and the
+- [Valuation](../cardcenter/valuation.py): grade priors, downside risk, and the
   distinction between asking and sold prices.
