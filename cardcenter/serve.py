@@ -3665,7 +3665,9 @@ class Handler(BaseHTTPRequestHandler):
                     _parent_crop(fields, image),
                     session=live,
                     card_ref=fields.get("card_ref", b"").decode("utf-8", "replace") or None,
-                    hint=_quad_hint(fields, image),
+                    # No locate hint here: on full 4K frames the hinted outline differed
+                    # enough that photos which measured before were refused (2.33.0).
+                    # /identify, which needs legible glyphs not a sub-mm edge, keeps it.
                 )
                 payload["device_id"] = device_id
                 if payload.get("record"):

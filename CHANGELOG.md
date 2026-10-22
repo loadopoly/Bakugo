@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.33.1] - 2026-10-21
+
+### Fixed
+- **/measure no longer uses the locate hint.** On full 4K video frames the
+  hinted outline differed from the full search's by about 50 px, and two field
+  photos that measured 63.6 and 67.2 were refused with it. /identify keeps the
+  hint: on 12 field photos it gave the same name and decision every time, and
+  was 1.5-3.5 s faster on 9 of them.
+
 ## [2.33.0] - 2026-10-21
 
 Toward a decision within about 2 s of holding a card still. From the
