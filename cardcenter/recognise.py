@@ -520,22 +520,37 @@ def recognise_card(
         text = engine.read_text(img)
         return text, [Word(t) for t in tokenise(text)]
 
-    def read_band(img) -> list[Word]:
+    def read_band(img, mode: str = "normal") -> list[Word]:
         # The name bar alone, enlarged: a whole-card sparse read of a holo
         # card in a sleeve misses the name about one time in three (field
         # stills, 2.20.0) where the bar by itself at twice the size reads.
         h = img.shape[0]
-        band = img[: max(8, int(round(name_band[1] * h)))]
+        lo_px = int(round(max(0.0, name_band[0]) * h))
+        hi_px = max(lo_px + 8, int(round(name_band[1] * h)))
+        band = img[lo_px:hi_px]
         f = min(2.0, 2400.0 / max(band.shape[1], 1))
         band = cv2.resize(band, None, fx=f, fy=f, interpolation=cv2.INTER_CUBIC)
-        return [Word(w.text, name_band[0], 0.0, ("band",) + tuple(w.line))
-                for w in engine.read_words(band)]
+        if mode == "invert":
+            band = cv2.bitwise_not(band)
+        words = engine.read_words(band)
+        lo_frac = lo_px / h
+        band_h_frac = (hi_px - lo_px) / h
+        return [
+            Word(
+                w.text,
+                lo_frac + w.top * band_h_frac if np.isfinite(w.top) else (name_band[0] + name_band[1]) / 2.0,
+                w.height * band_h_frac if np.isfinite(w.height) else 0.0,
+                ("band_inv" if mode == "invert" else "band",) + tuple(w.line),
+            )
+            for w in words
+        ]
 
     orientation = "upright"
     try:
         found = None
         matched = False
         bands: dict = {}
+        # Primary orientations (upright and 180): fast path
         for label, img in (("upright", prepared),
                            ("rotated 180", cv2.rotate(prepared, cv2.ROTATE_180))):
             text, words = read(img)
@@ -552,6 +567,38 @@ def recognise_card(
                     found = (text, bw + words, label)
                     matched = True
                     break
+                # Multi-pass: inverted polarity on dark/foil cards
+                bw_inv = read_band(img, mode="invert")
+                if match_words(bw_inv, vocab, name_band)[0] is not None:
+                    bands[label] = bw_inv
+                    found = (text, bw_inv + words, label)
+                    matched = True
+                    break
+
+        # Fallback orientations (90 and 270): if upright and 180 both failed to match.
+        # Recovers cards from steep-tilt foreshortening where side lengths swapped or landscape cards.
+        if not matched:
+            for label, img in (("rotated 90", cv2.rotate(prepared, cv2.ROTATE_90_CLOCKWISE)),
+                               ("rotated 270", cv2.rotate(prepared, cv2.ROTATE_90_COUNTERCLOCKWISE))):
+                text, words = read(img)
+                if match_words(words, vocab, name_band)[0] is not None:
+                    found = (text, words, label)
+                    matched = True
+                    break
+                if hasattr(engine, "read_words"):
+                    bw = read_band(img)
+                    bands[label] = bw
+                    if match_words(bw, vocab, name_band)[0] is not None:
+                        found = (text, bw + words, label)
+                        matched = True
+                        break
+                    bw_inv = read_band(img, mode="invert")
+                    if match_words(bw_inv, vocab, name_band)[0] is not None:
+                        bands[label] = bw_inv
+                        found = (text, bw_inv + words, label)
+                        matched = True
+                        break
+
         raw_text, words, orientation = found
         # The enlarged name-bar read, kept for the prefix warning only: it
         # also picks up the stage label ("TRMIGE" from STAGE 1), which the

@@ -45,7 +45,7 @@ from typing import Optional, Sequence
 import cv2
 import numpy as np
 
-from .geometry import enforce_portrait, order_quad
+from .geometry import enforce_portrait, enforce_portrait_pose, order_quad
 from .types import STANDARD_CARD_H_MM, STANDARD_CARD_W_MM, DetectionError
 
 CARD_ASPECT = STANDARD_CARD_H_MM / STANDARD_CARD_W_MM      # 1.40
@@ -718,7 +718,7 @@ class SceneSearch:
         """
         if len(quads) == 0:
             return []
-        Q = np.array([enforce_portrait(order_quad(np.asarray(q, dtype=np.float64))) for q in quads])
+        Q = np.array([enforce_portrait_pose(order_quad(np.asarray(q, dtype=np.float64)), (self.h, self.w), self.fov) for q in quads])
         N = len(Q)
         aspect, tilt = card_pose_batch(Q, (self.h, self.w), self.fov, self.expected_tilt)
         A = Q.reshape(-1, 2)
@@ -825,7 +825,7 @@ class SceneSearch:
         rq = np.array(corners)
         if not _convex(rq) or np.abs(rq - q).max() > 6.0:
             return hit
-        rq = enforce_portrait(order_quad(rq))
+        rq = enforce_portrait_pose(order_quad(rq), (self.h, self.w), self.fov)
         again = self._judge(rq)
         if again is None or again.score < hit.score - 0.05:
             return hit

@@ -55,6 +55,34 @@ def enforce_portrait(quad: np.ndarray) -> np.ndarray:
     return quad
 
 
+def enforce_portrait_pose(
+    quad: np.ndarray,
+    shape: tuple[int, ...],
+    fov_deg: float = 62.0,
+) -> np.ndarray:
+    """Rotate quad ordering to portrait using 3D ray unprojection when possible,
+    falling back to 2D side lengths. Resolves foreshortening swap at pitch > 42 deg."""
+    q = np.asarray(quad, dtype=np.float64).reshape(4, 2)
+    h, w = shape[:2]
+    src = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float64)
+    try:
+        H = cv2.getPerspectiveTransform(src.astype(np.float32), q.astype(np.float32))
+        f0 = (w / 2.0) / math.tan(math.radians(fov_deg) / 2.0)
+        Kinv = np.array([[1 / f0, 0, -w / (2 * f0)], [0, 1 / f0, -h / (2 * f0)], [0, 0, 1]])
+        M = Kinv @ H
+        a1, a2 = M[:, 0], M[:, 1]
+        n1, n2 = float(np.linalg.norm(a1)), float(np.linalg.norm(a2))
+        if n1 > 1e-6 and n2 > 1e-6:
+            # edge 0->1 corresponds to vector a1 (width), edge 0->3 to vector a2 (height).
+            # For portrait, edge 0->1 must be the shorter physical axis.
+            if n1 > n2:
+                return np.roll(q, -1, axis=0)
+            return q
+    except Exception:
+        pass
+    return enforce_portrait(q)
+
+
 def fit_line_tls(pts: np.ndarray) -> tuple[np.ndarray, float]:
     """Total-least-squares line fit. Returns ((a,b,c) for ax+by+c=0, rms_residual)."""
     pts = np.asarray(pts, dtype=np.float64)

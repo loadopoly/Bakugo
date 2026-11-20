@@ -605,21 +605,26 @@ def _json_body(body: bytes) -> dict:
 READ_MARGIN_FRAC = 0.15
 
 
-def _rectify_for_reading(image: np.ndarray, quad: np.ndarray, px_per_mm: float):
-    """(rectified card with READ_MARGIN_FRAC of margin top and bottom, the
+def _rectify_for_reading(image: np.ndarray, quad: np.ndarray, px_per_mm: float,
+                         margin_frac: float = 0.0):
+    """(rectified card with margin_frac of margin top and bottom, the
     name band as fractions of its height)."""
     from .recognise import NAME_BAND
     from .types import STANDARD_CARD_H_MM, STANDARD_CARD_W_MM
 
     s = float(px_per_mm)
     w, h = STANDARD_CARD_W_MM * s, STANDARD_CARD_H_MM * s
-    mx, my = 0.04 * w, READ_MARGIN_FRAC * h
+    mx = 0.04 * w if margin_frac > 0 else 0.0
+    my = margin_frac * h
     dst = np.float32([[mx, my], [mx + w, my], [mx + w, my + h], [mx, my + h]])
     M = cv2.getPerspectiveTransform(np.asarray(quad, dtype=np.float32).reshape(4, 2), dst)
     size = (int(round(w + 2 * mx)), int(round(h + 2 * my)))
     rect = cv2.warpPerspective(image, M, size, flags=cv2.INTER_LINEAR,
                                borderMode=cv2.BORDER_REPLICATE)
-    return rect, (0.0, (my + NAME_BAND * h) / (h + 2 * my))
+    total_h = h + 2 * my
+    band_lo = my / total_h
+    band_hi = (my + NAME_BAND * h) / total_h
+    return rect, (band_lo, band_hi)
 
 
 def _identify_payload(image_bytes: bytes, device_id: str, owner: bool, record: bool = True,
@@ -663,8 +668,15 @@ def _identify_payload(image_bytes: bytes, device_id: str, owner: bool, record: b
                                             min_area_frac=min_area_frac_for(work.shape))
     quad_full = quad / s + np.array(origin, dtype=np.float64)
     ppm = float(np.linalg.norm(quad_full[1] - quad_full[0])) / STANDARD_CARD_W_MM
-    rect, band = _rectify_for_reading(image, quad_full, min(ppm, 24.0))
+    # Primary: tight crop without margin to avoid neighbour-card text bleed
+    rect, band = _rectify_for_reading(image, quad_full, min(ppm, 24.0), margin_frac=0.0)
     rec = recognise_card(rect, name_band=band)
+    if not rec.resolved:
+        # Fallback with margin if sleeved halo card caused quad to sit below name bar (v2.20.0 Meganium)
+        rect_m, band_m = _rectify_for_reading(image, quad_full, min(ppm, 24.0), margin_frac=READ_MARGIN_FRAC)
+        rec_m = recognise_card(rect_m, name_band=band_m)
+        if rec_m.resolved:
+            rect, band, rec = rect_m, band_m, rec_m
     payload = {
         "ok": True,
         "identified": rec.resolved,
@@ -689,7 +701,14 @@ def _identify_payload(image_bytes: bytes, device_id: str, owner: bool, record: b
     est = embed_status()
     if est.get("available"):
         eh, ew = est["input_size"]
-        crop = cv2.resize(rect, (ew, eh), interpolation=cv2.INTER_AREA)
+        crop_src = rect if band[0] == 0.0 else _rectify_for_reading(image, quad_full, min(ppm, 24.0), margin_frac=0.0)[0]
+        if rec.orientation == "rotated 180":
+            crop_src = cv2.rotate(crop_src, cv2.ROTATE_180)
+        elif rec.orientation == "rotated 90":
+            crop_src = cv2.rotate(crop_src, cv2.ROTATE_90_CLOCKWISE)
+        elif rec.orientation == "rotated 270":
+            crop_src = cv2.rotate(crop_src, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        crop = cv2.resize(crop_src, (ew, eh), interpolation=cv2.INTER_AREA)
         ok_png, png = cv2.imencode(".png", crop)
         if ok_png:
             payload["embed_crop"] = base64.b64encode(png.tobytes()).decode("ascii")

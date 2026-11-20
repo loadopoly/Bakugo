@@ -58,6 +58,7 @@ from .edge_information import locate_card
 from .geometry import (
     compute_edge_gradient,
     enforce_portrait,
+    enforce_portrait_pose,
     find_card_quad,
     order_quad,
     refine_quad,
@@ -998,7 +999,7 @@ class ARSession:
                     fresh = scene().card_at(tuple(q.mean(axis=0)), nearest=False)
                     if (fresh is not None and fresh.score > hit.score
                             and _quad_iou(fresh.quad, q, shape) < 0.75):
-                        q2 = enforce_portrait(order_quad(fresh.quad))
+                        q2 = enforce_portrait_pose(order_quad(fresh.quad), shape)
                         return self._adopt(q2, float(fresh.residual_px), prev, shape, now)
                 self._last_valid_at = now
                 return q, stats.corner_sigma_px
@@ -1133,7 +1134,7 @@ class ARSession:
                 track_img, quad_small, samples=24
             )
             if moved:
-                quad_small = enforce_portrait(order_quad(quad_small))
+                quad_small = enforce_portrait_pose(order_quad(quad_small), track_img.shape)
         except ValueError:
             info_small = None
         floor_px = info_small.worst_corner_sigma_px if info_small is not None else 0.0

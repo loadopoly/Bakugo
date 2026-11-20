@@ -9,6 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.34.0] - 2026-11-19
+
+Visual recognition consistency, 3D pose orientation disambiguation, and multi-pass OCR.
+
+### Added
+- **3D-pose portrait disambiguation (`geometry.enforce_portrait_pose`)**:
+  Recovers 3D ray-unprojected aspect ratios rather than relying on 2D pixel
+  lengths. Prevents steep pitch foreshortening (>42°) from swapping card width
+  and height into landscape orientation during detection and AR tracking.
+- **90° and 270° orientation fallback (`recognise.recognise_card`)**:
+  When upright (0°) and inverted (180°) OCR passes find no species match,
+  automatically evaluates 90° and 270° rotations. Rescues cards captured in
+  landscape or tilted past critical perspective foreshortening angles without
+  increasing latency on standard upright cards.
+- **Multi-pass adaptive polarity inversion on name band (`recognise.read_band`)**:
+  For dark-type, foil, and specialty cards where light lettering on dark
+  backgrounds fails under standard CLAHE, automatically evaluates an inverted
+  polarity pass (`bitwise_not`) on the cropped name band.
+- **Evaluation and pseudo-labeler localization parity**:
+  Updated `eval/recognition_eval.py` and `trainer/pseudo.py` to use
+  `framing.locate_coarse_to_fine` and `edge_information.locate_card` instead of
+  legacy `find_card_quad`.
+
+### Fixed
+- **Name band vertical slicing offset (`recognise.read_band`)**:
+  `read_band` now properly slices `[int(name_band[0]*h) : int(name_band[1]*h)]`
+  instead of `[:int(name_band[1]*h)]`, preventing top background margins and
+  neighboring cards from polluting the enlarged name OCR.
+- **Neighbor card text bleed in display cases and binders (`serve._identify_payload`)**:
+  Decoupled primary recognition crop (`margin_frac=0.0`) from the halo margin
+  fallback (`READ_MARGIN_FRAC=0.15`), ensuring standard scans use tight card
+  boundaries without adjacent card bleed while preserving halo fallback for
+  sleeved cards.
+- **Upright interior `embed_crop` generation (`serve._identify_payload`)**:
+  `embed_crop` sent to `/identify/vote` is now always generated from tight card
+  coordinates (0% replicated background) and rotated upright matching the
+  resolved card orientation.
+
 ## [2.33.1] - 2026-10-21
 
 ### Fixed

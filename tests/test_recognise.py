@@ -291,3 +291,124 @@ def test_the_name_bar_still_beats_the_flavour_text() -> None:
 def test_a_near_miss_in_the_name_bar_is_offered_not_taken() -> None:
     assert near_miss(_words(["ttievl"], _FLAVOUR), FIELD_VOCAB) == ("ttievl", "Thievul", 2)
     assert near_miss(_words(["xqzwvk"], []), FIELD_VOCAB) is None
+
+
+# --------------------------------------------------------------------------
+# Multi-pass name OCR, orientation fallback and band slicing (2.34.0)
+# --------------------------------------------------------------------------
+
+
+class CustomWordEngine:
+    name = "custom_words"
+
+    def __init__(self, read_words_cb=None, read_text_cb=None) -> None:
+        self.read_words_cb = read_words_cb
+        self.read_text_cb = read_text_cb
+
+    def read_text(self, img: np.ndarray) -> str:
+        if self.read_text_cb:
+            return self.read_text_cb(img)
+        return ""
+
+    def read_words(self, img: np.ndarray) -> list[Word]:
+        if self.read_words_cb:
+            return self.read_words_cb(img)
+        return []
+
+
+def test_read_band_respects_name_band_slicing() -> None:
+    """Verifies read_band slices [name_band[0]*h : name_band[1]*h], avoiding top margin."""
+    from cardcenter.recognise import Word
+
+    captured_band_shapes = []
+
+    def inspect_words(img: np.ndarray) -> list[Word]:
+        # Only return words inside the sliced name band
+        if img.shape[0] < 400:
+            captured_band_shapes.append(img.shape)
+            return [Word("Sableye", 0.5, 0.2, ("band",))]
+        return []
+
+    engine = CustomWordEngine(read_words_cb=inspect_words)
+    card_img = np.zeros((400, 280, 3), dtype=np.uint8)
+
+    rec = recognise_card(card_img, vocabulary=VOCAB, engine=engine, name_band=(0.10, 0.25))
+    assert rec.name == "Sableye"
+    assert len(captured_band_shapes) >= 1
+    # 0.25 - 0.10 = 0.15 of 400 = 60 px height before 2x enlargement
+    # Sliced height is 60 px * 2.0 = 120 px, width 280 * 2.0 = 560 px
+    assert captured_band_shapes[0] == (120, 560)
+
+
+def test_recognise_card_recovers_from_90_and_270_degree_rotations() -> None:
+    """Recovers cards when pitch tilt foreshortening swaps aspect (90/270 deg off)."""
+    from cardcenter.recognise import Word
+
+    def check_rotation(img: np.ndarray) -> list[Word]:
+        # Only return the word when img is in the 90-degree rotated orientation
+        # (original card was 400x280, rotated 90 is 280x400)
+        if img.shape == (280, 400):
+            return [Word("Genesect", 0.5, 0.2, ("band",))]
+        return []
+
+    engine = CustomWordEngine(read_words_cb=check_rotation)
+    card_img = np.zeros((400, 280, 3), dtype=np.uint8)
+
+    rec = recognise_card(card_img, vocabulary=VOCAB, engine=engine)
+    assert rec.name == "Genesect"
+    assert rec.orientation in ("rotated 90", "rotated 270")
+
+
+def test_recognise_card_multi_pass_polarity_inversion() -> None:
+    """Dark/foil cards with light text on dark background match on inverted pass."""
+    from cardcenter.recognise import Word
+
+    def check_inverted(band_img: np.ndarray) -> list[Word]:
+        # If mean intensity is high (bitwise_not inverted black background to white)
+        if band_img.mean() > 200:
+            return [Word("Thundurus", 0.5, 0.2, ("band_inv",))]
+        return []
+
+    engine = CustomWordEngine(read_words_cb=check_inverted)
+    # Dark card (all black pixels)
+    dark_card = np.zeros((400, 280, 3), dtype=np.uint8)
+
+    rec = recognise_card(dark_card, vocabulary=VOCAB, engine=engine)
+    assert rec.name == "Thundurus"
+    assert rec.resolved
+
+
+def test_enforce_portrait_pose_resolves_pitch_foreshortening() -> None:
+    """A card at steep pitch tilt (>42 deg) foreshortens long side in 2D but not in 3D."""
+    from cardcenter.geometry import enforce_portrait, enforce_portrait_pose
+
+    # Synthetic portrait card quad at steep tilt (edge 0->1 is width 100px,
+    # edge 1->2 is foreshortened height 70px)
+    # In 2D: e01 = 100 > e12 = 70, so naive 2D roll makes it landscape!
+    quad_tilted = np.array([
+        [100.0, 100.0],
+        [200.0, 100.0],
+        [200.0, 170.0],
+        [100.0, 170.0],
+    ])
+    # Naive 2D enforce_portrait swaps edges because e01 > e12
+    rolled_2d = enforce_portrait(quad_tilted)
+    assert np.linalg.norm(rolled_2d[1] - rolled_2d[0]) == 70.0
+
+    # 3D unprojected enforce_portrait_pose keeps short side as edge 0->1
+    fixed_3d = enforce_portrait_pose(quad_tilted, (480, 640))
+    assert fixed_3d is not None
+
+
+def test_rectify_for_reading_margin_and_tight() -> None:
+    from cardcenter.serve import _rectify_for_reading
+
+    img = np.zeros((600, 600, 3), dtype=np.uint8)
+    quad = np.array([[100, 100], [300, 100], [300, 400], [100, 400]])
+    rect_tight, band_tight = _rectify_for_reading(img, quad, px_per_mm=3.0, margin_frac=0.0)
+    assert band_tight[0] == 0.0
+    assert band_tight[1] > 0.0
+
+    rect_margin, band_margin = _rectify_for_reading(img, quad, px_per_mm=3.0, margin_frac=0.15)
+    assert band_margin[0] > 0.0
+    assert band_margin[1] > band_margin[0]

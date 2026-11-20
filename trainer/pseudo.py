@@ -67,13 +67,25 @@ class CardcenterPredictor:
         note = ""
         if self._detect:
             try:
-                from cardcenter.geometry import find_card_quad
+                from cardcenter.framing import locate_coarse_to_fine
+                from cardcenter.edge_information import locate_card
                 from cardcenter.multicard import _crop_quad
 
-                quad, _, _ = find_card_quad(img)
+                found = locate_coarse_to_fine(img)
+                if found is not None:
+                    quad = found[0]
+                else:
+                    quad, _, _, _, _ = locate_card(img)
                 img, _ = _crop_quad(img, quad)
-            except Exception as exc:
-                note = f"detect failed ({exc}); full frame used"
+            except Exception:
+                try:
+                    from cardcenter.geometry import find_card_quad
+                    from cardcenter.multicard import _crop_quad
+
+                    quad, _, _ = find_card_quad(img)
+                    img, _ = _crop_quad(img, quad)
+                except Exception as exc:
+                    note = f"detect failed ({exc}); full frame used"
         try:
             rec = recognise_card(img, vocabulary=self._vocab, engine=self._engine)
         except Exception as exc:

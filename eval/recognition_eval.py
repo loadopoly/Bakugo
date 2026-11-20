@@ -144,13 +144,26 @@ def _maybe_detect_and_crop(img, detect: bool):
     if not detect:
         return img, ""
     try:
-        from cardcenter.geometry import find_card_quad  # type: ignore
-        from cardcenter.multicard import _crop_quad  # type: ignore
-        quad, _, _ = find_card_quad(img)
+        from cardcenter.framing import locate_coarse_to_fine
+        from cardcenter.edge_information import locate_card
+        from cardcenter.multicard import _crop_quad
+
+        found = locate_coarse_to_fine(img)
+        if found is not None:
+            quad = found[0]
+        else:
+            quad, _, _, _, _ = locate_card(img)
         crop, _ = _crop_quad(img, quad)
         return crop, ""
     except Exception as exc:
-        return img, f"detect failed ({exc}); used full frame"
+        try:
+            from cardcenter.geometry import find_card_quad  # type: ignore
+            from cardcenter.multicard import _crop_quad  # type: ignore
+            quad, _, _ = find_card_quad(img)
+            crop, _ = _crop_quad(img, quad)
+            return crop, ""
+        except Exception as exc2:
+            return img, f"detect failed ({exc}, fallback {exc2}); used full frame"
 
 
 def run_one(sample, recognise_card, vocab, engine, detect: bool):

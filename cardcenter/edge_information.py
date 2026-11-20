@@ -441,7 +441,7 @@ def locate_card(image: np.ndarray, prefer_point=None, min_area_frac: float = 0.0
 
     Returns (quad, contour, residual_px, QuadInformation, moved).
     """
-    from .geometry import enforce_portrait, find_card_quad, order_quad
+    from .geometry import enforce_portrait, enforce_portrait_pose, find_card_quad, order_quad
     from .scene import SceneSearch
     from .types import DetectionError
 
@@ -469,7 +469,7 @@ def locate_card(image: np.ndarray, prefer_point=None, min_area_frac: float = 0.0
                        and _quad_iou(legacy[0], hit.quad, (h, w)) >= 0.6)
 
     if hit is not None and not keep_legacy:
-        quad = enforce_portrait(order_quad(hit.quad))
+        quad = enforce_portrait_pose(order_quad(hit.quad), image.shape)
         contour = quad.reshape(-1, 1, 2).astype(np.int32)
         residual = float(hit.residual_px)
     elif legacy is not None and (not judged_only or (
@@ -487,7 +487,7 @@ def locate_card(image: np.ndarray, prefer_point=None, min_area_frac: float = 0.0
     except ValueError:
         return quad, contour, residual, None, False
     if moved:
-        snapped = enforce_portrait(order_quad(snapped))
+        snapped = enforce_portrait_pose(order_quad(snapped), image.shape)
     return snapped, contour, residual, info, moved
 
 
